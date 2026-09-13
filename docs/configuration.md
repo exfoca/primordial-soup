@@ -116,7 +116,7 @@ Current identity constants:
 | Constant        |               Value |
 | --------------- | ------------------: |
 | `WORLD_NAME`    | `"Primordial Soup"` |
-| `WORLD_VERSION` |           `"0.3.0"` |
+| `WORLD_VERSION` |           `"0.4.0"` |
 | `RANDOM_SEED`   |              `None` |
 
 `WORLD_VERSION` identifies the application release.
@@ -1552,7 +1552,7 @@ Current persistence configuration:
 | `SAVE_SLOT_TEMPLATE`    | `genome_pool_{slot}.pkl`                   |
 | `METRICS_SLOT_TEMPLATE` | `genome_pool_{slot}_metricas.csv`          |
 | `SAVE_FORMAT`           | `pickle`                                   |
-| `SAVE_VERSION`          | `10`                                       |
+| `SAVE_VERSION`          | `11`                                       |
 | `ARCHITECTURE_VERSION`  | `mlp-1x25x12-rec`                          |
 | `GENOME_VERSION`        | `layout-v4`                                |
 
@@ -1621,12 +1621,14 @@ v7  block crossover
 v8  two-scale mutation
 v9  composite selection pressure
 v10 stable individual identity
+v11 exact continuation state: reproductive scheduler phase
+    and RNG states
 ```
 
 Current:
 
 ```text
-SAVE_VERSION = 10
+SAVE_VERSION = 11
 ```
 
 The loader follows a strict compatibility policy for save versions.
@@ -1818,18 +1820,20 @@ load restores runtime value
 
 Important examples:
 
-| Concept                  | Static default          | Runtime state                | Persisted? |
-| ------------------------ | ----------------------- | ---------------------------- | ---------- |
-| Mutation rate            | `INITIAL_MUTATION_RATE` | `state.mutation_rate`        | Yes        |
-| Surgical gene count      | `INITIAL_MUTATED_GENES` | `state.mutated_genes`        | Yes        |
-| Local scale              | `LOCAL_SCALE_FRACTION`  | `state.local_scale_fraction` | Yes        |
-| Zone HP effect           | `HP_EFFECT_IN_ZONE`     | `state.zone_hp_effect`       | Yes        |
-| Zones enabled            | implicit ON             | `state.zones_active`         | Yes        |
-| Speed                    | `1` at bootstrap        | `state.ticks_per_frame`      | No         |
-| Active parameter         | mutation                | `state.active_param`         | No         |
-| Language                 | UI default              | `state.language`             | No         |
-| Discovery criterion      | most evolved            | runtime state                | No         |
-| Discovery lineage filter | all                     | runtime state                | No         |
+| Concept                        | Static default          | Runtime state                | Persisted? |
+| ------------------------------ | ----------------------- | ---------------------------- | ---------- |
+| Mutation rate                  | `INITIAL_MUTATION_RATE` | `state.mutation_rate`        | Yes        |
+| Surgical gene count            | `INITIAL_MUTATED_GENES` | `state.mutated_genes`        | Yes        |
+| Local scale                    | `LOCAL_SCALE_FRACTION`  | `state.local_scale_fraction` | Yes        |
+| Zone HP effect                 | `HP_EFFECT_IN_ZONE`     | `state.zone_hp_effect`       | Yes        |
+| Zones enabled                  | implicit ON             | `state.zones_active`         | Yes        |
+| Reproductive scheduler phase   | `R` + cooldown 0        | `state.reproduction_cooldown` / `state.reproduction_turn` | Yes |
+| RNG states                     | seeded at bootstrap     | `random` + `np.random`       | Yes        |
+| Speed                          | `1` at bootstrap        | `state.ticks_per_frame`      | No         |
+| Active parameter               | mutation                | `state.active_param`         | No         |
+| Language                       | UI default              | `state.language`             | No         |
+| Discovery criterion            | most evolved            | runtime state                | No         |
+| Discovery lineage filter       | all                     | runtime state                | No         |
 
 Remember the local-scale caveat: persistence of a value does not currently imply that the two-scale mutation implementation consumes it.
 
@@ -2060,41 +2064,35 @@ Probably.
 
 ---
 
-# Known configuration debts
+# Configuration debts
 
-The current code has a few places where the conceptual configuration model and implementation are not perfectly aligned.
+## Resolved since this document was written
 
-The important ones are:
+### `local_scale_fraction`
 
-```text
-RANDOM_SEED
-declared in config.py but not consumed by bootstrap;
-use CLI --seed instead.
+The runtime value is now consumed by the two-scale mutation path via
+an explicit argument chain (`state` → `evolution` → `genetics`). The
+`O` control is effective again.
 
-local_scale_fraction
-mutable, displayed and persisted at runtime,
-but not currently consumed by two-scale mutation.
+### `HP_BONUS_PER_OFFSPRING`
 
-HP_BONUS_PER_OFFSPRING
-a meaningful evolutionary tuning value,
-but currently lives locally in evolution.py rather than config.py.
+The per-event parent HP bonus is now a config constant,
+`REPRODUCTION_PARENT_HP_BONUS`, living in `config.py`. The earlier
+local definition and its stale `250` commentary have been removed.
+
+## Remaining
+
+### `RANDOM_SEED`
+
+`RANDOM_SEED` remains declared in `config.py` but is not consumed by
+world bootstrap. For reproducible runs, use the CLI flag:
+
+```bash
+python -m primordial_soup --new -d 50000 --seed 42
 ```
 
-There is also stale historical commentary around the HP bonus that still describes:
-
-```text
-250
-```
-
-while executable code uses:
-
-```text
-50
-```
-
-For documentation and experiments, executable behavior wins.
-
-These are useful candidates for later cleanup.
+Editing `RANDOM_SEED` alone should not be treated as a reproducibility
+mechanism until it is wired into bootstrap or removed.
 
 ---
 

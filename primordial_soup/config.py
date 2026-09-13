@@ -5,7 +5,7 @@ from typing import Final
 
 # 0. IDENTIDADE
 WORLD_NAME: Final = "Primordial Soup"
-WORLD_VERSION: Final = "0.3.0"
+WORLD_VERSION: Final = "0.4.0"
 RANDOM_SEED: Final = None
 
 
@@ -119,6 +119,13 @@ REPRODUCTION_HP_GATE: Final = 10000
 
 # Evento global turn-based; a cada N ticks uma linhagem (R->G->B) tem vez.
 REPRODUCTION_INTERVAL: Final = 150
+
+# Bonus de HP concedido a CADA pai por evento reprodutivo bem-sucedido.
+# Nao multiplicado por filho: com OFFSPRING_PER_PAIR=2, cada pai ainda
+# recebe este valor uma unica vez. ~0.5% de INITIAL_HP (10.000):
+# contrapeso que faz da reproducao uma estrategia de sobrevivencia
+# ativa sem tornar pais ferteis quase imortais.
+REPRODUCTION_PARENT_HP_BONUS: Final = 50
 
 # Portao 3: score composto minimo.
 REPRODUCTION_MIN_SCORE: Final = 0.6
@@ -270,8 +277,10 @@ SAVE_FORMAT: Final = "pickle"
 # v2 save original; v3 versionamento; v4 estado interno como input;
 # v5 recorrencia leve; v6 segunda camada oculta; v7 crossover em blocos;
 # v8 mutacao em duas escalas; v9 pressao seletiva composta;
-# v10 identidade estavel dos individuos.
-SAVE_VERSION: Final = 10
+# v10 identidade estavel dos individuos;
+# v11 estado exato de continuacao:
+#     fase do scheduler reprodutivo + estado dos RNGs.
+SAVE_VERSION: Final = 11
 ARCHITECTURE_VERSION: Final = "mlp-1x25x12-rec"
 GENOME_VERSION: Final = "layout-v4"
 

@@ -187,7 +187,7 @@ before it is allowed to replace the current runtime.
 Primordial Soup currently uses:
 
 ```text
-SAVE_VERSION         = 10
+SAVE_VERSION         = 11
 ARCHITECTURE_VERSION = "mlp-1x25x12-rec"
 GENOME_VERSION       = "layout-v4"
 ```
@@ -207,7 +207,7 @@ describes the save schema and semantic persistence contract.
 Current:
 
 ```text
-10
+11
 ```
 
 Version history recorded by the project:
@@ -222,6 +222,8 @@ v7   block crossover
 v8   two-scale mutation
 v9   composite selection
 v10  stable individual identity
+v11  exact continuation state: reproductive scheduler phase
+     and the states of both random-number generators
 ```
 
 ---
@@ -285,20 +287,41 @@ save version < current
 save version > current
 → reject
 
+save version != current
+→ reject
+
+version metadata missing
+→ reject
+
+architecture metadata missing
+→ reject
+
 architecture mismatch
+→ reject
+
+genome metadata missing
 → reject
 
 genome mismatch
 → reject
+
+state field missing
+→ reject
 ```
 
-There is no automatic migration from an older semantic save version into v10.
+The v11 contract is **strict**: it does not accept partial payloads,
+reconstruct missing state, or apply historical fallbacks. A compatible
+payload is, byte-for-byte, the current schema.
+
+There is no automatic migration from an older semantic save version
+into v11.
 
 This is intentional.
 
-Network topology, mutation, recombination and selection rules have changed across historical versions.
-
-Attempting to synthesize missing state would produce a world that never actually existed.
+Network topology, mutation, recombination, selection and continuation
+semantics have changed across historical versions. Attempting to
+synthesize missing state would produce a world that never actually
+existed.
 
 For experimental software, that is worse than saying:
 
@@ -456,7 +479,7 @@ This allows historical English-produced data to be read without allowing the for
 
 ---
 
-# The v10 payload
+# The v11 payload
 
 A canonical save currently contains top-level fields equivalent to:
 
@@ -475,6 +498,12 @@ A canonical save currently contains top-level fields equivalent to:
     nascimentos
     mortes
 
+    reproduction_cooldown
+    reproduction_turn
+
+    rng_python_state
+    rng_numpy_state
+
     modificadores_ambientais
     zonas
     zonas_ativas
@@ -486,27 +515,34 @@ A canonical save currently contains top-level fields equivalent to:
 
 The `linhagens` entry contains the population data.
 
+Under the v11 strict contract, all of these fields are mandatory.
+Absence of any of them is a rejection, not a fallback.
+
 ---
 
 # Top-level fields
 
-| Key                        | Meaning                            |
-| -------------------------- | ---------------------------------- |
-| `versao`                   | Save schema version                |
-| `arquitetura`              | Neural architecture contract       |
-| `genoma`                   | Genome-layout contract             |
-| `mutation`                 | Current runtime mutation rate      |
-| `mutategen`                | Runtime mutated-gene count         |
-| `escala_local`             | Runtime local-scale value          |
-| `tick`                     | Current simulation tick            |
-| `proximo_id`               | Next globally available critter ID |
-| `nascimentos`              | Cumulative births                  |
-| `mortes`                   | Cumulative deaths                  |
-| `modificadores_ambientais` | Environmental-model marker         |
-| `zonas`                    | Environmental-zone mask            |
-| `zonas_ativas`             | Runtime zone toggle                |
-| `efeito_hp_zonas`          | Runtime HP effect of zones         |
-| `linhagens`                | Serialized lineage populations     |
+| Key                        | Meaning                                    |
+| -------------------------- | ------------------------------------------ |
+| `versao`                   | Save schema version (must equal 11)        |
+| `arquitetura`              | Neural architecture contract               |
+| `genoma`                   | Genome-layout contract                     |
+| `mutation`                 | Current runtime mutation rate              |
+| `mutategen`                | Runtime mutated-gene count                 |
+| `escala_local`             | Runtime local-scale value                  |
+| `tick`                     | Current simulation tick                    |
+| `proximo_id`               | Next globally available critter ID         |
+| `nascimentos`              | Cumulative births                          |
+| `mortes`                   | Cumulative deaths                          |
+| `reproduction_cooldown`    | Ticks remaining until next reproductive turn |
+| `reproduction_turn`        | Lineage index owning the next turn         |
+| `rng_python_state`         | `random.getstate()` snapshot               |
+| `rng_numpy_state`          | `np.random.get_state()` snapshot           |
+| `modificadores_ambientais` | Environmental-model marker                 |
+| `zonas`                    | Environmental-zone mask (mandatory)        |
+| `zonas_ativas`             | Runtime zone toggle (mandatory)            |
+| `efeito_hp_zonas`          | Runtime HP effect of zones (mandatory)     |
+| `linhagens`                | Serialized lineage populations             |
 
 Not all static configuration constants are duplicated into the save.
 
@@ -1013,25 +1049,26 @@ Changing the static layout configuration can.
 
 # Missing zones
 
-There is a different rule when the:
+Under the v11 strict contract, the `zonas` key is **mandatory**.
 
-```text
-zonas
-```
-
-key is entirely absent.
-
-In that case the loader may generate a new zone mask.
-
-Importantly, that generation happens only **after all validation succeeds**, during commit.
+The loader does not generate a replacement mask, and it does not
+accept `None`. Absence, `None`, a non-array value, or a mask whose
+shape does not match the currently derived world geometry all cause
+the save to be rejected.
 
 Why?
 
-Because zone generation consumes randomness.
+Because zone generation consumes randomness. If the loader were
+allowed to synthesize zones on a missing field, a checkpoint could
+silently diverge from the stochastic future it was meant to continue.
+The v11 contract requires the exact saved mask to be present and
+valid, so that:
 
-A rejected save must not alter future random sequences merely because the loader tried to inspect it.
+```text
+checkpoint  =  exact continuation of the simulated state
+```
 
-This is a subtle but important reproducibility rule.
+holds as a verifiable property, not just as an aspiration.
 
 ---
 
@@ -1787,7 +1824,8 @@ But this is different from preserving the exact original RNG state.
 
 # What “restore the same world” means today
 
-Under the current persistence contract, load restores core world state such as:
+Under the v11 persistence contract, load restores the core world
+state and the exact continuation state:
 
 ```text
 population
@@ -1799,23 +1837,44 @@ birth/death counters
 zone geometry
 zone runtime state
 runtime mutation values
+reproductive scheduler phase
+random.getstate() snapshot
+np.random.get_state() snapshot
 ```
 
-It does not fully restore:
+It does not restore:
 
 ```text
-reproductive scheduler phase
-RNG state
 historical metric buffers
 inspection session
 UI preferences
 ```
 
-So the current save format is a strong **world checkpoint**.
+The current save format is therefore a **world checkpoint plus
+continuation state**.
 
-It is not yet a complete bit-exact process snapshot.
+It is not a full process snapshot: metric buffers, inspection
+sessions and UI preferences remain operator-side, and file writes
+themselves are not yet atomic (see *Remaining debts* below).
 
-That distinction matters most for reproducibility work.
+The v11 contract guarantees that:
+
+```text
+N ticks -> save -> M ticks
+```
+
+and
+
+```text
+N ticks -> save -> perturb runtime -> load -> M ticks
+```
+
+produce the same world state, provided configuration, code and
+environment are otherwise identical.
+
+This is verifiable, not aspirational: `tests/test_continuation.py`
+checks exactly that property for population, genomes, identities,
+scheduler and both RNGs.
 
 ---
 
@@ -2285,34 +2344,39 @@ that is intentionally not persisted.
 
 ---
 
-# Known persistence debts
+# Persistence debts
 
-The current implementation is substantially stricter than earlier versions, but several areas remain clear candidates for improvement.
+## Resolved in v11
 
-### 1. Reproductive scheduler persistence
+### Reproductive scheduler persistence
 
-Add:
+`reproduction_cooldown` and `reproduction_turn` are now part of the
+saved payload and are restored on load, so a checkpoint continues the
+scheduler phase exactly.
 
-```text
-reproduction_cooldown
-reproduction_turn
-```
+### RNG-state persistence
 
-to save/load state so continuation preserves the reproductive phase.
+`random.getstate()` and `np.random.get_state()` are serialized and
+restored. A load reproduces the same stochastic future the original
+run would have produced.
 
-### 2. RNG-state persistence
+The design intentionally leaves `--seed` on `--load` meaningful: it
+overwrites the restored RNG state deliberately, producing controlled
+branching from a common checkpoint.
 
-If exact process continuation becomes a requirement, serialize and restore the random-generator states.
+## Remaining
 
-This should be designed deliberately because headless `--seed` also provides useful controlled branching semantics.
+### Metric-history continuation
 
-### 3. Metric-history continuation
+The CSV remains a pure export. `load()` clears the in-memory metric
+history, and a save after load exports only post-load samples. A
+future design could add explicit history import/append semantics for
+long-running checkpointed experiments.
 
-Decide whether the CSV remains a pure export or whether long-running checkpointed experiments need explicit history import/append semantics.
+### Atomic file replacement
 
-### 4. Atomic file replacement
-
-For stronger crash safety:
+Saves are written directly to the target file. For stronger crash
+safety:
 
 ```text
 write temporary file
@@ -2322,13 +2386,19 @@ atomic rename
 
 would be safer than writing directly over the target checkpoint.
 
-### 5. Scalar semantic validation
+### Scalar semantic validation
 
-A future hardening pass could validate persisted runtime scalars against the same legal ranges enforced during normal interactive operation.
+Ranged persistence scalars (`mutation`, `mutategen`,
+`escala_local`, `efeito_hp_zonas`, `reproduction_cooldown`,
+`reproduction_turn`) are now validated against their operational
+ranges on load. Some structurally-mandatory fields still rely on
+type and shape checks rather than full semantic range checks; a
+future hardening pass could close that gap.
 
-None of these requires weakening the current strict structural loader.
+None of these requires weakening the current strict structural
+loader.
 
-The general direction should remain:
+The general direction remains:
 
 ```text
 explicit state

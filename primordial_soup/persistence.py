@@ -7,6 +7,7 @@ import math
 import numbers
 import os
 import pickle
+import random
 import numpy as np
 
 from . import config as cfg
@@ -18,7 +19,6 @@ from .world import (
     AGENT_COLUMNS,
     INDEX_X,
     INDEX_Y,
-    generate_zones,
     seed_lineages,
 )
 
@@ -108,6 +108,54 @@ def _coerce_int(value):
     return _INVALID
 
 
+def _parse_int_field(
+    record: dict,
+    pt_key: str,
+    en_key: str,
+    *,
+    default=_MISSING,
+    minimum: int | None = None,
+    maximum: int | None = None,
+):
+    """Le, coage e valida um campo inteiro escalar do payload.
+
+    Retorna o int validado, ou `default` (que pode ser `_MISSING`), ou
+    `_INVALID`. Nunca levanta. O chamador so precisa comparar com
+    `_INVALID`.
+
+    Contrato:
+      - ausente (nenhum dos dois aliases): retorna `default`. Com
+        `default=_MISSING` (o padrao), um campo obrigatorio sem
+        chave cai em `_INVALID`.
+      - presente mas nao coerccivel para int: `_INVALID`. Usa
+        `_coerce_int`, que ja distingue `None`, `bool`, NaN/inf,
+        floats nao-integrais, strings nao-numericas.
+      - coerccivel mas fora de [minimum, maximum] (quando
+        fornecidos): `_INVALID`. Sem clamp.
+
+    Aliases PT/EN preservados via `_read_key_strict`: uma chave
+    presente com valor `None` e "presente", nao "ausente", e cai em
+    `_coerce_int(None) == _INVALID`. Distincao que o loader explora
+    em outros campos e que este helper mantem.
+    """
+    raw = _read_key(record, pt_key, en_key)
+    if raw is _MISSING:
+        # Campo obrigatorio: ausencia e indistinguivel de invalidez
+        # no contrato do helper. Com default=_MISSING (o padrao),
+        # ausencia cai em _INVALID. Com default concreto, ausencia
+        # cai no default (caminho de campo opcional, hoje nao usado
+        # no loader v11 estrito).
+        return _INVALID if default is _MISSING else default
+    value = _coerce_int(raw)
+    if value is _INVALID:
+        return _INVALID
+    if minimum is not None and value < minimum:
+        return _INVALID
+    if maximum is not None and value > maximum:
+        return _INVALID
+    return value
+
+
 def _coerce_int_array(value, ndim: int | None = None):
     """Converte `value` para ndarray int64 com IDs validos, ou None.
 
@@ -174,38 +222,28 @@ def _coerce_int_array(value, ndim: int | None = None):
     return arr
 
 
-def _read_key_strict(record: dict, pt_key: str, en_key: str):
+def _read_key(record: dict, pt_key: str, en_key: str, default=_MISSING):
     """Le uma chave aceitando PT (canonica) e EN (fallback legado).
 
     Retorna o valor quando ao menos uma das grafias esta no dict —
-    MESMO se o valor for None. Retorna _MISSING quando nenhuma esta
-    presente.
+    MESMO se o valor for None. Retorna `default` quando nenhuma esta
+    presente. O default padrao e `_MISSING`, que preserva a distincao
+    entre "ausente" e "presente com valor None":
 
-    Diferente de _read_key, distingue chave ausente de valor None.
-    Isso e o que permite aplicar a politica:
-        ausente        -> default (decidido pelo chamador)
-        presente None  -> _coerce_int(None) == _INVALID -> rejeita
-        presente X     -> tenta converter; se _INVALID, rejeita
-    """
-    if pt_key in record:
-        return record[pt_key]
-    if en_key in record:
-        return record[en_key]
-    return _MISSING
-
-
-def _read_key(record: dict, pt_key: str, en_key: str, default=None):
-    """Le uma chave aceitando a grafia em portugues (canonica) e em
-    ingles.
+        ausente              -> retorna `default` (por padrao _MISSING)
+        presente com None    -> retorna None
+        presente com valor X -> retorna X
 
     Saves canonicos sao sempre escritos em portugues (ver `save`), mas
     aceitamos a grafia em ingles no load para saves legados
     continuarem carregando. Codigo novo deve sempre passar a chave PT
     primeiro.
 
-    Retorna `default` apenas se NENHUMA das chaves estiver presente.
-    Uma chave presente com valor None e retornada como None (valor
-    legitimo em alguns campos, ex: `zonas`).
+    Chamadores que precisam distinguir ausente de presente-None
+    comparam o retorno com `_MISSING`. Chamadores que so querem um
+    default simples passam `default=<valor>`. Chamadores que precisam
+    aceitar `None` como valor legitimo (ex: `zonas`) passam
+    `default=None` explicitamente.
     """
     if pt_key in record:
         return record[pt_key]
@@ -217,78 +255,103 @@ def _read_key(record: dict, pt_key: str, en_key: str, default=None):
 # Migracao de formato
 
 
-def _migrate(data: dict) -> dict | None:
-    """Ponto unico de migracao de savegames.
+def _validate_save_compatibility(data: dict) -> dict | None:
+    """Valida compatibilidade estrita com a versao atual do savegame.
 
-    Recebe o dict cru do pickle e retorna um dict compativel com a
-    versao atual, ou None se irrecuperavel.
+    NAO migra. NAO normaliza. NAO reconstroi. Sob o contrato v11
+    estrito, esta funcao apenas decide se o payload pode ou nao ser
+    carregado; qualquer payload compativel ja e byte-a-byte o
+    contrato atual.
 
-    Regras:
-      - `versao` ausente   -> assume 1 (save pre-versionamento).
-      - `versao` > atual   -> rejeita (save de versao futura).
-      - `versao` < atual   -> rejeita (mudanca semantica em topologia,
-        recombinacao, mutacao ou selecao; sintetizar pesos aleatorios
-        produziria comparacoes invalidas entre runs — politica P1).
-      - `arquitetura`/`genoma` ausentes -> assume valores atuais.
-      - Zonas sao opcionais; se ausentes, regenera ou None.
+    Recebe o dict cru do pickle e retorna o mesmo dict quando
+    compativel, ou None quando irrecuperavel.
 
-    Aceita chaves em portugues e em ingles.
+    Regras v11:
+      - `versao` ausente       -> rejeita.
+      - `versao` invalida      -> rejeita.
+      - `versao` != atual      -> rejeita (nem mais novo, nem mais
+        antigo; politica P1: mudancas semanticas em topologia,
+        recombinacao, mutacao ou selecao nao podem ser migradas sem
+        sintetizar estado que nunca existiu).
+      - `arquitetura` ausente  -> rejeita.
+      - `arquitetura` != atual -> rejeita.
+      - `genoma` ausente       -> rejeita.
+      - `genoma` != atual      -> rejeita.
 
-    NOTA: `nascimentos` / `mortes` NAO fazem parte do contrato de
-    versao. Ausencia num save antigo e estado legitimo (nao sabemos
-    quantos nascimentos/mortes ocorreram antes do save existir), e
-    `load()` usa default 0. SAVE_VERSION deliberadamente NAO e
-    incrementado por eles — mesmo raciocinio de `zonas_ativas`.
+    Aceita chaves em portugues (canonico) e em ingles (grafia
+    historica), mas ambas precisam estar presentes E corretas. A
+    tolerancia de idioma e apenas lexical; a semantica e estrita.
+
+    NOTA: sob A1, `nascimentos` / `mortes` / `zonas` / `zonas_ativas`
+    / `efeito_hp_zonas` / `reproduction_*` / `rng_*` passaram a ser
+    campos obrigatorios do schema v11. Eles nao sao validados aqui
+    (a funcao so cuida dos metadados de versao); cada um tem sua
+    checagem em load(). Esta funcao apenas garante que o payload se
+    identifica como exatamente v11 antes que load() comece a tocar
+    no restante.
     """
-    raw_version = _read_key_strict(data, "versao", "version")
+    raw_version = _read_key(data, "versao", "version")
     if raw_version is _MISSING:
-        version = 1
-    else:
-        version = _coerce_int(raw_version)
-        if version is _INVALID:
-            print(i18n.t("log.load_invalid_version", v=raw_version))
-            return None
+        # Metadado obrigatorio ausente: rejeita. Usa None para nao
+        # deixar _MISSING vazar para a interpolacao da mensagem.
+        print(i18n.t("log.load_invalid_version", v=None))
+        return None
+
+    version = _coerce_int(raw_version)
+    if version is _INVALID:
+        print(i18n.t("log.load_invalid_version", v=raw_version))
+        return None
 
     if version > cfg.SAVE_VERSION:
         print(i18n.t("log.load_newer", v=version, cur=cfg.SAVE_VERSION))
         return None
 
-    if version < 1:
-        print(i18n.t("log.load_invalid_version", v=version))
-        return None
-
-    architecture = _read_key(
-        data, "arquitetura", "architecture", cfg.ARCHITECTURE_VERSION
-    )
-    genome = _read_key(data, "genoma", "genome", cfg.GENOME_VERSION)
-
     if version < cfg.SAVE_VERSION:
         print(i18n.t("log.load_incompatible", v=version, cur=cfg.SAVE_VERSION))
         return None
 
-    if architecture != cfg.ARCHITECTURE_VERSION:
+    # Version == SAVE_VERSION a partir daqui.
+
+    raw_arch = _read_key(data, "arquitetura", "architecture")
+    if raw_arch is _MISSING:
         print(
             i18n.t(
                 "log.load_arch_mismatch",
-                a=architecture,
+                a=None,
+                cur=cfg.ARCHITECTURE_VERSION,
+            )
+        )
+        return None
+    if raw_arch != cfg.ARCHITECTURE_VERSION:
+        print(
+            i18n.t(
+                "log.load_arch_mismatch",
+                a=raw_arch,
                 cur=cfg.ARCHITECTURE_VERSION,
             )
         )
         return None
 
-    if genome != cfg.GENOME_VERSION:
+    raw_genome = _read_key(data, "genoma", "genome")
+    if raw_genome is _MISSING:
         print(
             i18n.t(
                 "log.load_genome_mismatch",
-                g=genome,
+                g=None,
+                cur=cfg.GENOME_VERSION,
+            )
+        )
+        return None
+    if raw_genome != cfg.GENOME_VERSION:
+        print(
+            i18n.t(
+                "log.load_genome_mismatch",
+                g=raw_genome,
                 cur=cfg.GENOME_VERSION,
             )
         )
         return None
 
-    data["versao"] = cfg.SAVE_VERSION
-    data["arquitetura"] = cfg.ARCHITECTURE_VERSION
-    data["genoma"] = cfg.GENOME_VERSION
     return data
 
 
@@ -423,7 +486,7 @@ def save(path: str | None = None) -> None:
         "mutategen": state.mutated_genes,
         "escala_local": state.local_scale_fraction,
         "tick": state.tick_count,
-        # Contador global de identidade. Obrigatorio em v10; o load
+        # Contador global de identidade. Obrigatorio em v11; o load
         # rejeita se ausente ou inconsistente com os ids salvos.
         "proximo_id": state.next_critter_id,
         # Contadores cumulativos de nascimento/morte. Opcionais no
@@ -431,6 +494,29 @@ def save(path: str | None = None) -> None:
         # legitimo.
         "nascimentos": state.births,
         "mortes": state.deaths,
+        # --- v11: estado exato de continuacao ---------------------
+        #
+        # Fase do scheduler reprodutivo. Sem esses dois campos, um
+        # save/load nao reproduz a mesma sequencia de turnos: o
+        # scheduler resumiria do estado em memoria, nao do estado
+        # persistido.
+        #
+        # Chaves em ingles (reproduction_cooldown / reproduction_turn),
+        # consistente com mutation / mutategen / escala_local / tick
+        # / proximo_id. O save ja mistura PT e EN sem cerimonia; a
+        # consistencia real e "chave estavel", nao "chave em PT".
+        "reproduction_cooldown": state.reproduction_cooldown,
+        "reproduction_turn": state.reproduction_turn,
+        # Estado dos dois RNGs globais. Cru: o objeto devolvido por
+        # random.getstate() / np.random.get_state() vai direto para o
+        # pickle, sem conversao. O payload do mundo em si continua no
+        # formato historico (list[list[float]]); o RNG state e opaco
+        # por natureza, nunca sera lido por humano nem por ferramenta
+        # externa, e o pickle do NumPy lida com o ndarray aninhado
+        # sem esforco.
+        "rng_python_state": random.getstate(),
+        "rng_numpy_state": np.random.get_state(),
+        # --- fim v11 ----------------------------------------------
         "modificadores_ambientais": cfg.ENVIRONMENTAL_MODIFIERS,
         "zonas": state.zones,
         "zonas_ativas": state.zones_active,
@@ -507,9 +593,13 @@ def load(path: str | None = None) -> bool:
     sera rejeitado no check de versao, nao carregado em silencio. O
     fallback e limitado ao slot default.
 
-    Contrato v10 estrito: um save valido contem exatamente
+    Contrato v11 estrito: um save valido contem exatamente
     cfg.TOTAL_LINEAGES linhagens, cada uma com tres arrays paralelos
-    em lockstep:
+    em lockstep, todos os metadados de versao exatamente iguais aos
+    atuais, todos os escalares de estado obrigatorios, zona valida
+    com shape derivado do mundo atual, toggle de zonas obrigatorio,
+    efeito de HP das zonas dentro do range, scheduler reprodutivo
+    presente e estados dos dois RNGs presentes e validos:
         pool.shape   == (N, GENOME_SIZE)
         agents.shape == (N, AGENT_COLUMNS)
         ids.shape    == (N,)
@@ -571,7 +661,7 @@ def load(path: str | None = None) -> bool:
         print(i18n.t("log.load_invalid_dict", path=path))
         return False
 
-    data = _migrate(data)
+    data = _validate_save_compatibility(data)
     if data is None:
         return False
 
@@ -581,125 +671,233 @@ def load(path: str | None = None) -> bool:
     # retorna False com `state` ainda intacto.
     # ------------------------------------------------------------------
 
+    # --- v11: scheduler reprodutivo (parse) -----------------------
+    #
+    # Chaves obrigatorias em v11. Ausencia e rejeicao, nao fallback:
+    # em v11 o checkpoint so e continuacao exata se a fase do
+    # scheduler for conhecida. Os defaults de bootstrap (cooldown=0,
+    # turn=0) NAO sao usados aqui; usá-los seria inventar estado que
+    # o save nao contem.
+    # Obrigatorios: default=_MISSING faz chave ausente cair em
+    # _INVALID, indistinguivel de valor corrompido no contrato do
+    # helper. Mensagem unica cobre os dois casos.
+    parsed_reproduction_cooldown = _parse_int_field(
+        data,
+        "reproduction_cooldown",
+        "reproduction_cooldown",
+        minimum=0,
+        maximum=cfg.REPRODUCTION_INTERVAL,
+    )
+    if parsed_reproduction_cooldown is _INVALID:
+        print("[load] reproduction_cooldown ausente ou invalido; save invalido.")
+        return False
+
+    # TOTAL_LINEAGES e um limite exclusivo: turn em [0, N). Passar
+    # maximum=N-1 e a forma correta; usar maximum=TOTAL_LINEAGES
+    # aceitaria um turno invalido.
+    parsed_reproduction_turn = _parse_int_field(
+        data,
+        "reproduction_turn",
+        "reproduction_turn",
+        minimum=0,
+        maximum=cfg.TOTAL_LINEAGES - 1,
+    )
+    if parsed_reproduction_turn is _INVALID:
+        print("[load] reproduction_turn ausente ou invalido; save invalido.")
+        return False
+
+    # --- v11: RNGs (parse com probes) -----------------------------
+    #
+    # Validacao em probes temporarios. Os RNGs globais (random,
+    # np.random) NAO sao tocados aqui: a restauracao acontece so no
+    # COMMIT, depois de toda validacao ter passado. Isso preserva o
+    # invariante "load rejeitado nao altera RNG global".
+    raw_rng_py = _read_key(data, "rng_python_state", "rng_python_state")
+    if raw_rng_py is _MISSING:
+        print("[load] rng_python_state ausente; save v11 invalido.")
+        return False
+    try:
+        probe_py = random.Random()
+        probe_py.setstate(raw_rng_py)
+    except (TypeError, ValueError) as e:
+        print(f"[load] rng_python_state invalido ({e!r}); save v11 invalido.")
+        return False
+    parsed_rng_py = raw_rng_py
+
+    raw_rng_np = _read_key(data, "rng_numpy_state", "rng_numpy_state")
+    if raw_rng_np is _MISSING:
+        print("[load] rng_numpy_state ausente; save v11 invalido.")
+        return False
+    try:
+        probe_np = np.random.RandomState()
+        probe_np.set_state(raw_rng_np)
+    except (TypeError, ValueError) as e:
+        print(f"[load] rng_numpy_state invalido ({e!r}); save v11 invalido.")
+        return False
+    parsed_rng_np = raw_rng_np
+
     # --- Campos escalares (parseados para locais) ---
     #
-    # Politica (decidida em _read_key_strict + _coerce_int):
-    #   ausente        -> default permitido (state atual ou literal)
+    # Politica (centralizada em _parse_int_field):
+    #   ausente        -> default (decidido por cada campo)
     #   presente None  -> _coerce_int(None) == _INVALID -> rejeita
-    #   presente X     -> _coerce_int(X); se _INVALID, rejeita
+    #   presente X     -> coerccao lossless + range check
     #
-    # Cumpre o contrato "chave ausente e default; presenca invalida
-    # e rejeicao".
-    raw_mutation = _read_key_strict(data, "mutation", "mutation")
-    if raw_mutation is _MISSING:
-        parsed_mutation = state.mutation_rate
-    else:
-        parsed_mutation = _coerce_int(raw_mutation)
-        if parsed_mutation is _INVALID:
-            print("[load] mutation invalido; save v10 invalido.")
-            return False
+    # Campos com default historico usam um literal ou o valor atual
+    # de `state`. Campos obrigatorios usam default=_MISSING (o
+    # proprio sentinel): chave ausente e rejeitada como se invalida
+    # fosse, o que e o contrato certo para v11.
+    #
+    # Mensagens: cada campo tem um log dedicado. Os dois
+    # obrigatorios (reproduction_*) usam "ausente ou invalido"
+    # porque o helper nao devolve a causa fina; distinguir "ausente"
+    # de "presente mas corrompido" exigiria ampliar o protocolo do
+    # helper sem ganho diagnostico proporcional.
+    parsed_mutation = _parse_int_field(
+        data,
+        "mutation",
+        "mutation",
+        minimum=cfg.MIN_MUTATION_RATE,
+        maximum=cfg.MAX_MUTATION_RATE,
+    )
+    if parsed_mutation is _INVALID:
+        print("[load] mutation ausente ou invalido; save invalido.")
+        return False
 
-    raw_mutated_genes = _read_key_strict(data, "mutategen", "mutategen")
-    if raw_mutated_genes is _MISSING:
-        parsed_mutated_genes = state.mutated_genes
-    else:
-        parsed_mutated_genes = _coerce_int(raw_mutated_genes)
-        if parsed_mutated_genes is _INVALID:
-            print("[load] mutategen invalido; save v10 invalido.")
-            return False
+    parsed_mutated_genes = _parse_int_field(
+        data,
+        "mutategen",
+        "mutategen",
+        minimum=cfg.MIN_MUTATED_GENES,
+        maximum=cfg.MAX_MUTATED_GENES,
+    )
+    if parsed_mutated_genes is _INVALID:
+        print("[load] mutategen ausente ou invalido; save invalido.")
+        return False
 
-    raw_local_scale = _read_key_strict(data, "escala_local", "local_scale")
-    if raw_local_scale is _MISSING:
-        parsed_local_scale = state.local_scale_fraction
-    else:
-        parsed_local_scale = _coerce_int(raw_local_scale)
-        if parsed_local_scale is _INVALID:
-            print("[load] escala_local invalida; save v10 invalido.")
-            return False
+    parsed_local_scale = _parse_int_field(
+        data,
+        "escala_local",
+        "local_scale",
+        minimum=cfg.MIN_LOCAL_SCALE_FRACTION,
+        maximum=cfg.MAX_LOCAL_SCALE_FRACTION,
+    )
+    if parsed_local_scale is _INVALID:
+        print("[load] escala_local ausente ou invalida; save invalido.")
+        return False
 
-    raw_tick = _read_key_strict(data, "tick", "tick")
-    if raw_tick is _MISSING:
-        parsed_tick = 0
-    else:
-        parsed_tick = _coerce_int(raw_tick)
-        if parsed_tick is _INVALID:
-            print("[load] tick invalido; save v10 invalido.")
-            return False
+    parsed_tick = _parse_int_field(
+        data,
+        "tick",
+        "tick",
+        minimum=0,
+    )
+    if parsed_tick is _INVALID:
+        print("[load] tick ausente ou invalido; save invalido.")
+        return False
 
-    raw_births = _read_key_strict(data, "nascimentos", "births")
-    if raw_births is _MISSING:
-        parsed_births = 0
-    else:
-        parsed_births = _coerce_int(raw_births)
-        if parsed_births is _INVALID:
-            print("[load] nascimentos invalido; save v10 invalido.")
-            return False
+    parsed_births = _parse_int_field(
+        data,
+        "nascimentos",
+        "births",
+        minimum=0,
+    )
+    if parsed_births is _INVALID:
+        print("[load] nascimentos ausente ou invalido; save invalido.")
+        return False
 
-    raw_deaths = _read_key_strict(data, "mortes", "deaths")
-    if raw_deaths is _MISSING:
-        parsed_deaths = 0
-    else:
-        parsed_deaths = _coerce_int(raw_deaths)
-        if parsed_deaths is _INVALID:
-            print("[load] mortes invalido; save v10 invalido.")
-            return False
+    parsed_deaths = _parse_int_field(
+        data,
+        "mortes",
+        "deaths",
+        minimum=0,
+    )
+    if parsed_deaths is _INVALID:
+        print("[load] mortes ausente ou invalido; save invalido.")
+        return False
 
-    # --- Zonas (parseadas para local; generate_zones adiado ao commit) ---
-    parsed_zones: np.ndarray | None
-    zones_key_present = ("zonas" in data) or ("zones" in data)
-    if zones_key_present:
-        zones = _read_key(data, "zonas", "zones")
-        if zones is None:
-            parsed_zones = None
-        else:
-            try:
-                zones_arr = np.asarray(zones, dtype=bool)
-            except (TypeError, ValueError, OverflowError):
-                print("[load] zonas invalidas; save v10 invalido.")
-                return False
-            expected = (
-                layout.LAYOUT.world_width,
-                layout.LAYOUT.world_height,
+    # --- Zonas (obrigatorias em v11; sem regeneracao) ---
+    #
+    # Sob A1, a chave `zonas` e obrigatoria e deve conter uma mascara
+    # booleana valida com o shape derivado do mundo atual. Ausencia,
+    # None, tipo invalido ou shape divergente rejeitam o save.
+    #
+    # generate_zones() NAO e chamado em nenhum caminho do load. Um
+    # load rejeitado nunca consome RNG, e um load aceito restaura
+    # exatamente a mascara salva. A propriedade "checkpoint =
+    # continuacao exata" depende disso.
+    raw_zones = _read_key(data, "zonas", "zones")
+    if raw_zones is _MISSING:
+        print("[load] zonas ausente; save invalido.")
+        return False
+    if raw_zones is None:
+        print("[load] zonas nulas; save invalido.")
+        return False
+    try:
+        zones_arr = np.asarray(raw_zones, dtype=bool)
+    except (TypeError, ValueError, OverflowError):
+        print("[load] zonas invalidas; save invalido.")
+        return False
+    expected = (
+        layout.LAYOUT.world_width,
+        layout.LAYOUT.world_height,
+    )
+    if zones_arr.shape != expected:
+        # O save foi feito em outra resolucao: a mascara de zonas e
+        # [WORLD_WIDTH, WORLD_HEIGHT] do monitor em que foi salvo,
+        # mas o mundo em execucao deriva as dimensoes do monitor
+        # ATUAL. Carregar uma mascara incompativel quebraria no
+        # primeiro state.zones[xs, ys] em evolution._zone_effect.
+        #
+        # Rejeitamos em vez de regenerar: regenerar substituiria a
+        # ecologia salva por uma nova aleatoria em silencio, pior do
+        # que recusar carregar. Rejeitar mantem o save intacto em
+        # disco e forca o operador a reabrir o jogo na resolucao
+        # original.
+        print(
+            i18n.t(
+                "log.load_zones_shape_mismatch",
+                saved=zones_arr.shape,
+                current=expected,
             )
-            if zones_arr.shape != expected:
-                # O save foi feito em outra resolucao: a mascara de
-                # zonas e [WORLD_WIDTH, WORLD_HEIGHT] do monitor em
-                # que foi salvo, mas o mundo em execucao deriva as
-                # dimensoes do monitor ATUAL. Carregar uma mascara
-                # incompativel quebraria no primeiro state.zones[xs,
-                # ys] em evolution._zone_effect.
-                #
-                # Rejeitamos em vez de regenerar: regenerar
-                # substituiria a ecologia salva por uma nova aleatoria
-                # em silencio, pior do que recusar carregar. Rejeitar
-                # mantem o save intacto em disco e forca o operador a
-                # reabrir o jogo na resolucao original.
-                print(
-                    i18n.t(
-                        "log.load_zones_shape_mismatch",
-                        saved=zones_arr.shape,
-                        current=expected,
-                    )
-                )
-                return False
-            parsed_zones = zones_arr
-    else:
-        # Chave ausente: adia geracao para a fase de commit, para um
-        # load rejeitado nao sortear do RNG global.
-        parsed_zones = None
+        )
+        return False
+    parsed_zones: np.ndarray = zones_arr
 
-    # --- Toggle de zonas (chave opcional, default True) ---
-    parsed_zones_active = bool(_read_key(data, "zonas_ativas", "zones_active", True))
-
-    # --- Efeito de HP das zonas (chave opcional, default cfg) ---
-    raw_effect = _read_key_strict(data, "efeito_hp_zonas", "zone_hp_effect")
-    if raw_effect is _MISSING:
-        parsed_zone_hp_effect = int(cfg.HP_EFFECT_IN_ZONE)
+    # --- Toggle de zonas (obrigatorio em v11) ---
+    #
+    # bool estrito: type(x) is bool. Nao aceita np.bool_, strings,
+    # 0/1 nem qualquer coisa que bool() aceitaria por permissividade.
+    # O payload canonical grava state.zones_active, que e sempre
+    # bool Python; qualquer outra coisa e payload corrompido ou
+    # editado a mao.
+    #
+    # Ausencia e rejeicao. Saves pre-toggle nao existem mais no
+    # contrato v11 (que rejeita versoes anteriores).
+    raw_zones_active = _read_key(data, "zonas_ativas", "zones_active")
+    if raw_zones_active is _MISSING:
+        print("[load] zonas_ativas ausente; save invalido.")
+        return False
+    if type(raw_zones_active) is bool:
+        parsed_zones_active = raw_zones_active
     else:
-        parsed_zone_hp_effect = _coerce_int(raw_effect)
-        if parsed_zone_hp_effect is _INVALID:
-            print("[load] efeito_hp_zonas invalido; save v10 invalido.")
-            return False
+        print(
+            f"[load] zonas_ativas deve ser bool estrito, "
+            f"recebido {type(raw_zones_active).__name__}; save invalido."
+        )
+        return False
+
+    # --- Efeito de HP das zonas (obrigatorio em v11, com range) ---
+    parsed_zone_hp_effect = _parse_int_field(
+        data,
+        "efeito_hp_zonas",
+        "zone_hp_effect",
+        minimum=cfg.MIN_ZONE_HP_EFFECT,
+        maximum=cfg.MAX_ZONE_HP_EFFECT,
+    )
+    if parsed_zone_hp_effect is _INVALID:
+        print("[load] efeito_hp_zonas ausente ou invalido; save invalido.")
+        return False
 
     # --- Linhagens (validacao estrutural, tudo para `loaded`) ---
     lineages = _read_key(data, "linhagens", "lineages")
@@ -721,14 +919,14 @@ def load(path: str | None = None) -> bool:
         )
         return False
 
-    # proximo_id e obrigatorio em v10.
-    raw_next_id = _read_key_strict(data, "proximo_id", "proximo_id")
+    # proximo_id e obrigatorio em v11.
+    raw_next_id = _read_key(data, "proximo_id", "proximo_id")
     if raw_next_id is _MISSING or raw_next_id is None:
-        print("[load] proximo_id ausente; save v10 invalido.")
+        print("[load] proximo_id ausente; save invalido.")
         return False
     saved_next_id = _coerce_int(raw_next_id)
     if saved_next_id is _INVALID:
-        print("[load] proximo_id invalido; save v10 invalido.")
+        print("[load] proximo_id invalido; save invalido.")
         return False
     if not (1 <= saved_next_id <= _INT64_MAX):
         print("[load] proximo_id fora do intervalo int64 valido.")
@@ -743,7 +941,7 @@ def load(path: str | None = None) -> bool:
         if not isinstance(record, dict):
             print(
                 f"[load] linhagem {expected_index} nao e dict "
-                f"({type(record).__name__}); save v10 invalido."
+                f"({type(record).__name__}); save invalido."
             )
             return False
 
@@ -751,13 +949,13 @@ def load(path: str | None = None) -> bool:
         if record_id != expected_id:
             print(
                 f"[load] linhagem {expected_index} tem id={record_id!r}, "
-                f"esperado {expected_id!r}; save v10 invalido."
+                f"esperado {expected_id!r}; save invalido."
             )
             return False
 
         saved_ids = record.get("ids")
         if saved_ids is None:
-            print(f"[load] ids ausente para linhagem {expected_id}; save v10 invalido.")
+            print(f"[load] ids ausente para linhagem {expected_id}; save invalido.")
             return False
         # Coerced, nao np.asarray cru: uma lista de strings
         # nao-numericas levantaria ValueError fora de load() e
@@ -765,28 +963,28 @@ def load(path: str | None = None) -> bool:
         ids_arr = _coerce_int_array(saved_ids, ndim=1)
         if ids_arr is None:
             print(
-                f"[load] ids invalido para linhagem {expected_id}; save v10 invalido."
+                f"[load] ids invalido para linhagem {expected_id}; save invalido."
             )
             return False
 
         pool = _read_key(record, "pools", "pool")
         if pool is None:
             print(
-                f"[load] pool ausente para linhagem {expected_id}; save v10 invalido."
+                f"[load] pool ausente para linhagem {expected_id}; save invalido."
             )
             return False
         try:
             pool_arr = np.asarray(pool, dtype=np.float32)
         except (TypeError, ValueError, OverflowError):
             print(
-                f"[load] pool invalido para linhagem {expected_id}; save v10 invalido."
+                f"[load] pool invalido para linhagem {expected_id}; save invalido."
             )
             return False
 
         agents_raw = _read_key(record, "agentes", "agents")
         if agents_raw is None:
             print(
-                f"[load] agents ausente para linhagem {expected_id}; save v10 invalido."
+                f"[load] agents ausente para linhagem {expected_id}; save invalido."
             )
             return False
         try:
@@ -794,7 +992,7 @@ def load(path: str | None = None) -> bool:
         except (TypeError, ValueError, OverflowError):
             print(
                 f"[load] agents invalido para linhagem {expected_id}; "
-                f"save v10 invalido."
+                f"save invalido."
             )
             return False
 
@@ -847,7 +1045,7 @@ def load(path: str | None = None) -> bool:
         if not (np.all(np.isfinite(xs_raw)) and np.all(np.isfinite(ys_raw))):
             print(
                 f"[load] x/y nao-finitos para linhagem {expected_id}; "
-                f"save v10 invalido."
+                f"save invalido."
             )
             return False
         if not (
@@ -855,7 +1053,7 @@ def load(path: str | None = None) -> bool:
         ):
             print(
                 f"[load] x/y nao-integrais para linhagem {expected_id}; "
-                f"save v10 invalido."
+                f"save invalido."
             )
             return False
 
@@ -870,7 +1068,7 @@ def load(path: str | None = None) -> bool:
         ):
             print(
                 f"[load] x/y fora do mundo para linhagem {expected_id}; "
-                f"save v10 invalido."
+                f"save invalido."
             )
             return False
 
@@ -930,15 +1128,22 @@ def load(path: str | None = None) -> bool:
     state.births = parsed_births
     state.deaths = parsed_deaths
 
-    # Zonas. Se a chave estava ausente, gera mascara nova AQUI (so
-    # no commit) para um load rejeitado nunca consumir RNG.
-    if zones_key_present:
-        state.zones = parsed_zones
-    else:
-        state.zones = generate_zones()
-        if state.zones is not None:
-            print(i18n.t("log.load_zones_missing"))
+    # v11: scheduler reprodutivo. A fase do turno e restaurada junto
+    # com o resto do estado, para a sequencia de turnos continuar
+    # exatamente de onde parou.
+    state.reproduction_cooldown = parsed_reproduction_cooldown
+    state.reproduction_turn = parsed_reproduction_turn
 
+    # v11: RNGs globais. So aqui, no COMMIT, os estados validados em
+    # probe sao aplicados nos geradores reais. Qualquer load rejeitado
+    # antes deste ponto deixa os RNGs exatamente como estavam.
+    random.setstate(parsed_rng_py)
+    np.random.set_state(parsed_rng_np)
+
+    # Zonas: restauracao direta. Sob v11 estrito, `parsed_zones` ja
+    # e uma mascara booleana valida com o shape esperado; nao ha
+    # caminho de regeneracao, nao ha consumo de RNG no commit.
+    state.zones = parsed_zones
     state.zones_active = parsed_zones_active
     state.zone_hp_effect = parsed_zone_hp_effect
 

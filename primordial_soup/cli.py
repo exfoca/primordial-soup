@@ -64,14 +64,19 @@ def build_parser() -> argparse.ArgumentParser:
             "without a window, saves, and exits."
         ),
     )
-    parser.add_argument(
+    # --load e --new sao mutuamente exclusivos: a fonte do mundo e
+    # uma so. Sem required=True, porque o modo grafico (sem flags)
+    # continua valido e nem --new nem --load e obrigatorio
+    # individualmente. O grupo so proibe a COEXISTENCIA.
+    world_source = parser.add_mutually_exclusive_group()
+    world_source.add_argument(
         "-l", "--load",
         metavar="SLOT",
         help=(
             "load save slot SLOT before running. If the load fails, "
             "the process aborts WITHOUT saving (a failed load must "
             "never silently overwrite the save it was asked to "
-            "continue from)."
+            "continue from). Cannot be combined with --new."
         ),
     )
     parser.add_argument(
@@ -92,18 +97,22 @@ def build_parser() -> argparse.ArgumentParser:
             f"or \'{cfg.DEFAULT_SAVE_SLOT}\' if -l was not given."
         ),
     )
-    parser.add_argument(
+    world_source.add_argument(
         "--new",
         action="store_true",
-        help="start a fresh run, ignoring -l.",
+        help="start a fresh run, ignoring -l. Cannot be combined with -l/--load.",
     )
     parser.add_argument(
         "--seed",
         type=int,
         metavar="N",
         help=(
-            "seed the RNG for reproducibility. Affects only what "
-            "happens AFTER a load, not the loaded state itself."
+            "seed the RNG for reproducibility. With --new, seeds "
+            "before world construction. With --load, the checkpoint "
+            "is restored first (including its RNG state), then the "
+            "seed overwrites it deliberately, producing a divergent "
+            "stochastic future from the same starting point. A "
+            "failed load applies no seed."
         ),
     )
     parser.add_argument(

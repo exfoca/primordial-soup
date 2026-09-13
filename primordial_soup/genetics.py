@@ -95,6 +95,7 @@ def crossover_and_mutate(
     offspring_count: int,
     mutation_rate: int,
     mutated_genes: int,
+    local_scale_fraction: int,
 ) -> tuple[list[np.ndarray], list[np.ndarray]]:
     """Gera duas ninhadas complementares de filhos a partir de dois
     pais.
@@ -104,6 +105,14 @@ def crossover_and_mutate(
 
     `mutation_rate` e a probabilidade (em %) de cada filho sofrer
     mutacao. `mutated_genes` so e usado no modo "surgical".
+    `local_scale_fraction` (em %) so e usado no modo "two_scales":
+    controla a fracao de genes afetados pela mutacao local. A
+    conversao % -> fracao acontece em _mutate_two_scales.
+
+    genetics.py NAO importa state: os tres parametros runtime chegam
+    por argumento explicito do caminho de chamada (ver
+    evolution._reproduce_one_pair). Isso mantem este modulo puro em
+    relacao ao estado global e testavel isoladamente.
 
     Os dois pais sao arrays 1-D de shape [GENOME_SIZE]. As ninhadas
     complementares sao construidas com broadcast e mascara:
@@ -151,15 +160,30 @@ def crossover_and_mutate(
 
     probability = mutation_rate / 100.0
     for brood in (offspring1, offspring2):
-        _mutate_batch(brood, probability, mutated_genes)
+        _mutate_batch(brood, probability, mutated_genes, local_scale_fraction)
 
     return list(offspring1), list(offspring2)
 
 
-def _mutate_batch(brood: np.ndarray, probability: float, mutated_genes: int) -> None:
+def _mutate_batch(
+    brood: np.ndarray,
+    probability: float,
+    mutated_genes: int,
+    local_scale_fraction: int,
+) -> None:
     """Mutacao vetorizada in-place. brood tem shape [N, G].
 
     Despacha para o modo configurado em cfg.MUTATION_MODE.
+
+    `local_scale_fraction` e a fracao de genes afetados pela escala
+    local, expressa em PORCENTAGEM INTEIRA (ex: 5 == 5%), vinda de
+    state.local_scale_fraction. A conversao para fracao (0, 1]
+    acontece em _mutate_two_scales; este despachante so repassa.
+
+    No modo "surgical" o parametro nao e usado: essa mutacao afeta um
+    numero fixo de genes (`mutated_genes`) com valores uniformes, e
+    nao tem nocao de "escala local". O parametro e aceito e ignorado,
+    para o chamador nao ter que ramificar por modo.
     """
     if brood.size == 0 or probability <= 0.0:
         return
@@ -167,7 +191,7 @@ def _mutate_batch(brood: np.ndarray, probability: float, mutated_genes: int) -> 
     if cfg.MUTATION_MODE == "surgical":
         _mutate_surgical(brood, probability, mutated_genes)
     elif cfg.MUTATION_MODE == "two_scales":
-        _mutate_two_scales(brood, probability)
+        _mutate_two_scales(brood, probability, local_scale_fraction)
     else:
         raise ValueError(
             f"Unknown MUTATION_MODE: {cfg.MUTATION_MODE!r}. "
@@ -205,7 +229,11 @@ def _mutate_surgical(brood: np.ndarray, probability: float, mutated_genes: int) 
 # Modo two_scales: local refina, global explora
 
 
-def _mutate_two_scales(brood: np.ndarray, probability: float) -> None:
+def _mutate_two_scales(
+    brood: np.ndarray,
+    probability: float,
+    local_scale_fraction: int,
+) -> None:
     """Mutacao em duas escalas, in-place.
 
     Para cada filho mutante:
@@ -216,6 +244,17 @@ def _mutate_two_scales(brood: np.ndarray, probability: float) -> None:
     A fracao afetada e relativa a G = GENOME_SIZE. Sorteio sem
     reposicao, entao a fracao efetiva e exatamente a configurada
     (arredondada para o numero inteiro de genes mais proximo).
+
+    `local_scale_fraction` chega em PORCENTAGEM INTEIRA (5 == 5%),
+    vinda de state.local_scale_fraction via caminho de chamada
+    explicito (genetics.py nao importa state). A conversao para
+    fracao (0, 1] acontece aqui, na fronteira da genetica, para
+    _apply_noise continuar recebendo fracao como sempre recebeu.
+
+    A escala GLOBAL continua lida de cfg (GLOBAL_SCALE_FRACTION e
+    GLOBAL_SCALE_SIGMA): o runtime nao expoe controle para elas.
+    Apenas a escala local virou parametro runtime, porque o operador
+    a ajusta com O + setas.
 
     Note: ruido gaussiano puro pode exceder o range. Aplicamos clamp
     explicito em [MIN_GENE_VALUE, MAX_GENE_VALUE] em vez de rejeitar
@@ -235,6 +274,13 @@ def _mutate_two_scales(brood: np.ndarray, probability: float) -> None:
     # local (False).
     global_mutations = np.random.rand(idx_mut.size) < cfg.GLOBAL_PROBABILITY
 
+    # Converte a fracao local de % inteira para (0, 1]. state guarda
+    # inteiro em [MIN_LOCAL_SCALE_FRACTION, MAX_LOCAL_SCALE_FRACTION]
+    # = [1, 100]; dividir por 100 da (0.01, 1.0], sempre dentro do
+    # contrato de _apply_noise. A divisao e fora do hot path de
+    # _apply_noise, entao nao ha custo por lote.
+    local_fraction = local_scale_fraction / 100.0
+
     # Processa em dois lotes: um global, um local.
     _apply_noise(
         brood,
@@ -245,7 +291,7 @@ def _mutate_two_scales(brood: np.ndarray, probability: float) -> None:
     _apply_noise(
         brood,
         idx_mut[~global_mutations],
-        cfg.LOCAL_SCALE_FRACTION,
+        local_fraction,
         cfg.LOCAL_SCALE_SIGMA,
     )
 

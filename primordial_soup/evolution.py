@@ -29,16 +29,6 @@ from .world import (
     fill_fields_incremental,
 )
 
-# HP concedido a cada pai por evento reprodutivo (nao por filho).
-# Bonus fixo a nivel de evento: o pai que reproduz com sucesso ganha
-# o mesmo bonus seja OFFSPRING_PER_PAIR 1 ou 10. 50 e 0.5% de
-# INITIAL_HP (10.000): contrapeso que faz da reproducao uma
-# estrategia de sobrevivencia ativa sem tornar pais ferteis quase
-# imortais. Vive aqui (nao em config.py) por escolha deliberada: e um
-# knob local da logica de reproducao, nao uma lei do universo.
-HP_BONUS_PER_OFFSPRING = 50
-
-
 def _neighbors(index: int):
     """Retorna (aliado, inimigo) conforme o ciclo R->B->G->R."""
     enemy = agents[(index + cfg.TOTAL_LINEAGES - 1) % cfg.TOTAL_LINEAGES]
@@ -209,7 +199,11 @@ def _capture_death_snapshot_if_needed(
 
 
 def punish_reward_and_reproduce(
-    index: int, mutation_rate: int, mutated_genes: int, reproduce: bool
+    index: int,
+    mutation_rate: int,
+    mutated_genes: int,
+    local_scale_fraction: int,
+    reproduce: bool,
 ) -> None:
     """Pune, recompensa, mata e (opcionalmente) reproduz uma linhagem.
 
@@ -219,6 +213,14 @@ def punish_reward_and_reproduce(
     mas pula o bloco de reproducao inteiro. O score composto ainda e
     calculado (alimenta o HUD e a proxima selecao de pais); so as
     tentativas de reproducao sao gated.
+
+    Os tres parametros de mutacao (`mutation_rate`, `mutated_genes`,
+    `local_scale_fraction`) vem de state e sao repassados a
+    _reproduce_one_pair. Sao passados explicitamente (nao lidos de
+    state aqui dentro) porque este modulo ja recebe mutation_rate e
+    mutated_genes por argumento; manter o padrao evita que
+    evolution.py passe a ter duas fontes de verdade para os mesmos
+    valores.
     """
     agent = agents[index]
     matrix = agent["agents"]
@@ -340,7 +342,9 @@ def punish_reward_and_reproduce(
                 > cfg.MAX_POPULATION_PER_LINEAGE - cfg.OFFSPRING_PER_PAIR
             ):
                 break
-            children = _reproduce_one_pair(agent, mutation_rate, mutated_genes)
+            children = _reproduce_one_pair(
+                agent, mutation_rate, mutated_genes, local_scale_fraction
+            )
             if not children:
                 break
             newborns.extend(children)
@@ -419,7 +423,10 @@ def _select_parents(agent: dict, count: int) -> np.ndarray:
 
 
 def _reproduce_one_pair(
-    agent: dict, mutation_rate: int, mutated_genes: int
+    agent: dict,
+    mutation_rate: int,
+    mutated_genes: int,
+    local_scale_fraction: int,
 ) -> list[np.ndarray]:
     """Sorteia 2 pais do pool reprodutivo e gera
     OFFSPRING_PER_PAIR filhos.
@@ -427,6 +434,10 @@ def _reproduce_one_pair(
     Geracao do filho: max(parent1_gen, parent2_gen) + 1. Filhos
     nascem com hidden state zerado (sem memoria herdada). Pais tem o
     contador INDEX_OFFSPRING incrementado.
+
+    Os tres parametros de mutacao vem de state e sao repassados a
+    crossover_and_mutate. A conversao % -> fracao acontece em
+    genetics._mutate_two_scales; aqui o valor e tratado como opaco.
 
     Retorna a lista de REGISTROS dos filhos (cada um ndarray
     [AGENT_COLUMNS] float32) anexados a linhagem, para o chamador
@@ -460,6 +471,7 @@ def _reproduce_one_pair(
         cfg.OFFSPRING_PER_PAIR,
         mutation_rate,
         mutated_genes,
+        local_scale_fraction,
     )
     if not batch1 or not batch2:
         return []
@@ -488,11 +500,13 @@ def _reproduce_one_pair(
     if new_records:
         # Recompensa cada pai uma vez por evento reprodutivo (nao
         # por filho): bonus fixo por ter reproduzido, independente de
-        # OFFSPRING_PER_PAIR. Aplicado in-place em `matrix`, entao cai
-        # nas linhas dos pais em agent["agents"] antes do concatenate
-        # abaixo estender a matriz com os recem-nascidos.
-        matrix[i1, INDEX_HP] += HP_BONUS_PER_OFFSPRING
-        matrix[i2, INDEX_HP] += HP_BONUS_PER_OFFSPRING
+        # OFFSPRING_PER_PAIR. Fonte unica em cfg (ver
+        # REPRODUCTION_PARENT_HP_BONUS). Aplicado in-place em
+        # `matrix`, entao cai nas linhas dos pais em agent["agents"]
+        # antes do concatenate abaixo estender a matriz com os
+        # recem-nascidos.
+        matrix[i1, INDEX_HP] += cfg.REPRODUCTION_PARENT_HP_BONUS
+        matrix[i2, INDEX_HP] += cfg.REPRODUCTION_PARENT_HP_BONUS
 
         # Anexa os filhos ao pool e a matriz da linhagem em uma
         # alocacao cada. pool e ndarray [N, GENOME_SIZE], entao e um

@@ -170,6 +170,7 @@ def step() -> None:
             i,
             state.mutation_rate,
             state.mutated_genes,
+            state.local_scale_fraction,
             reproduce=(i == reproduce_lineage),
         )
 
@@ -272,8 +273,10 @@ def run_headless(
         caso "-d sem -l", que cli.main() rejeita antes de chegar
         aqui, mas a funcao fica permissiva para chamadores
         programaticos.
-      - ticks=None significa "rodar para sempre". O CLI nunca passa
-        None (exige -d), mas chamadores programaticos podem.
+      - ticks=None e tratado como 0 (zero ticks). O CLI nunca passa
+        None (exige -d), mas chamadores programaticos podem; a
+        normalizacao torna o contrato explicito em vez de depender
+        de uma checagem implicita no loop.
       - save_slot=None pula o save. O CLI sempre resolve um slot,
         entao pelo CLI o save sempre acontece.
 
@@ -283,16 +286,39 @@ def run_headless(
     """
     from . import persistence
 
-    # --- Seed dos dois RNGs ANTES de qualquer construcao de mundo ---
+    # --- Semantica de --seed --------------------------------------
+    #
+    # A ordem depende do modo:
+    #
+    #   --new --seed N
+    #       seed ANTES do bootstrap. Os sorteios do bootstrap
+    #       (zonas, genomas, posicoes) usam a seed pedida. E o modo
+    #       "run reproduzivel do zero".
+    #
+    #   --load SLOT (sem --seed)
+    #       RNG restaurado do checkpoint. Continuacao exata.
+    #
+    #   --load SLOT --seed N
+    #       load completo (incluindo RNG salvo), DEPOIS seed N
+    #       sobrescreve deliberadamente. E o modo "branching
+    #       estocastico": mesmo ponto de partida, futuro alternativo.
+    #
+    #   --load SLOT --seed N com load falho
+    #       NENHUM seed e aplicado. O processo aborta com o RNG
+    #       global intacto, preservando o invariante de que um
+    #       caminho de erro nao consome aleatoriedade.
+    #
     # A simulacao sorteia de duas fontes independentes: `random` da
     # stdlib (world.generate_zones) e o RNG global legado do NumPy
     # (genetics.random_population, genetics._apply_noise,
     # evolution._reproduce_one_pair). Seed em so uma tornaria um
     # sweep com --seed nao-reproduzivel de forma dificil de notar
     # (zonas mudariam, genomas nao, ou vice-versa).
-    if seed is not None:
+    seed_applied_before_bootstrap = False
+    if fresh and seed is not None:
         random.seed(seed)
         np.random.seed(seed)
+        seed_applied_before_bootstrap = True
 
     # --- 1. Estado inicial do mundo ---
     if fresh:
@@ -313,11 +339,23 @@ def run_headless(
                 file=sys.stderr,
             )
             return 1
+
+        # Load bem-sucedido: se --seed foi passado, sobrescreve
+        # deliberadamente os RNGs restaurados do checkpoint. Sem
+        # --seed, os RNGs ficam exatamente como o load restaurou
+        # (continuacao exata).
+        if seed is not None:
+            random.seed(seed)
+            np.random.seed(seed)
     else:
         bootstrap_new_world()
 
     # --- 2. Roda o numero de ticks pedido ---
-    if ticks is not None and ticks > 0:
+    #
+    # Contrato: None -> 0 ticks. A normalizacao e explicita para o
+    # leitor nao precisar inferir de uma checagem negativa no loop.
+    ticks_to_run = 0 if ticks is None else ticks
+    if ticks_to_run > 0:
         if quiet:
             # step() imprime a cada PRINT_EVERY_N_TICKS via
             # `tick_count - last_print >= PRINT_EVERY_N_TICKS`.
@@ -325,8 +363,8 @@ def run_headless(
             # logs periodicos sem adicionar um flag `quiet` em
             # state.py (que seria estado so para o headless). O
             # resumo final do save ainda imprime.
-            state.last_print = state.tick_count + ticks + 1
-        for _ in range(ticks):
+            state.last_print = state.tick_count + ticks_to_run + 1
+        for _ in range(ticks_to_run):
             step()
 
     # --- 3. Save ---

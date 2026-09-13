@@ -528,7 +528,7 @@ This makes seeds essential for controlled comparisons.
 
 ---
 
-# Seed does not rewrite a loaded world
+# Seed with a loaded world
 
 Consider:
 
@@ -542,21 +542,29 @@ The loaded population, genomes, positions and saved simulation state come from:
 world_a
 ```
 
-The seed does not regenerate them.
+The save also carries the states of both random-number generators
+(`random` and `np.random`). Load restores them, so a load without
+`--seed` continues the exact stochastic sequence the original run
+would have produced.
 
-Instead, it controls random draws made during subsequent execution.
-
-Conceptually:
+When `--seed` is supplied alongside `--load`, the order is:
 
 ```text
-saved world
+load world_a
     ↓
-load
+restore RNG states from the checkpoint
     ↓
-continue using seeded RNG sequence
+overwrite them with --seed 42   (deliberate branching)
+    ↓
+continue
 ```
 
-This allows a saved checkpoint to serve as a common starting state for alternate stochastic continuations.
+This is the *stochastic branching* mode: the same starting world, a
+deliberately different future. It is the recommended way to compare
+alternate continuations from a common checkpoint.
+
+If the load fails, no seed is applied and the process aborts. A
+failed load never consumes randomness.
 
 ---
 
@@ -665,7 +673,7 @@ to print the current world version and exit.
 For the current release:
 
 ```text
-primordial_soup 0.3.0
+primordial_soup 0.4.0
 ```
 
 This is useful when recording experiment provenance.

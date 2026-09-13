@@ -1,0 +1,30 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 exfoca
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "primordial_soup"
+version = "0.3.0"
+requires-python = ">=3.12"
+license = "MIT"
+dependencies = ["numpy", "pygame", "Pillow"]
+
+[project.optional-dependencies]
+# Recording to animated GIF is an OPTIONAL feature: the codebase
+# imports Pillow lazily (see recording.py and rendering.draw), so a
+# user who never presses G does not need Pillow installed. Installing
+# with `pip install .[recording]` pulls it in.
+recording = ["Pillow"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["primordial_soup*"]
+
+[tool.setuptools.package-data]
+# O icone da janela e carregado por rendering.init() via
+# os.path.dirname(__file__). Sem esta declaracao, `pip install .`
+# nao empacota o PNG e o jogo roda sem icone (com aviso no console).
+primordial_soup = ["icon.png"]

@@ -1303,56 +1303,6 @@ Two-scale mutation is the current default because it provides separate mechanism
 
 ---
 
-# ⚠️ Current runtime local-scale caveat
-
-The interface currently exposes a runtime:
-
-```text id="cr15oq"
-local scale %
-```
-
-selected with:
-
-```text id="dxg9pe"
-O
-```
-
-and stores that value in simulation state.
-
-However, the active `two_scales` mutation implementation currently reads:
-
-```text id="44mmij"
-LOCAL_SCALE_FRACTION
-```
-
-directly from configuration.
-
-It does **not** consume the runtime `local_scale_fraction` state.
-
-Therefore, in the current code:
-
-```text id="oj820k"
-O + ↑/↓
-```
-
-changes the displayed and persisted runtime value, but does **not yet change the actual local mutation breadth**.
-
-The effective local fraction remains the configured:
-
-```text id="sbg7xh"
-5%
-```
-
-until the runtime value is wired into the mutation path.
-
-This is an implementation discrepancy, not intended evolutionary semantics.
-
-It should either be corrected in code or the runtime control removed.
-
-Documentation should not pretend a disconnected knob controls the universe.
-
----
-
 # Newborn state
 
 A successfully created child begins with:

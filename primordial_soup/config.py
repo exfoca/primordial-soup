@@ -5,7 +5,7 @@ from typing import Final
 
 # 0. IDENTIDADE
 WORLD_NAME: Final = "Primordial Soup"
-WORLD_VERSION: Final = "0.4.0"
+WORLD_VERSION: Final = "0.5.0"
 RANDOM_SEED: Final = None
 
 
@@ -15,7 +15,7 @@ RANDOM_SEED: Final = None
 SCREEN_WIDTH: Final = 1920
 SCREEN_HEIGHT: Final = 1080
 
-TARGET_PIXEL_SCALE: Final = 2
+TARGET_PIXEL_SCALE: Final = 4
 
 MIN_WORLD_WIDTH: Final = 400
 MIN_WORLD_HEIGHT: Final = 300
@@ -90,8 +90,8 @@ DIE_WHEN_HP_LESS_OR_EQUAL: Final = 0
 # 6b. MODIFICADORES AMBIENTAIS — heterogeneidade geografica
 # Valores fazem parte do contrato de savegame.
 ENVIRONMENTAL_MODIFIERS: Final = "zonas"
-NUMBER_OF_ZONES: Final = 6
-ZONE_RADIUS: Final = 30
+NUMBER_OF_ZONES: Final = 8
+ZONE_RADIUS: Final = 27
 HP_EFFECT_IN_ZONE: Final = 5
 
 
@@ -217,6 +217,17 @@ HUD_BG_COLOR: Final = (8, 10, 14)
 HUD_BORDER_COLOR: Final = (60, 70, 85)
 HUD_TEXT_COLOR: Final = (220, 230, 240)
 HUD_TEXT_SECONDARY_COLOR: Final = (140, 155, 175)
+HUD_TITLE_COLOR: Final = (255, 215, 0)
+
+# Telemetry HUD (floating, canto superior esquerdo do mundo).
+HUD_MARGIN: Final = 8
+HUD_PADDING: Final = 10
+HUD_TELEMETRY_WIDTH: Final = 400
+HUD_OVERLAY_ALPHA: Final = 0
+
+HUD_SECTION_GAP: Final = 8
+HUD_DIVIDER_COLOR: Final = (40, 48, 60)
+HUD_KEY_BG_COLOR: Final = (18, 21, 27)
 
 # Gráficos.
 CHART_WIDTH: Final = 340
@@ -235,9 +246,6 @@ HORIZONTAL_GRID_LINES: Final = 4
 VERTICAL_GRID_LINES: Final = 5
 
 CHART_LINE_THICKNESS: Final = 2
-
-# Modo de inspecao.
-INSPECTION_MODE: Final = False
 
 # Rastro do bicho inspecionado (nao persistido, nao resetado por
 # reset_counters). TRAIL_MAX_LENGTH limita o deque.

@@ -1,20 +1,19 @@
 # 🔍 Inspection
 
-Populations are useful for statistics.
+Populations are useful for statistics. Individuals are useful for
+understanding what the statistics are hiding.
 
-Individuals are useful for understanding what the statistics are hiding.
+The inspection system lets you follow one critter through the
+simulation, examine its state and neural genome, watch where it goes,
+and preserve its final state if it dies.
 
-The inspection system lets you follow one critter through the simulation, examine its state and neural genome, watch where it goes, and preserve its final state if it dies.
-
-The central idea is simple:
+Two central ideas:
 
 ```text
 DISCOVERY
-asks:
 "Who looks interesting?"
 
 OBSERVATION
-asks:
 "Who am I actually watching?"
 ```
 
@@ -24,7 +23,7 @@ Changing your search does not move your microscope.
 
 ---
 
-# Opening inspection
+# Focusing Inspection
 
 Press:
 
@@ -32,99 +31,51 @@ Press:
 I
 ```
 
-to enable inspection mode.
+to focus the Inspection panel.
 
-The inspection panel appears on the right side of the window.
+The lateral panel is always drawn on the right side of the window: its
+horizontal strip is structurally reserved by the layout, so it never
+covers part of the simulated habitat.
 
-That space is permanently reserved by the world layout, so the panel never covers part of the simulated habitat.
+Focusing Inspection does **not** automatically observe any critter, and
+does **not** replace an existing observation.
 
-When inspection opens, Primordial Soup starts a new observation session:
+Observation is always an explicit action. Triggered by:
 
-```text
-open inspection
-      ↓
-clear previous observation session
-      ↓
-find current discovery candidate
-      ↓
-observe that candidate
-      ↓
-start a fresh trail
-```
+* selecting **Observe candidate** in the Inspection panel and pressing
+  **Enter**;
+* clicking a critter directly in the world.
 
-The candidate is determined by the currently selected:
+Leaving Inspection — with **ESC**, with **Tab**, or by focusing another
+panel — does **not** end the active observation either. The stable
+critter ID remains selected, and the trail keeps being updated while
+the observed critter is alive.
 
-* discovery criterion;
-* lineage filter.
+Only the visual overlay specific to Inspection — candidate marker,
+observed/death marker and trail — is drawn when Inspection is the
+focused panel.
 
-On a normal fresh run, this means inspection begins with the default discovery lens.
-
-Press **I** again to close inspection.
-
-Closing the panel also ends the observation session and clears its trail.
-
----
-
-# The two halves of inspection
-
-The panel is conceptually divided into:
+To end an observation explicitly:
 
 ```text
-┌────────────────────────────┐
-│         INSPECTION         │
-│                            │
-│ DISCOVERY                  │
-│ Who would I observe next?  │
-│                            │
-│ OBSERVING                  │
-│ Who am I following now?    │
-└────────────────────────────┘
+Inspection
+↓
+Clear observation
+↓
+Enter
 ```
-
-The distinction is more important than it may initially appear.
-
-Suppose you are observing:
-
-```text
-R #1847
-```
-
-Then you change discovery to:
-
-```text
-criterion = oldest
-lineage   = G
-```
-
-Primordial Soup may find:
-
-```text
-candidate = G #903
-```
-
-But your observed critter remains:
-
-```text
-R #1847
-```
-
-until you explicitly choose otherwise.
-
-That lets you search the population without losing the individual you were already studying.
 
 ---
 
 # 🔭 Discovery
 
-Discovery continuously answers:
+Discovery answers:
 
-> Given this criterion and lineage filter, which living critter is the current candidate?
+> Given this criterion and lineage filter, which living critter is the
+> current candidate?
 
-It is a **view of the current population**.
-
-It does not create persistent simulation state.
-
-The model is:
+It is a query over the current population. It does not create persistent
+simulation state.
 
 ```text
 current population
@@ -136,29 +87,13 @@ lineage filter
 discovery candidate
 ```
 
-There is exactly **one** discovery candidate at a time.
+There is exactly **one** discovery candidate at a time. Or none.
 
-Or none.
+## Criterion — ENUM
 
----
+Select **Criterion** with **↑ / ↓**, change with **← / →**.
 
-# ← / → — choose a criterion
-
-While inspection mode is active:
-
-```text
-←
-```
-
-moves to the previous discovery criterion.
-
-```text
-→
-```
-
-moves to the next.
-
-The current set contains ten criteria.
+Current criteria:
 
 | Criterion              | Candidate                  |
 | ---------------------- | -------------------------- |
@@ -173,103 +108,89 @@ The current set contains ten criteria.
 | **highest generation** | Deepest generation         |
 | **best score**         | Highest composite score    |
 
-The panel displays the current position in the criterion cycle, for example:
+Changing the criterion recalculates the candidate. It does **not**
+change the observed individual.
 
-```text
-[4/10] most offspring
-```
+## Lineage filter — ENUM
 
-Changing the criterion recalculates the candidate.
+Select **Lineage filter** with **↑ / ↓**, change with **← / →**.
 
-It does **not** change the observed individual.
+Values cycle through `all, R, G, B`.
 
----
+With `criterion = oldest` and `filter = B`, the candidate is the oldest
+living blue critter.
 
-# Tab — filter by lineage
+If the selected lineage is extinct, there may be **no candidate**. Your
+current observation remains untouched.
 
-Press:
+## Candidate — read-only
 
-```text
-Tab
-```
+The **Candidate** item displays the current candidate. It is read-only:
+it does not participate in the navigation cycle for **Enter**, and it
+does not change anything.
 
-to cycle the discovery filter:
+## 🟡 The yellow marker
 
-```text
-all
- ↓
-R
- ↓
-G
- ↓
-B
- ↓
-all
-```
-
-With:
-
-```text
-criterion = oldest
-filter    = all
-```
-
-the candidate is the oldest critter across the entire population.
-
-With:
-
-```text
-criterion = oldest
-filter    = B
-```
-
-the candidate is the oldest living blue critter.
-
-If the selected lineage has gone extinct, there may be:
-
-```text
-no candidate
-```
-
-Your current observation remains untouched.
-
-Extinction does not automatically redirect the microscope toward the survivors.
-
----
-
-# 🟡 The yellow marker
-
-The discovery candidate is marked in the world with a **yellow Moore-neighborhood outline**.
-
-Conceptually:
-
-```text
-· · ·
-· X ·
-· · ·
-```
-
-The eight surrounding cells form the outline around the candidate.
+The discovery candidate is marked in the world with a **yellow
+Moore-neighborhood outline**.
 
 There is exactly one yellow candidate marker.
-
-This gives the interface an important invariant:
 
 ```text
 yellow marker
 =
 candidate shown in the panel
 =
-critter Enter will observe
+critter Observe candidate + Enter will observe
 ```
 
-What you see is what **Enter** selects.
+## 👁️ Observe candidate — action
 
-No hidden second definition of “best.”
+Select **Observe candidate** and press **Enter** to replace the current
+observation with the discovery candidate.
 
-No three different champions competing for UI semantics.
+```text
+DISCOVERY
 
-Evolution is complicated enough already.
+criterion: most offspring
+lineage:   G
+candidate: G #903
+
+          │ Observe candidate + Enter
+          ▼
+
+OBSERVING
+
+G #903
+```
+
+This is an explicit transition.
+
+If discovery has no candidate, the action does nothing to the current
+observation.
+
+## 🖱️ Click — observe directly
+
+Left-click near an individual.
+
+If the click hits a critter:
+
+```text
+clicked critter
+      ↓
+becomes observed
+Inspection panel is focused
+```
+
+The lookup includes a small spatial tolerance because each critter
+occupies very little screen space. The current tolerance is four world
+cells.
+
+Clicks are accepted regardless of pause state and regardless of which
+panel is focused.
+
+If the click misses every critter, it is a no-op: the existing
+observation remains unchanged.
 
 ---
 
@@ -285,27 +206,12 @@ For example:
 R #1847
 ```
 
-does not mean:
+does not mean "the critter currently at position 1847 in an array". It
+means the individual whose permanent identity is 1847.
 
-```text
-the critter currently at position 1847 in an array
-```
+## Why stable identity matters
 
-It means:
-
-```text
-the individual whose permanent identity is 1847
-```
-
-This distinction matters because population arrays change as critters die and newborns are added.
-
-The internal position of an individual may change.
-
-Its identity does not.
-
----
-
-# Why stable identity matters
+Population arrays change as critters die and newborns are added.
 
 Imagine a population array:
 
@@ -316,9 +222,7 @@ index 2 → #42
 index 3 → #43
 ```
 
-Then critter `#41` dies.
-
-After compaction:
+Then critter `#41` dies. After compaction:
 
 ```text
 index 0 → #40
@@ -326,137 +230,21 @@ index 1 → #42
 index 2 → #43
 ```
 
-If inspection stored:
+If inspection stored `index = 2`, you would suddenly be observing
+`#43`. Instead Primordial Soup stores `critter_id = 42` and resolves
+its current position when needed.
 
-```text
-index = 2
-```
+Arrays may move. Identity stays put.
 
-you would suddenly be observing `#43`.
-
-The microscope would have switched organisms without telling you.
-
-Instead Primordial Soup stores:
-
-```text
-critter_id = 42
-```
-
-and resolves its current position when needed.
-
-Arrays may move.
-
-Identity stays put.
-
----
-
-# Enter — observe the discovery candidate
-
-Press:
-
-```text
-Enter
-```
-
-to replace the current observation with the discovery candidate.
-
-For example:
-
-```text
-DISCOVERY
-
-criterion: most offspring
-lineage:   G
-candidate: G #903
-
-          │
-          │ ENTER
-          ▼
-
-OBSERVING
-
-G #903
-```
-
-This is an explicit transition.
-
-If discovery has no candidate, **Enter** does nothing to the current observation.
-
----
-
-# 🖱️ Click — observe directly
-
-You can bypass discovery and choose a critter spatially.
-
-Left-click near an individual.
-
-If the click hits a critter:
-
-```text
-clicked critter
-      ↓
-becomes observed
-```
-
-The lookup includes a small spatial tolerance because each critter occupies very little screen space.
-
-The current tolerance is four world cells.
-
-Nobody should need competitive-FPS mouse accuracy to conduct artificial-life research.
-
----
-
-## Clicking with inspection closed
-
-If the simulation is paused, a click can open inspection automatically.
-
-The sequence is:
-
-```text
-click
-  ↓
-open inspection session
-  ↓
-establish normal initial candidate
-  ↓
-try to select clicked critter
-```
-
-If the click successfully finds a critter, that individual becomes observed.
-
-If the click misses, the automatically established observation remains.
-
-An empty click does not mean:
-
-```text
-please forget everything
-```
-
----
-
-## Clicking while running
-
-When inspection mode is already active, you may click critters while the simulation is running.
-
-This works.
-
-It is also a good way to discover that moving one-cell organisms are harder to click than expected.
-
-Pause with **SPACE** when precision matters.
-
----
-
-# 🔷 The cyan marker
+## 🔷 The cyan marker
 
 The observed critter is marked in **cyan**.
 
-For a living observed critter:
+Living observed critter:
 
 ```text
 cyan Moore outline
 ```
-
-surrounds its current position.
 
 So:
 
@@ -465,35 +253,13 @@ yellow = discovery candidate
 cyan   = observed critter
 ```
 
-If both refer to the same individual, the cyan marker is rendered on top.
+If both refer to the same individual, cyan is rendered on top. You see
+only cyan. That means "the critter I am observing is also the current
+discovery candidate". Not "yellow mysteriously disappeared".
 
-You then see only cyan.
-
-That means:
-
-> The critter I am observing is also the current discovery candidate.
-
-Not:
-
-> Yellow mysteriously disappeared.
-
----
-
-# ☠️ What happens when the observed critter dies?
+## ☠️ What happens when the observed critter dies
 
 Nothing is automatically selected in its place.
-
-This is deliberate.
-
-Older inspection behavior could silently replace a dead observed individual with another candidate.
-
-That makes continuous observation misleading.
-
-You think you followed one life.
-
-In reality the interface quietly handed you somebody else's biography.
-
-The current rule is:
 
 ```text
 observed critter dies
@@ -505,15 +271,13 @@ freeze observation
 do NOT auto-select replacement
 ```
 
-Death ends the individual's simulation.
+Death ends the individual's simulation. It does not end your inspection
+session.
 
-It does not end your inspection session.
+## The death snapshot
 
----
-
-# The death snapshot
-
-Immediately before the observed individual is removed from the living population, Primordial Soup captures a snapshot containing:
+Immediately before the observed individual is removed from the living
+population, Primordial Soup captures:
 
 * stable critter ID;
 * lineage;
@@ -521,24 +285,8 @@ Immediately before the observed individual is removed from the living population
 * final agent state;
 * final genome.
 
-The agent state includes values such as:
-
-* HP;
-* position;
-* age;
-* generation;
-* last action;
-* neural recurrent state;
-* exploration;
-* encounters;
-* offspring;
-* composite score.
-
-The genome is copied as well.
-
-These are actual copies.
-
-They are not references to array rows that may later be reused or compacted.
+These are actual copies. They are not references to array rows that may
+later be reused or compacted.
 
 So after death:
 
@@ -550,9 +298,7 @@ snapshot remains intact
 
 The autopsy survives the cleanup crew.
 
----
-
-# ✚ The cyan death marker
+## ✚ The cyan death marker
 
 A dead observed critter is shown differently from a living one.
 
@@ -570,83 +316,40 @@ cyan cross
 
 centered on its last known position.
 
-Conceptually:
-
-```text
-  +
-+ X +
-  +
-```
-
 The shape, rather than the color, communicates the state.
 
-This works even across the toroidal boundary.
+This works across the toroidal boundary. A critter dying at the world's
+edge does not receive half a gravestone.
 
-A critter dying at the world's edge does not receive half a gravestone.
+## Status in the panel
 
----
+The observation section shows whether the individual is `alive` or
+`dead at tick N`.
 
-# Status in the panel
+For a living critter, panel values are read from its current state. For
+a dead critter, the preserved body state and genome come from the death
+snapshot.
 
-The observation section shows whether the individual is:
+## ⚠️ Vision after death
 
-```text
-alive
-```
+The death snapshot preserves the critter and its genome, but it does
+not capture an entire historical copy of the surrounding world.
 
-or:
+For a dead observed individual, the vision panel is reconstructed
+around its **last known position using the current world state**. It
+should not be interpreted as "exactly what the critter saw at the
+instant of death".
 
-```text
-dead at tick N
-```
+Capturing historical world perception would require a different
+snapshot contract.
 
-For a living critter, panel values are read from its current state.
+## 🧵 The trail
 
-For a dead critter, the preserved body state and genome come from the death snapshot.
+While a living critter is being observed, Primordial Soup records its
+position after each tick.
 
-That means values such as final:
-
-* HP;
-* age;
-* generation;
-* offspring;
-* encounters;
-* score;
-* last action;
-* position;
-* genome weights;
-
-remain available after death.
-
----
-
-# ⚠️ Vision after death
-
-There is one subtle distinction.
-
-The death snapshot preserves the **critter and its genome**, but it does not capture an entire historical copy of the surrounding world.
-
-Therefore, for a dead observed individual, the vision panel is reconstructed around its **last known position using the current world state**.
-
-It should not be interpreted as:
-
-> exactly what the critter saw at the instant of death.
-
-Its final body and genome are frozen.
-
-The entire universe is not.
-
-Capturing historical world perception would require a different snapshot contract.
-
----
-
-# 🧵 The trail
-
-While a living critter is being observed, Primordial Soup records its position after each tick.
-
-The result is a trail showing where that individual has traveled since the observation began.
-
-Conceptually:
+The trail shows where that individual has traveled since the observation
+began.
 
 ```text
 oldest                                   newest
@@ -655,89 +358,16 @@ oldest                                   newest
 dark                 →                 bright
 ```
 
-The trail uses grayscale.
+Grayscale. Older positions are darker, newer positions are brighter.
 
-Older positions are darker.
+The trail is not a continuous geometric line. In the toroidal world,
+two adjacent cells can appear on opposite sides of the screen. The
+trail records points, not a connected line.
 
-Newer positions are brighter.
+## When does the trail reset
 
-This gives a rough visual indication of direction without introducing another lineage-like color into the world.
-
----
-
-# Why grayscale?
-
-The simulation already assigns semantic meaning to:
-
-```text
-red
-green
-blue
-```
-
-for lineages.
-
-It also uses:
-
-```text
-amber
-```
-
-for environmental zones,
-
-```text
-yellow
-```
-
-for discovery,
-
-and:
-
-```text
-cyan
-```
-
-for observation.
-
-Making the trail purple, orange or radioactive pink would eventually turn the simulation into an evolutionary Christmas tree.
-
-Neutral grayscale keeps it visually subordinate.
-
----
-
-# The trail is not a continuous geometric line
-
-The trail is a sequence of visited positions.
-
-This matters because the world is toroidal.
-
-Suppose a critter moves:
-
-```text
-x = world_width - 1
-```
-
-to:
-
-```text
-x = 0
-```
-
-Those cells are adjacent in the simulation.
-
-They appear on opposite sides of the screen.
-
-The trail therefore does not attempt to draw a giant line across the display.
-
-It records points.
-
-The torus remains mathematically continuous even when your monitor disagrees.
-
----
-
-# When does the trail reset?
-
-The trail belongs to the **observation session**, not permanently to the critter.
+The trail belongs to the **observation session**, not permanently to
+the critter.
 
 It is cleared when observation changes:
 
@@ -752,108 +382,44 @@ fresh trail
 trail cleared
 ```
 
-Selecting the same ID again does not normally discard its trail.
+Selecting the same ID again does not discard its trail.
 
-Changing only:
+Changing only **Criterion** or **Lineage filter** also does not reset
+the trail — discovery did not change who you are observing.
 
-* discovery criterion;
-* discovery lineage filter;
+## Trail across panels
 
-also does not reset the trail.
+The trail is preserved across panel focus changes. If you focus another
+panel and return to Inspection later, the trail is still there.
 
-Because discovery did not change who you are observing.
+Only the drawing is gated by the focused panel. The trail keeps being
+appended while the observed critter is alive.
 
----
+## Trail after death
 
-# Closing and reopening inspection
+Once the observed individual dies, its stable ID no longer resolves to
+a living population entry. No new trail points are added.
 
-Pressing **I** to close inspection:
-
-```text
-ends observation
-clears selection
-clears trail
-```
-
-Opening inspection again starts a fresh analysis session.
-
-Even if the same critter happens to become selected again:
-
-```text
-old trail is not resurrected
-```
-
-This prevents visual history from one inspection session leaking into another.
+The trail remains frozen at the path accumulated before death, paired
+with the cyan death marker at its final position.
 
 ---
 
-# Trail after death
+# 🧠 Vision panel and brain heatmaps
 
-Once the observed individual dies, its stable ID no longer resolves to a living population entry.
+The inspection panel includes an **11 × 11** view centered on the
+observed critter's position. This mirrors the local spatial information
+used by the neural controller.
 
-No new trail points are added.
+The world contains three lineage density channels. The panel converts
+them into an RGB representation so you can inspect the local ecological
+context.
 
-The trail therefore remains frozen at the path accumulated before death.
+This shows inputs. It does not tell you which features the neural
+network considered important.
 
-This pairs naturally with the death marker:
-
-```text
-trail
-   ↓
-final position
-   ↓
-cyan cross
-```
-
-A small archaeological record of questionable neural decisions.
-
----
-
-# 👁️ Vision panel
-
-The inspection panel includes an:
-
-```text
-11 × 11
-```
-
-view centered on the observed critter's position.
-
-This mirrors the local spatial information used by the neural controller.
-
-The world contains three lineage density channels.
-
-The panel converts them into an RGB representation so you can inspect the local ecological context around the critter.
-
-This is useful for questions such as:
-
-* Was an enemy nearby?
-* Was the critter surrounded by allies?
-* Was the area crowded?
-* Was the behavior understandable from the local scene?
-* Did two apparently similar decisions occur under different sensory conditions?
-
-Remember, however:
-
-```text
-vision
-≠
-interpretation
-```
-
-The panel shows inputs.
-
-It does not tell you which features the neural network considered important.
-
-For that, things become considerably more neural-network-shaped.
-
----
-
-# 🧠 Brain heatmaps
-
-Below the individual state and vision window, the panel displays heatmaps representing parts of the observed critter's genome.
-
-The current neural architecture contains:
+Below it, the panel displays heatmaps representing parts of the
+observed critter's genome.
 
 | Heatmap | Meaning                            |
 | ------- | ---------------------------------- |
@@ -864,123 +430,23 @@ The current neural architecture contains:
 | **b2**  | Second hidden-layer biases         |
 | **R**   | Recurrent weights                  |
 
-These visualizations provide a compact fingerprint of the individual's inherited neural controller.
+These are useful for comparing individuals, comparing generations,
+spotting very different genomic structures, and inspecting a dead
+individual's final inherited controller.
 
-They are most useful for:
-
-* comparing individuals;
-* comparing generations;
-* spotting very different genomic structures;
-* inspecting a dead individual's final inherited controller.
-
-They are not a direct explanation of behavior.
-
-A colored stripe saying:
-
-```text
-large positive weight here
-```
-
-does not automatically translate to:
-
-```text
-this gene means "run from blue"
-```
-
-Neural networks rarely provide subtitles.
-
----
-
-# What the observation panel reports
-
-For the observed critter, the panel currently exposes:
-
-```text
-ID
-lineage
-status
-HP
-age / time
-generation
-offspring
-encounters
-composite score
-last action
-position
-vision
-brain heatmaps
-```
-
-This combines three levels of information.
-
----
-
-## Identity
-
-```text
-ID
-lineage
-status
-```
-
-Answers:
-
-> Who is this?
-
----
-
-## Life history
-
-```text
-HP
-age
-generation
-offspring
-encounters
-score
-position
-last action
-```
-
-Answers:
-
-> What has happened to it?
-
----
-
-## Controller
-
-```text
-vision
-genome heatmaps
-```
-
-Answers:
-
-> What information is around it, and what neural machinery is making decisions?
-
-Together these let you move from:
-
-> “That red dot is doing something weird.”
-
-to:
-
-> “Critter #1847, generation 12, low HP, high encounter count, currently surrounded by blue density, just chose action 7.”
-
-Progress.
+A colored stripe is not an explanation. Neural networks rarely provide
+subtitles.
 
 ---
 
 # 🧪 A useful inspection workflow
 
-A good way to study behavior is:
-
 ```text
 1. pause
-2. open inspection
-3. choose a discovery criterion
-4. choose a lineage
-5. press Enter
+2. focus Inspection (I)
+3. select a discovery criterion
+4. select a lineage filter
+5. select Observe candidate, press Enter
 6. examine the critter
 7. resume slowly
 8. watch the trail
@@ -995,16 +461,10 @@ criterion = highest generation
 lineage   = R
 ```
 
-Then observe that candidate and ask:
-
-* Does it survive unusually well?
-* Does it cluster near allies?
-* Does it move frequently?
-* Does it avoid certain regions?
-* How old is it?
-* How many encounters has it accumulated?
-* Has it reproduced?
-* What happens immediately before it loses HP?
+Ask: Does it survive unusually well? Does it cluster near allies? Does
+it move frequently? Does it avoid certain regions? How old is it? How
+many encounters? Has it reproduced? What happens immediately before it
+loses HP?
 
 Inspection turns population statistics into individual case studies.
 
@@ -1012,106 +472,35 @@ Inspection turns population statistics into individual case studies.
 
 # 🔬 Discovery as a scientific lens
 
-The criteria are not just convenient navigation.
-
-They let you ask different questions about the same population.
-
-For example:
+Each criterion asks a different question about the same population.
 
 ```text
-oldest
+oldest              → who has survived longest?
+highest generation  → who sits deepest in the genealogy?
+most encounters     → who has experienced the most contact?
+most explored       → who accumulated the most movement?
+lowest HP           → who is closest to ecological trouble?
 ```
 
-asks:
-
-> Who has survived the longest?
-
-```text
-highest generation
-```
-
-asks:
-
-> Which living individual sits deepest in the genealogy?
-
-```text
-most encounters
-```
-
-asks:
-
-> Who has experienced the most inter-lineage contact?
-
-```text
-most explored
-```
-
-asks:
-
-> Who accumulated the most movement-based exploration?
-
-```text
-lowest HP
-```
-
-asks:
-
-> Who is currently closest to ecological trouble?
-
-Each criterion creates a different lens.
-
-No single lens defines “the best critter.”
-
----
-
-# Most evolved vs best score
-
-The current criterion list contains both:
-
-```text
-most evolved
-```
-
-and:
-
-```text
-best score
-```
-
-Both currently resolve through composite score.
-
-This redundancy is part of the current interface contract.
-
-They should not be interpreted as two independent fitness definitions.
-
-If that semantic distinction changes in a future version, the documentation should change with it.
+No single lens defines "the best critter".
 
 ---
 
 # Observation does not affect evolution
 
-Inspection is designed as a **view** over the simulation.
+Inspection is a **view** over the simulation.
 
-Changing:
-
-* criterion;
-* lineage filter;
-* observed critter;
-* panel state;
-
-does not alter the critter's neural network, HP, reproduction eligibility or ecological interactions.
+Changing criterion, filter, observed critter or panel state does not
+alter the critter's neural network, HP, reproduction eligibility or
+ecological interactions.
 
 The trail itself is also visualization state.
 
 The organisms do not know they are being watched.
 
-This is probably for the best.
-
 ---
 
 # No automatic replacement
-
-One design rule deserves repeating:
 
 ```text
 THE OBSERVED CRITTER IS NEVER
@@ -1130,19 +519,10 @@ automatically observe #237
 
 creates a false continuity.
 
-The panel still looks populated.
+For exploratory visualization that might seem convenient. For analysis
+it is misleading.
 
-The trail may continue.
-
-Statistics keep changing.
-
-But the object of study changed.
-
-For exploratory visualization that might seem convenient.
-
-For analysis it is misleading.
-
-Primordial Soup therefore prefers:
+Primordial Soup prefers:
 
 ```text
 #100 dies
@@ -1152,22 +532,21 @@ freeze #100
 you decide what to observe next
 ```
 
-Explicit transitions are easier to reason about.
-
-And considerably easier to debug.
+The same rule applies when focusing Inspection: focusing the panel does
+not change the observed critter.
 
 ---
 
 # The inspection state machine
 
-The system can be summarized as:
-
 ```text
-                I / first valid session
+                I / focus Inspection
                          │
                          ▼
                ┌─────────────────┐
-               │ INSPECTION OPEN │
+               │ DISCOVERY QUERY │
+               │ (criterion +    │
+               │  lineage filter)│
                └────────┬────────┘
                         │
                         ▼
@@ -1175,7 +554,8 @@ The system can be summarized as:
                         │
                         ├───────────────┐
                         │               │
-                      Enter           click
+                 Observe candidate    click
+                     + Enter            │
                         │               │
                         ▼               ▼
                  ┌─────────────────────────┐
@@ -1193,7 +573,8 @@ The system can be summarized as:
                  │ DEATH SNAPSHOT FROZEN   │
                  └────────────┬────────────┘
                               │
-                     Enter / valid click
+                     Observe candidate + Enter,
+                     or click
                               │
                               ▼
                     observe another ID
@@ -1202,16 +583,20 @@ The system can be summarized as:
 At any point:
 
 ```text
-I
+Inspection
+↓
+Clear observation
+↓
+Enter
 ```
 
-can close the session.
+ends the observation.
+
+Changing the focused panel does not.
 
 ---
 
 # Visual language
-
-A quick summary:
 
 | Visual                           | Meaning                                |
 | -------------------------------- | -------------------------------------- |
@@ -1222,103 +607,72 @@ A quick summary:
 | **R / G / B colors**             | Lineage presence                       |
 | **Brain heatmaps**               | Neural genome components               |
 
-The important relationship is:
+The important relationship:
 
 ```text
 YELLOW
-"What would Enter choose?"
+"What would Observe candidate choose?"
 
 CYAN
 "What am I watching?"
 ```
 
-Once that distinction is understood, the inspection interface becomes much easier to read.
+All of these overlays are drawn only when the Inspection panel is the
+focused panel. The underlying observation state is preserved when
+another panel is focused.
 
 ---
 
 # Common misunderstandings
 
-## “I pressed → and my observed critter didn't change.”
+**"I pressed → and my observed critter didn't change."**
 
-Correct.
+Correct. You changed discovery. Select **Observe candidate** and press
+**Enter** to observe the new candidate.
 
-You changed discovery.
+**"The yellow and cyan markers are on different critters."**
 
-Press **Enter** if you want to observe the new candidate.
+Correct. You are observing one individual while discovery recommends
+another.
 
----
+**"I only see cyan, but there should also be a yellow candidate."**
 
-## “The yellow and cyan markers are on different critters.”
+If the observed individual **is** the discovery candidate, cyan is drawn
+over yellow. One critter, two roles, one visible marker.
 
-Also correct.
+**"The observed critter died but the panel still shows it."**
 
-You are observing one individual while discovery currently recommends another.
+Correct. You are looking at its death snapshot.
 
-That is the intended model.
+**"Why didn't inspection move to another critter after death?"**
 
----
+Because that would change the subject of your observation without
+permission. Use **Observe candidate + Enter**, or click another
+individual, when you are ready.
 
-## “I only see cyan, but there should also be a yellow candidate.”
+**"I changed the lineage filter and nothing happened to observation."**
 
-If the observed individual **is** the discovery candidate, cyan is drawn over yellow.
+Exactly. The filter belongs to discovery.
 
-One critter.
+**"I focused another panel and the trail disappeared."**
 
-Two roles.
+The trail's drawing is gated by the focused panel: it is only rendered
+when Inspection is focused. The trail itself is preserved, and it keeps
+being appended while the observed critter is alive. Return to Inspection
+with **I** to see it again.
 
-One visible marker.
+**"I closed inspection and lost the trail."**
 
----
-
-## “The observed critter died but the panel still shows it.”
-
-Correct.
-
-You are looking at its death snapshot.
-
-This is intentional.
-
----
-
-## “Why didn't inspection move to another critter after death?”
-
-Because that would change the subject of your observation without permission.
-
-Press **Enter** or click another individual when you are ready.
+There is no "close inspection" action in the current interface. The
+Inspection panel is always present in the right sidebar. What changes is
+which panel is focused. To end an observation and discard its trail, use
+**Clear observation**.
 
 ---
 
-## “I changed the lineage filter and nothing happened to observation.”
+# Why this design
 
-Exactly.
-
-The filter belongs to discovery.
-
----
-
-## “I closed inspection and lost the trail.”
-
-Correct.
-
-Closing inspection ends that analysis session.
-
-Trails are not permanent biographies.
-
----
-
-## “The dead critter's vision changed later.”
-
-Possible.
-
-The snapshot preserves its final body state and genome, not a historical copy of the entire surrounding world.
-
-The vision display is reconstructed around its last position.
-
----
-
-# Why this design?
-
-Inspection follows four principles:
+Four principles:
 
 ```text
 identity must be stable
@@ -1327,46 +681,22 @@ discovery must not mutate observation
 death must not fake continuity
 ```
 
-Together they make the system suitable for actual analysis rather than only visual entertainment.
-
-The interface can now answer two questions independently:
+The interface can answer two questions independently:
 
 ```text
 Who is interesting?
-```
-
-and:
-
-```text
 Who was I studying?
 ```
 
-Those questions often have different answers.
-
-That is not a bug.
-
-That is the reason the inspection system exists.
+Those questions often have different answers. That is not a bug. That is
+the reason the inspection system exists.
 
 ---
 
 # Related documentation
 
-To understand what the observed fields mean biologically:
-
 → [Simulation](simulation.md)
-
-To learn the keyboard controls:
-
 → [Controls](controls.md)
-
-To understand composite score and reproduction:
-
 → [Evolution](evolution.md)
-
-To design experiments using inspection:
-
 → [Experiments](experiments.md)
-
-To understand stable IDs, snapshots and rendering internally:
-
 → [Architecture](architecture.md)

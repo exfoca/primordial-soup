@@ -341,13 +341,14 @@ def test_zones_active_accepts_bool_false(saved_payload):
     assert persistence.load(str(path)) is True
 
 
-def test_zones_active_accepts_missing(saved_payload):
-    """Chave ausente cai em default True (comportamento pre-toggle)."""
+def test_zones_active_rejects_missing(saved_payload):
+    """zonas_ativas e obrigatoria no contrato v11."""
     path, data = saved_payload
     del data["zonas_ativas"]
     _write_payload(path, data)
     _isolate_runtime()
-    assert persistence.load(str(path)) is True
+
+    assert persistence.load(str(path)) is False
 
 
 @pytest.mark.parametrize(

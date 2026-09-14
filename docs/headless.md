@@ -673,7 +673,7 @@ to print the current world version and exit.
 For the current release:
 
 ```text
-primordial_soup 0.4.0
+primordial_soup 0.5.0
 ```
 
 This is useful when recording experiment provenance.

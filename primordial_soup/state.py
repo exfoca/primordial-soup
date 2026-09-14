@@ -106,19 +106,22 @@ metrics_history: dict[str, deque[tuple[int, tuple[float, ...]]]] = {
 selected_metric_index: int = 0
 selected_metric: str = cfg.ADVANCED_METRICS[0]
 
-# --- Modo de inspecao ------------------------------------------
-# `inspection_mode` controla se o painel lateral e desenhado.
+# --- Sessao de observacao --------------------------------------
 #
 # `inspected_critter_id` e a identidade ESTAVEL do bicho observado,
 # nao um indice posicional. Sobrevive a compactacao do ndarray
 # (mortes) e e o handle autoritativo de "quem esta sendo observado".
 # Use world.resolve_critter_id() para obter (lineage, index) atuais.
 #
+# A sessao NAO depende do painel focado: o operador pode navegar para
+# Metrics, Configuration ou world e a Observation continua ativa,
+# acumulando trail. Apenas a VISIBILIDADE (markers e trail desenhados)
+# e gated por ui_state.active_panel == PANEL_INSPECTION.
+#
 # Quando o bicho observado morre, a sessao NAO troca para outro
 # individuo: a observacao congela. O estado final vai para
 # `inspection_death_snapshot`, e o painel/marcador renderizam a
 # partir do snapshot.
-inspection_mode: bool = cfg.INSPECTION_MODE
 inspected_critter_id: int | None = None
 
 
@@ -246,7 +249,6 @@ def reset_counters() -> None:
       - `local_scale_fraction` (ajustado pelo operador),
       - `ticks_per_frame`   (velocidade),
       - `paused`            (controlado pelo operador),
-      - `inspection_mode`   (o painel continua aberto),
       - `language`          (idioma de exibicao),
       - `recording`         (gravacao em andamento).
 
@@ -301,9 +303,10 @@ def reset_counters() -> None:
     zones_active = True
 
     # --- Sessao de observacao ---
-    # O ID observado pertence a populacao antiga; apos recreate ele
-    # nao existe mais. Descarta a sessao inteira (ID + snapshot +
-    # trail).
+    # Uma run nova encerra a Observation antiga: o ID observado
+    # pertence a populacao descartada. Limpa ID, snapshot e trail
+    # juntos. Navegacao de GUI (active_panel, panel_cursors) vive em
+    # ui_state e NAO e responsabilidade de reset_counters().
     inspected_critter_id = None
     inspection_death_snapshot = None
 

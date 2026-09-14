@@ -22,6 +22,7 @@ from .world import (
     average_composite_score_per_lineage,
     seed_lineages,
     place_initially,
+    find_agent_at,
 )
 from .genetics import random_population
 from .evolution import evaluate_and_move, punish_reward_and_reproduce
@@ -62,8 +63,13 @@ def _update_trail() -> None:
 
     A resolucao e por ID estavel (world.resolve_critter_id), nao por
     indice posicional: se outros bichos morreram antes no tick, o
-    indice estaria errado. No-op se a inspecao esta desligada, se
-    nenhum ID esta selecionado, ou se o ID nao resolve mais.
+    indice estaria errado. No-op se nenhum ID esta selecionado ou se
+    o ID nao resolve mais.
+
+    A trail pertence a Observation, nao ao painel focado: continua
+    sendo atualizada mesmo com o usuario em Metrics, Configuration ou
+    world. Ao voltar para Inspection, o operador ve a trajetoria
+    acumulada.
 
     Custo: um resolve (O(N) sobre as tres linhagens) mais um append
     no deque. No maximo uma vez por tick, e so com um bicho
@@ -71,8 +77,6 @@ def _update_trail() -> None:
     """
     from .world import INDEX_X, INDEX_Y, resolve_critter_id
 
-    if not state.inspection_mode:
-        return
     critter_id = state.inspected_critter_id
     if critter_id is None:
         return
@@ -370,30 +374,140 @@ def run_headless(
     # --- 3. Save ---
     if save_slot is not None:
         state.active_save_slot = save_slot
-        persistence.save()
+        if not persistence.save():
+            print(
+                f"[headless] failed to save slot {save_slot!r}.",
+                file=sys.stderr,
+            )
+            return 1
 
     return 0
 
 
 def run() -> None:
-    """Loop grafico principal. Importa rendering/controls sob demanda
-    para que o headless nao precise de Pygame."""
+    """Loop grafico principal. Importa rendering/dispatcher sob
+    demanda para que o headless nao precise de Pygame."""
     from .rendering import init, tick_fps, shutdown, draw
-    from .controls import handle_events
+    from . import input_dispatcher
+    from . import rendering
+    from .panels import DispatchResult, Flow
+    from .panels_defs import register_default_panels
+    from . import ui_state
 
     bootstrap_new_world()
 
+    # Composicao explicita: o bootstrap grafico e o unico ponto que
+    # registra os paineis. Headless nunca chama isto; importar
+    # panels_defs nao altera estado global.
+    ui_state.reset()
+    register_default_panels()
+
     init()
+
+    # Adapters globais do dispatcher. Registrados aqui, nao no
+    # input_dispatcher, para o dispatcher nao importar rendering nem
+    # simulation (evita import cycle e mantem o dispatcher neutro).
+    def _adapter_step() -> DispatchResult:
+        step()
+        return DispatchResult.continue_(redraw=True)
+
+    def _adapter_space() -> DispatchResult:
+        state.paused = not state.paused
+        return DispatchResult.continue_(redraw=True)
+
+    def _adapter_fullscreen() -> DispatchResult:
+        rendering.toggle_fullscreen()
+        return DispatchResult.continue_(redraw=True)
+
+    def _adapter_escape() -> DispatchResult:
+        if ui_state.active_panel != ui_state.PANEL_WORLD:
+            ui_state.set_active_panel(ui_state.PANEL_WORLD)
+            return DispatchResult.continue_(redraw=True)
+        return DispatchResult.exit_()
+
+    def _adapter_mouse(pos: tuple[int, int]) -> DispatchResult:
+        world_pos = rendering.screen_to_world(pos)
+        if world_pos is None:
+            return DispatchResult.continue_(redraw=False)
+        hit = find_agent_at(*world_pos)
+        if hit is None:
+            return DispatchResult.continue_(redraw=False)
+        li, ai = hit
+        stable_id = int(agents[li]["ids"][ai])
+        state.set_inspection_selection(stable_id)
+        ui_state.set_active_panel(ui_state.PANEL_INSPECTION)
+        return DispatchResult.continue_(redraw=True)
+
+    def _adapter_resize(width: int, height: int) -> DispatchResult:
+        rendering.on_resize(width, height)
+        return DispatchResult.continue_(redraw=True)
+
+    def _adapter_toggle_floating_hud() -> DispatchResult:
+        ui_state.toggle_floating_hud()
+        return DispatchResult.continue_(redraw=True)
+
+    def _adapter_wheel(
+        notches: int, pos: tuple[int, int]
+    ) -> DispatchResult:
+        screen_w, _ = _pg.display.get_surface().get_size()
+        mx, _my = pos
+        if mx < screen_w - cfg.INSPECTION_PANEL_WIDTH:
+            return DispatchResult.continue_(redraw=False)
+        panel_id = (
+            ui_state.active_panel
+            if ui_state.active_panel != ui_state.PANEL_WORLD
+            else ui_state.last_panel
+        )
+        current = ui_state.panel_scroll_offsets.get(panel_id, 0)
+        WHEEL_STEP = 30
+        ui_state.panel_scroll_offsets[panel_id] = max(
+            0, current - notches * WHEEL_STEP
+        )
+        return DispatchResult.continue_(redraw=True)
+
+    input_dispatcher.register_step_handler(_adapter_step)
+    input_dispatcher.register_space_handler(_adapter_space)
+    input_dispatcher.register_fullscreen_handler(_adapter_fullscreen)
+    input_dispatcher.register_escape_handler(_adapter_escape)
+    input_dispatcher.register_mouse_handler(_adapter_mouse)
+    input_dispatcher.register_resize_handler(_adapter_resize)
+    input_dispatcher.register_wheel_handler(_adapter_wheel)
+
+    # Accelerators globais. Registrados aqui para o dispatcher
+    # permanecer neutro quanto a dominios de UI. pygame e importado
+    # localmente para preservar o contrato headless do modulo.
+    import pygame as _pg
+    from . import controls
+
+    input_dispatcher.register_global_action(_pg.K_r, controls.action_recreate)
+    input_dispatcher.register_global_action(_pg.K_l, controls.action_load)
+    input_dispatcher.register_global_action(_pg.K_n, controls.action_cycle_save_slot)
+    input_dispatcher.register_global_action(_pg.K_p, controls.action_print_state)
+    input_dispatcher.register_global_action(_pg.K_z, controls.action_toggle_zones)
+    input_dispatcher.register_global_action(_pg.K_g, controls.action_toggle_recording)
+    # H alterna o HUD flutuante. Heal All continua disponivel, mas
+    # apenas pelo painel Configuration (item heal_all).
+    input_dispatcher.register_global_action(
+        _pg.K_h, _adapter_toggle_floating_hud
+    )
+
     draw()
 
     while True:
-        if not handle_events():
+        result = input_dispatcher.process_events()
+
+        if result.flow is Flow.EXIT:
             shutdown()
             return
+
+        needs_draw = result.redraw
 
         if not state.paused:
             for _ in range(state.ticks_per_frame):
                 step()
+            needs_draw = True
+
+        if needs_draw:
             draw()
 
         tick_fps()

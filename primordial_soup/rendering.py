@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 import os
+from dataclasses import dataclass
 
 import numpy as np
 import pygame
@@ -12,6 +13,8 @@ from . import layout
 from . import state
 from . import i18n
 from . import world
+from . import ui_state
+from . import panels
 from .state import agents
 from .world import (
     INDEX_ENCOUNTERS,
@@ -27,7 +30,6 @@ from .world import (
     average_hp_per_lineage,
     longest_lifetime,
     average_composite_score_per_lineage,
-    format_zones_txt,
 )
 
 _screen = None
@@ -41,6 +43,10 @@ _font_panel = None
 _font_panel_title = None
 _font_panel_small = None
 
+# Ícone pequeno do brand, carregado uma única vez em init().
+# None se o PNG falhar ao carregar; o brand degrada para só texto.
+_hud_icon: pygame.Surface | None = None
+
 # Estado de tela cheia. F11 alterna via toggle_fullscreen().
 _fullscreen: bool = False
 
@@ -52,8 +58,8 @@ _fullscreen: bool = False
 # Em tela cheia: recalculados para esticar o mundo ate preencher a
 # janela, preservando a proporcao (letterbox na dimensao que sobra).
 #
-# Usados por controls._select_critter_at_click para converter clique
-# do mouse em coordenadas do mundo.
+# Usados para converter clique do mouse em coordenadas do mundo
+# quando o handler de mouse for implementado (Fase 8).
 _scale: float = 1.0
 _offset_x: int = 0
 _offset_y: int = 0
@@ -85,26 +91,84 @@ _LINEAGE_COLORS: tuple[tuple[int, int, int], ...] = (
     (72, 255, 96),  # G
     (80, 140, 255),  # B
 )
+
+# Mapa id_de_linhagem -> cor, usado quando so temos o lineage_id do
+# snapshot de morte (sem acesso a linha viva do agente). Derivado de
+# _LINEAGE_COLORS para nao duplicar a fonte de cor do rendering.
+_COLOR_BY_ID: dict[str, tuple[int, int, int]] = {
+    lineage["id"]: _LINEAGE_COLORS[i]
+    for i, lineage in enumerate(cfg.LINEAGES)
+}
 _SCALAR_COLOR: tuple[int, int, int] = (220, 220, 220)
 
 # Indicador de gravacao (desenhado no HUD quando gravando).
 _RECORDING_COLOR: tuple[int, int, int] = (255, 64, 64)
 
-# Formatacao da tabela de linhagens.
+
+# Formatacao do cabecalho da tabela de linhagens.
 #
-# Os rotulos de coluna vem do i18n (chaves "col.*") para cada rotulo
-# ser traduzido independentemente. As larguras ficam no codigo: o
-# layout e recalculado por frame a partir do cabecalho renderizado,
-# entao trocar de idioma nao quebra o alinhamento.
-_LINEAGE_TABLE_HEADER = (
-    ("col.id", 2),
-    ("col.hp", 6),
-    ("col.lt", 5),
-    ("col.gen", 4),
-    ("col.pop", 4),
-    ("col.score", 6),
-)
+# Precisa ser funcao, nao constante: i18n.t() le state.language em
+# runtime, entao congelar a string no import de rendering.py deixaria
+# o cabecalho preso ao idioma do boot mesmo apos T / painel Tools.
+def _lineage_header_text() -> str:
+    return (
+        f"{i18n.t('col.id'):>2}  "
+        f"{i18n.t('col.hp'):>6}  "
+        f"{i18n.t('col.lt'):>5}  "
+        f"{i18n.t('col.gen'):>4}  "
+        f"{i18n.t('col.pop'):>4}  "
+        f"{i18n.t('col.score'):>6}"
+    )
+
+
 _LINEAGE_TABLE_ROW_FMT = "{id:>2}  {hp:6.0f}  {lt:5d}  {gen:4d}  {pop:4d}  {score:6.2f}"
+
+
+# Modelo semantico dos atalhos do Command Dock. Dados puros: cada
+# grupo tem chave i18n do rotulo e uma tupla de (keycap, chave i18n
+# da acao). O rendering nao parseia string nenhuma.
+_COMMAND_GROUPS: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
+    (
+        "command.group.simulation",
+        (
+            ("SPACE", "command.pause"),
+            ("=", "command.step"),
+            ("R", "command.new_world"),
+            ("F11", "command.fullscreen"),
+            ("ESC", "command.back_quit"),
+        ),
+    ),
+    (
+        "command.group.panels",
+        (
+            ("I", "command.inspect"),
+            ("C", "command.configuration"),
+            ("M", "command.metrics"),
+            ("S", "command.session"),
+            ("T", "command.tools"),
+        ),
+    ),
+    (
+        "command.group.navigation",
+        (
+            ("↑↓", "command.select"),
+            ("←→", "command.change"),
+            ("TAB", "command.panel"),
+            ("ENTER", "command.activate"),
+            ("LMB", "command.observe"),
+        ),
+    ),
+    (
+        "command.group.quick",
+        (
+            ("H", "command.hide_hud"),
+            ("L", "command.load"),
+            ("N", "command.slot"),
+            ("Z", "command.zones"),
+            ("G", "command.record"),
+        ),
+    ),
+)
 
 
 def _heatmap_color(value: float) -> tuple[int, int, int]:
@@ -254,331 +318,542 @@ def _draw_vision(
     return y0 + side * size + 2 + label.get_height() + 6
 
 
-def _draw_inspection_panel() -> None:
-    """Painel lateral com detalhes do bicho selecionado.
+@dataclass(frozen=True, slots=True)
+class _InspectionSubject:
+    """Sujeito da Observation resolvido para desenho.
 
-    O painel e CATIVO: ocupa sempre os INSPECTION_PANEL_WIDTH pixels
-    mais a direita da janela. Isso casa com layout._derive(), que
-    reserva essa faixa ao calcular world_width/window_width — mundo e
-    painel nunca se sobrepoem. Ancorar em (window_width - width) e a
-    casa correta do painel, nao acidente do tamanho atual da janela.
+    Cobre os dois casos (vivo, snapshot de morte) sem que o caller
+    precise saber de onde os dados vieram. `alive=False` implica
+    `death_tick` preenchido e `agent_row`/`genome` vindos do
+    snapshot.
     """
-    width = cfg.INSPECTION_PANEL_WIDTH
-    x0 = layout.LAYOUT.window_width - width
-    total_height = layout.LAYOUT.window_height
 
-    background = pygame.Surface((width, total_height), pygame.SRCALPHA)
-    background.fill((*cfg.PANEL_BG_COLOR, 230))
-    _screen.blit(background, (x0, 0))
-    pygame.draw.line(_screen, cfg.PANEL_BORDER_COLOR, (x0, 0), (x0, total_height), 1)
+    critter_id: int
+    lineage_id: str
+    lineage_color: tuple[int, int, int]
+    agent_row: np.ndarray
+    genome: np.ndarray
+    alive: bool
+    death_tick: int | None
 
-    padding = 10
-    y = padding
 
-    # Cabecalho em duas linhas.
-    #
-    # O cabecalho e SEMPRE mostrado com o painel aberto, mesmo quando
-    # o criterio atual nao casa com ninguem. O operador precisa ver
-    # QUAL lente esta ativa para decidir se troca de criterio
-    # (esquerda/direita) ou de linhagem (Tab).
-    #
-    # Linha 1 e o titulo do painel, fonte grande em negrito. Linha 2
-    # leva o contador de criterio e o filtro de linhagem, fonte
-    # pequena: a string combinada pode ser longa (ex: "[4/10] mais
-    # encontros (linhagem: todas)") e a 18px negrito estoura a
-    # largura do painel (320px) e e cortada. A 11px cabe confortavel
-    # mesmo no pior caso.
-    title_line = _font_panel_title.render(
-        i18n.t("panel.title"), True, cfg.INSPECTION_HIGHLIGHT_COLOR
-    )
-    _screen.blit(title_line, (x0 + padding, y))
-    y += title_line.get_height() + 2
+def _resolve_inspection_subject() -> _InspectionSubject | None:
+    """Resolve o bicho observado (vivo ou snapshot) para desenho.
 
-    nav_hint = _font_panel_small.render(
-        i18n.t("panel.hint_navigation"), True, cfg.PANEL_SECONDARY_TEXT_COLOR
-    )
-    _screen.blit(nav_hint, (x0 + padding, y))
-    y += nav_hint.get_height() + 2
-
-    action_hint = _font_panel_small.render(
-        i18n.t("panel.hint_actions"), True, cfg.PANEL_SECONDARY_TEXT_COLOR
-    )
-    _screen.blit(action_hint, (x0 + padding, y))
-    y += action_hint.get_height() + 10
-
-    # ------------------------------------------------------------------
-    # DESCOBERTA (discovery)
-    #
-    # Candidato = exatamente o que world.discovery_candidate() retorna
-    # para (criterion, lineage_filter) AGORA. Mesmo valor que
-    # _draw_highlights() desenha em amarelo e que controls.K_RETURN
-    # adota em Enter. Invariante: amarelo == candidate line == Enter.
-    #
-    # Independe de existir observado. Uma linhagem filtrada extinta
-    # produz "nenhum candidato" sem tocar a secao OBSERVANDO.
-    # ------------------------------------------------------------------
-    discovery_title = _font_panel.render(
-        i18n.t("panel.discovery_title"), True, cfg.INSPECTION_HIGHLIGHT_COLOR
-    )
-    _screen.blit(discovery_title, (x0 + padding, y))
-    y += discovery_title.get_height() + 2
-
-    # Contador [i/n] e filtro de linhagem precisam do indice do
-    # criterio e do total.
-    try:
-        i = cfg.CRITERIA_ORDER.index(state.discovery_criterion) + 1
-    except ValueError:
-        i = 1
-    n = len(cfg.CRITERIA_ORDER)
-
-    # Linha 1: contador [i/n] + label do criterio.
-    criterion_label = i18n.t(f"criterion.{state.discovery_criterion}")
-    discovery_line = _font_panel_small.render(
-        f"[{i}/{n}] {criterion_label}", True, cfg.PANEL_SECONDARY_TEXT_COLOR
-    )
-    _screen.blit(discovery_line, (x0 + padding, y))
-    y += discovery_line.get_height() + 2
-
-    # Linha 2: filtro de linhagem.
-    lineage_label_d = i18n.t(f"lineage_filter.{state.discovery_lineage_filter}")
-    discovery_lineage = _font_panel_small.render(
-        f"{i18n.t('panel.lineage')} {lineage_label_d}",
-        True, cfg.PANEL_SECONDARY_TEXT_COLOR,
-    )
-    _screen.blit(discovery_lineage, (x0 + padding, y))
-    y += discovery_lineage.get_height() + 2
-
-    # Linha 3: candidato (ou "nenhum candidato").
-    candidate = world.discovery_candidate(
-        state.discovery_criterion,
-        state.discovery_lineage_filter,
-    )
-    if candidate is None:
-        candidate_value = i18n.t("panel.no_candidate")
-        candidate_color = cfg.PANEL_SECONDARY_TEXT_COLOR
-    else:
-        cli, cai = candidate
-        candidate_value = f"{agents[cli]['id']} #{int(agents[cli]['ids'][cai])}"
-        candidate_color = agents[cli]["color"]
-    candidate_label = i18n.t("panel.candidate_label")
-    candidate_text = _font_panel.render(
-        f"{candidate_label} {candidate_value}", True, candidate_color
-    )
-    _screen.blit(candidate_text, (x0 + padding, y))
-    y += candidate_text.get_height() + 2
-
-    # Linha 4: lembrete do Enter.
-    enter_hint = _font_panel_small.render(
-        i18n.t("panel.enter_hint"), True, cfg.PANEL_SECONDARY_TEXT_COLOR
-    )
-    _screen.blit(enter_hint, (x0 + padding, y))
-    y += enter_hint.get_height() + 10
-
-    # ------------------------------------------------------------------
-    # OBSERVANDO (observation)
-    #
-    # Secao estavel: identidade do bicho observado, trail, visao,
-    # heatmaps. NAO muda por causa de discovery. Sem observado, mostra
-    # "nenhum bicho observado" e retorna (a secao DESCOBERTA ja foi
-    # renderizada acima).
-    # ------------------------------------------------------------------
-    observation_title = _font_panel.render(
-        i18n.t("panel.observation_title"), True, cfg.INSPECTION_HIGHLIGHT_COLOR
-    )
-    _screen.blit(observation_title, (x0 + padding, y))
-    y += observation_title.get_height() + 2
-
+    Retorna None se:
+      - nao ha selection;
+      - a selection nao resolve (ID sumiu sem snapshot);
+      - o snapshot existe mas o lineage_id nao esta na config atual.
+    """
     critter_id = state.inspected_critter_id
     if critter_id is None:
-        warning = _font_panel.render(
-            i18n.t("panel.no_selection"), True, cfg.PANEL_TEXT_COLOR
-        )
-        _screen.blit(warning, (x0 + padding, y))
-        return
+        return None
 
     snapshot = state.inspection_death_snapshot
-
     if snapshot is not None:
-        # Morto: renderiza a partir do snapshot congelado.
-        li = snapshot.lineage_index
-        lineage_id = snapshot.lineage_id
-        lineage_color = _COLOR_BY_ID.get(lineage_id, cfg.PANEL_TEXT_COLOR)
-        critter_matrix = snapshot.agent
-        genome = snapshot.genome
-        ai = -1  # nao ha indice vivo; nao usado abaixo
+        lineage_color = _COLOR_BY_ID.get(snapshot.lineage_id, cfg.PANEL_TEXT_COLOR)
+        return _InspectionSubject(
+            critter_id=int(snapshot.critter_id),
+            lineage_id=str(snapshot.lineage_id),
+            lineage_color=lineage_color,
+            agent_row=snapshot.agent,
+            genome=snapshot.genome,
+            alive=False,
+            death_tick=int(snapshot.tick),
+        )
+
+    from .world import resolve_critter_id
+
+    resolved = resolve_critter_id(critter_id)
+    if resolved is None:
+        return None
+
+    li, ai = resolved
+    lineage_id = str(agents[li]["id"])
+    lineage_color = agents[li]["color"]
+    agent_row = agents[li]["agents"][ai]
+    genome = agents[li]["pool"][ai]
+    return _InspectionSubject(
+        critter_id=int(critter_id),
+        lineage_id=lineage_id,
+        lineage_color=lineage_color,
+        agent_row=agent_row,
+        genome=genome,
+        alive=True,
+        death_tick=None,
+    )
+
+
+def _draw_inspection_details(
+    surface: pygame.Surface,
+    x0: int,
+    y0: int,
+    width: int,
+) -> int:
+    """Desenha o detalhe do bicho observado.
+
+    Retorna o Y logo abaixo do bloco. O viewport usa isso para
+    calcular a altura real do conteudo e o clamp do scroll.
+
+    Sem selection (ou selection irresoluvel): retorna y0 sem desenhar.
+    Morto: mostra dados finais + heatmaps; nao reconstroi vision.
+    """
+    padding = 10
+    y = y0 + padding
+
+    subject = _resolve_inspection_subject()
+    if subject is None:
+        return y0
+
+    row = subject.agent_row
+
+    # identity / life data
+    line_color = subject.lineage_color
+    id_line = _font_panel.render(
+        f"#{subject.critter_id}  {subject.lineage_id}",
+        True,
+        line_color,
+    )
+    surface.blit(id_line, (x0 + padding, y))
+    y += id_line.get_height() + 4
+
+    if subject.alive:
+        status_text = i18n.t("panel.status_alive")
     else:
-        # Vivo: resolve o ID no estado atual.
-        from .world import resolve_critter_id
+        status_text = i18n.t("panel.status_dead", tick=subject.death_tick)
+    status_surface = _font_panel_small.render(
+        f"{i18n.t('panel.status')} {status_text}",
+        True,
+        cfg.PANEL_SECONDARY_TEXT_COLOR,
+    )
+    surface.blit(status_surface, (x0 + padding, y))
+    y += status_surface.get_height() + 6
 
-        resolved = resolve_critter_id(critter_id)
-        if resolved is None:
-            # ID sumiu sem snapshot: estado invalido. Nao reseleciona
-            # (observacao automatica e proibida), apenas avisa.
-            warning = _font_panel.render(
-                i18n.t("panel.stale_selection"), True, cfg.PANEL_TEXT_COLOR
-            )
-            _screen.blit(warning, (x0 + padding, y))
-            return
-        li, ai = resolved
-        lineage_id = agents[li]["id"]
-        lineage_color = agents[li]["color"]
-        critter_matrix = agents[li]["agents"][ai]
-        genome = agents[li]["pool"][ai]
-
-    agent = agents[li] if snapshot is None else {"id": lineage_id, "color": lineage_color}
-
-    # Identificacao. Rotulos alinhados a esquerda e valores sempre
-    # comecam na mesma coluna (LABEL_WIDTH), para o alinhamento
-    # vertical nao quebrar com rotulo mais longo.
-    LABEL_WIDTH = 96
-
-    def _draw_info_line(label: str, value: str, color: tuple[int, int, int]) -> None:
-        nonlocal y
-        label_surface = _font_panel.render(label, True, cfg.PANEL_SECONDARY_TEXT_COLOR)
-        value_surface = _font_panel.render(value, True, color)
-        _screen.blit(label_surface, (x0 + padding, y))
-        _screen.blit(value_surface, (x0 + padding + LABEL_WIDTH, y))
-        y += max(label_surface.get_height(), value_surface.get_height()) + 2
-
-    _draw_info_line(i18n.t("panel.id"), str(critter_id), cfg.PANEL_TEXT_COLOR)
-    _draw_info_line(i18n.t("panel.lineage"), str(lineage_id), lineage_color)
-    if snapshot is not None:
-        _draw_info_line(
-            i18n.t("panel.status"),
-            i18n.t("panel.status_dead", tick=snapshot.tick),
+    for label_key, value in (
+        ("panel.hp", f"{int(row[INDEX_HP])}"),
+        ("panel.time", f"{int(row[INDEX_TIME])}"),
+        ("panel.generation", f"{int(row[INDEX_GENERATION])}"),
+        ("panel.offspring", f"{int(row[INDEX_OFFSPRING])}"),
+        ("panel.encounters", f"{int(row[INDEX_ENCOUNTERS])}"),
+        ("panel.score", f"{float(row[INDEX_COMPOSITE_SCORE]):.3f}"),
+        ("panel.last_action", f"{int(row[INDEX_LAST_ACTION])}"),
+        ("panel.position", f"{int(row[INDEX_X])},{int(row[INDEX_Y])}"),
+    ):
+        text = _font_panel_small.render(
+            f"{i18n.t(label_key)} {value}",
+            True,
             cfg.PANEL_TEXT_COLOR,
         )
-    else:
-        _draw_info_line(
-            i18n.t("panel.status"),
-            i18n.t("panel.status_alive"),
-            cfg.PANEL_TEXT_COLOR,
-        )
-    _draw_info_line(
-        i18n.t("panel.hp"), str(int(critter_matrix[INDEX_HP])), cfg.PANEL_TEXT_COLOR
-    )
-    _draw_info_line(
-        i18n.t("panel.time"),
-        str(int(critter_matrix[INDEX_TIME])),
-        cfg.PANEL_TEXT_COLOR,
-    )
-    _draw_info_line(
-        i18n.t("panel.generation"),
-        str(int(critter_matrix[INDEX_GENERATION])),
-        cfg.PANEL_TEXT_COLOR,
-    )
-    _draw_info_line(
-        i18n.t("panel.offspring"),
-        str(int(critter_matrix[INDEX_OFFSPRING])),
-        cfg.PANEL_TEXT_COLOR,
-    )
-    _draw_info_line(
-        i18n.t("panel.encounters"),
-        str(int(critter_matrix[INDEX_ENCOUNTERS])),
-        cfg.PANEL_TEXT_COLOR,
-    )
-    _draw_info_line(
-        i18n.t("panel.score"),
-        f"{critter_matrix[INDEX_COMPOSITE_SCORE]:.3f}",
-        cfg.PANEL_TEXT_COLOR,
-    )
-    _draw_info_line(
-        i18n.t("panel.last_action"),
-        str(int(critter_matrix[INDEX_LAST_ACTION])),
-        cfg.PANEL_TEXT_COLOR,
-    )
-    _draw_info_line(
-        i18n.t("panel.position"),
-        f"({int(critter_matrix[INDEX_X])},{int(critter_matrix[INDEX_Y])})",
-        cfg.PANEL_TEXT_COLOR,
-    )
+        surface.blit(text, (x0 + padding, y))
+        y += text.get_height() + 2
 
     y += 6
 
-    # Visao.
-    y = _draw_vision(_screen, critter_matrix, x0 + padding, y)
+    # vision: so para vivo. Morto nao inventa historico.
+    if subject.alive:
+        y = _draw_vision(surface, subject.agent_row, x0 + padding, y)
+    else:
+        note = _font_panel_small.render(
+            i18n.t("panel.vision_unavailable_dead"),
+            True,
+            cfg.PANEL_SECONDARY_TEXT_COLOR,
+        )
+        surface.blit(note, (x0 + padding, y))
+        y += note.get_height() + 6
 
-    # Heatmaps de pesos (W1, W2, W3, b1, b2, R) do cerebro. `genome`
-    # foi definido acima: linha viva do pool, ou copia do snapshot se
-    # morto.
-    weights = genome if genome is not None else None
-    if weights is None:
+    # brain heatmaps: sempre que houver genome (vivo ou snapshot).
+    from .brain import split_weights
+
+    w1, w2, w3, b1, b2, r = split_weights(subject.genome)
+    heatmap_w = max(40, width - 2 * padding)
+    heatmap_h = 24
+
+    for title_key, weights in (
+        ("heatmap.w1", w1),
+        ("heatmap.w2", w2),
+        ("heatmap.w3", w3),
+        ("heatmap.b1", b1),
+        ("heatmap.b2", b2),
+        ("heatmap.r", r),
+    ):
+        y = _draw_heatmap(
+            surface,
+            np.asarray(weights).reshape(-1),
+            x0 + padding,
+            y,
+            heatmap_w,
+            heatmap_h,
+            i18n.t(title_key),
+        )
+
+    return y
+
+
+# --- Lateral unica: abas + viewport + resumo + footer -----------------
+
+
+# Ordem canonica das abas. Espelha ui_state.ALL_PANELS menos world.
+_TAB_ORDER: tuple[str, ...] = (
+    ui_state.PANEL_INSPECTION,
+    ui_state.PANEL_CONFIGURATION,
+    ui_state.PANEL_METRICS,
+    ui_state.PANEL_SESSION,
+    ui_state.PANEL_TOOLS,
+)
+
+
+# Chave de ativacao exibida em cada aba. Espelha panels.PANELS por
+# panel.id; mantido aqui para o rendering nao depender do registry.
+_TAB_KEYS: dict[str, str] = {
+    ui_state.PANEL_INSPECTION: "I",
+    ui_state.PANEL_CONFIGURATION: "C",
+    ui_state.PANEL_METRICS: "M",
+    ui_state.PANEL_SESSION: "S",
+    ui_state.PANEL_TOOLS: "T",
+}
+
+
+def _draw_tab_bar(x0: int, y0: int, width: int, height: int) -> None:
+    """Desenha a barra de abas no topo da lateral.
+
+    A aba do painel focado tem destaque forte; a aba do last_panel
+    (quando active_panel == world) tem destaque suave; as demais sao
+    neutras.
+    """
+    focused = ui_state.active_panel
+    last = ui_state.last_panel
+
+    pygame.draw.rect(_screen, cfg.HUD_BG_COLOR, (x0, y0, width, height))
+    pygame.draw.line(
+        _screen,
+        cfg.PANEL_BORDER_COLOR,
+        (x0, y0 + height - 1),
+        (x0 + width, y0 + height - 1),
+        1,
+    )
+
+    tab_padding = 8
+    tab_gap = 4
+    n = len(_TAB_ORDER)
+    tab_w = (width - 2 * tab_padding - (n - 1) * tab_gap) // n
+    tab_h = height - 8
+
+    for i, panel_id in enumerate(_TAB_ORDER):
+        tx = x0 + tab_padding + i * (tab_w + tab_gap)
+        ty = y0 + 4
+
+        if panel_id == focused:
+            bg = cfg.INSPECTION_HIGHLIGHT_COLOR
+            fg = (0, 0, 0)
+            bold = True
+            underline = True
+        elif panel_id == last and focused == ui_state.PANEL_WORLD:
+            bg = cfg.HUD_BORDER_COLOR
+            fg = cfg.HUD_TEXT_COLOR
+            bold = False
+            underline = True
+        else:
+            bg = cfg.HUD_BG_COLOR
+            fg = cfg.HUD_TEXT_SECONDARY_COLOR
+            bold = False
+            underline = False
+
+        pygame.draw.rect(_screen, bg, (tx, ty, tab_w, tab_h))
+        pygame.draw.rect(_screen, cfg.PANEL_BORDER_COLOR, (tx, ty, tab_w, tab_h), 1)
+
+        key = _TAB_KEYS[panel_id]
+        font = _font_panel_title if bold else _font_panel
+        label = font.render(key, True, fg)
+        lx = tx + (tab_w - label.get_width()) // 2
+        ly = ty + (tab_h - label.get_height()) // 2
+        _screen.blit(label, (lx, ly))
+
+        if underline:
+            pygame.draw.line(
+                _screen,
+                fg,
+                (tx + 2, ty + tab_h - 2),
+                (tx + tab_w - 3, ty + tab_h - 2),
+                2,
+            )
+
+
+def _draw_panel_footer(
+    x0: int, y0: int, width: int, height: int, panel_id: str
+) -> None:
+    """Desenha o rodape contextual do painel ativo.
+
+    Le footer_key do Panel (via registry). Se o painel nao tem footer
+    declarado ou nao esta no registry, desenha o generico.
+    """
+    panel = panels.PANELS.get(panel_id)
+    footer_key = panel.footer_key if panel is not None else None
+    if footer_key is None:
+        footer_key = "panel.hint_actions"
+
+    pygame.draw.rect(_screen, cfg.HUD_BG_COLOR, (x0, y0, width, height))
+    pygame.draw.line(
+        _screen,
+        cfg.PANEL_BORDER_COLOR,
+        (x0, y0),
+        (x0 + width, y0),
+        1,
+    )
+    text = _font_panel_small.render(
+        i18n.t(footer_key), True, cfg.HUD_TEXT_SECONDARY_COLOR
+    )
+    _screen.blit(text, (x0 + 8, y0 + (height - text.get_height()) // 2))
+
+
+def _draw_inspection_summary(x0: int, y0: int, width: int, height: int) -> None:
+    """Resumo compacto do bicho observado, sempre visivel.
+
+    Mostra: ID, linhagem, status, HP, idade, geracao. Se nao ha
+    observado, mostra "nenhum bicho observado".
+
+    Se o bicho observado morreu, le do snapshot. Se vivo, resolve o
+    ID no estado atual. Se o ID sumiu sem snapshot (estado invalido),
+    mostra aviso.
+    """
+    pygame.draw.rect(_screen, cfg.PANEL_BG_COLOR, (x0, y0, width, height))
+    pygame.draw.line(
+        _screen,
+        cfg.PANEL_BORDER_COLOR,
+        (x0, y0),
+        (x0 + width, y0),
+        1,
+    )
+
+    padding = 8
+    y = y0 + padding
+
+    title = _font_panel_small.render(
+        i18n.t("panel.observation_title"), True, cfg.PANEL_SECONDARY_TEXT_COLOR
+    )
+    _screen.blit(title, (x0 + padding, y))
+    y += title.get_height() + 2
+
+    if state.inspected_critter_id is None:
+        text = _font_panel.render(
+            i18n.t("panel.no_selection"), True, cfg.PANEL_TEXT_COLOR
+        )
+        _screen.blit(text, (x0 + padding, y))
         return
 
-    heat_width = width - 2 * padding
-    heat_height = 10
+    subject = _resolve_inspection_subject()
+    if subject is None:
+        text = _font_panel.render(
+            i18n.t("panel.stale_selection"), True, cfg.PANEL_TEXT_COLOR
+        )
+        _screen.blit(text, (x0 + padding, y))
+        return
 
-    start = 0
-    end = start + cfg.INPUT_HIDDEN_WEIGHTS
-    y = _draw_heatmap(
+    row = subject.agent_row
+    if subject.alive:
+        status = i18n.t("panel.status_alive")
+    else:
+        status = i18n.t("panel.status_dead", tick=subject.death_tick)
+
+    # Linha 1: id + linhagem + status.
+    line1 = _font_panel.render(
+        f"#{subject.critter_id}  {subject.lineage_id}  {status}",
+        True,
+        subject.lineage_color,
+    )
+    _screen.blit(line1, (x0 + padding, y))
+    y += line1.get_height() + 2
+
+    # Linha 2: hp / tempo / geracao.
+    line2 = _font_panel_small.render(
+        f"{i18n.t('panel.hp')} {int(row[INDEX_HP])}  "
+        f"{i18n.t('panel.time')} {int(row[INDEX_TIME])}  "
+        f"{i18n.t('panel.generation')} {int(row[INDEX_GENERATION])}",
+        True,
+        cfg.PANEL_TEXT_COLOR,
+    )
+    _screen.blit(line2, (x0 + padding, y))
+
+
+def _draw_panel_viewport(
+    x0: int, y0: int, width: int, height: int, panel_id: str
+) -> None:
+    """Desenha o conteudo do painel `panel_id` na area dada.
+
+    Clip + scroll: o conteudo e clipado ao retangulo do viewport e o
+    scroll_offset vertical e aplicado. Se o conteudo couber inteiro,
+    o offset e forcado a 0; caso contrario e clampado em
+    [0, content_height - height].
+
+    Le os itens do Panel via registry e desenha cada um conforme o
+    kind. O cursor e destacado com "> " quando o painel esta focado;
+    quando active_panel == world, nenhum cursor e desenhado.
+
+    Quando panel_id == PANEL_INSPECTION, apos os itens genericos o
+    conteudo rico do bicho observado e desenhado por
+    _draw_inspection_details.
+    """
+    panel = panels.PANELS.get(panel_id)
+    if panel is None:
+        return
+
+    focused = ui_state.active_panel == panel_id
+    cursor_id = ui_state.panel_cursors.get(panel_id) if focused else None
+
+    scroll_offset = ui_state.panel_scroll_offsets.get(panel_id, 0)
+
+    # --- Layout do conteudo em espaco virtual (sem scroll) ---
+    #
+    # Desenhamos primeiro com y virtual, medindo o fim real. Depois
+    # recalculamos scroll e re-desenhamos com o offset aplicado. Para
+    # nao duplicar, mantemos as duas passadas num helper local.
+    padding = 10
+
+    def _render_items(y_start: int) -> int:
+        y = y_start
+        title = _font_panel_title.render(
+            i18n.t(panel.title_key), True, cfg.PANEL_TEXT_COLOR
+        )
+        _screen.blit(title, (x0 + padding, y))
+        y += title.get_height() + 8
+
+        for item in panel.items:
+            if item.kind is panels.ItemKind.SECTION:
+                label = _font_panel_small.render(
+                    i18n.t(item.label_key),
+                    True,
+                    cfg.PANEL_SECONDARY_TEXT_COLOR,
+                )
+                _screen.blit(label, (x0 + padding, y))
+                y += label.get_height() + 4
+                continue
+
+            marker = "> " if (focused and item.id == cursor_id) else "  "
+            marker_color = (
+                cfg.INSPECTION_HIGHLIGHT_COLOR
+                if (focused and item.id == cursor_id)
+                else cfg.PANEL_TEXT_COLOR
+            )
+
+            label_text = i18n.t(item.label_key)
+            value_text = item.value_fn() if item.value_fn is not None else ""
+
+            label_surface = _font_panel.render(marker + label_text, True, marker_color)
+            _screen.blit(label_surface, (x0 + padding, y))
+
+            if value_text:
+                value_surface = _font_panel.render(
+                    value_text, True, cfg.PANEL_TEXT_COLOR
+                )
+                vx = x0 + width - padding - value_surface.get_width()
+                _screen.blit(value_surface, (vx, y))
+
+            y += label_surface.get_height() + 2
+
+            if panel_id == ui_state.PANEL_METRICS and item.id == "metric":
+                chart_h = cfg.CHART_HEIGHT
+                chart_w = width - 2 * padding
+                _draw_metric_chart(x0 + padding, y + 6, chart_w, chart_h)
+                y += chart_h + 12
+
+        return y
+
+    # --- Passada 1: medir ---
+    #
+    # Desenha normalmente; o resultado e sobrescrito pela passada 2 se
+    # houver scroll. O custo de duas passadas so existe enquanto o
+    # viewport nao tiver medicao pura (sem blit). Aceitavel: sao ~20
+    # linhas por painel.
+    end_y = _render_items(y0 + padding - scroll_offset)
+
+    if panel_id == ui_state.PANEL_INSPECTION:
+        end_y = _draw_inspection_details(_screen, x0, end_y, width)
+
+    content_height = max(0, end_y - y0)
+
+    # --- Clamp do scroll ---
+    if content_height <= height:
+        scroll_offset = 0
+    else:
+        scroll_offset = max(0, min(scroll_offset, content_height - height))
+    ui_state.panel_scroll_offsets[panel_id] = scroll_offset
+
+    # --- Passada 2 (somente se scroll != 0) ---
+    #
+    # Sem scroll, a passada 1 ja esta correta; nao redesenha. Com
+    # scroll, limpa o viewport e redesenha com o offset final.
+    if scroll_offset != 0:
+        old_clip = _screen.get_clip()
+        _screen.set_clip(pygame.Rect(x0, y0, width, height))
+        _screen.fill(cfg.PANEL_BG_COLOR, (x0, y0, width, height))
+
+        end_y2 = _render_items(y0 + padding - scroll_offset)
+        if panel_id == ui_state.PANEL_INSPECTION:
+            _draw_inspection_details(_screen, x0, end_y2, width)
+
+        _screen.set_clip(old_clip)
+
+
+def _draw_lateral_panel() -> None:
+    """Desenha a lateral unica: abas + viewport + resumo + footer.
+
+    A largura e fixa (INSPECTION_PANEL_WIDTH). O painel visivel e:
+      - ui_state.active_panel, se nao for "world";
+      - ui_state.last_panel, caso contrario (sem foco).
+
+    Coordenadas screen-space derivam da _screen efetiva, nao do
+    layout base: em fullscreen/resize, layout.LAYOUT.window_* nao
+    reflete o tamanho atual da janela.
+    """
+    width = cfg.INSPECTION_PANEL_WIDTH
+    screen_w, screen_h = _screen.get_size()
+    x0 = screen_w - width
+
+    # Fundo geral.
+    background = pygame.Surface((width, screen_h), pygame.SRCALPHA)
+    background.fill((*cfg.PANEL_BG_COLOR, 235))
+    _screen.blit(background, (x0, 0))
+    pygame.draw.line(
         _screen,
-        weights[start:end],
-        x0 + padding,
-        y,
-        heat_width,
-        heat_height,
-        i18n.t("heatmap.w1"),
+        cfg.PANEL_BORDER_COLOR,
+        (x0, 0),
+        (x0, screen_h),
+        1,
     )
 
-    start = end
-    end = start + cfg.HIDDEN1_HIDDEN2_WEIGHTS
-    y = _draw_heatmap(
-        _screen,
-        weights[start:end],
-        x0 + padding,
-        y,
-        heat_width,
-        heat_height,
-        i18n.t("heatmap.w2"),
+    # Layout vertical:
+    #   tab bar      (32 px)
+    #   viewport     (resto - summary_h - footer_h)
+    #   summary      (56 px)
+    #   footer       (24 px)
+    TAB_H = 32
+    SUMMARY_H = 56
+    FOOTER_H = 24
+    viewport_y = TAB_H
+    viewport_h = screen_h - TAB_H - SUMMARY_H - FOOTER_H
+    summary_y = viewport_y + viewport_h
+    footer_y = summary_y + SUMMARY_H
+
+    _draw_tab_bar(x0, 0, width, TAB_H)
+
+    # Painel efetivamente desenhado.
+    panel_id = (
+        ui_state.active_panel
+        if ui_state.active_panel != ui_state.PANEL_WORLD
+        else ui_state.last_panel
     )
 
-    start = end
-    end = start + cfg.HIDDEN2_OUTPUT_WEIGHTS
-    y = _draw_heatmap(
-        _screen,
-        weights[start:end],
-        x0 + padding,
-        y,
-        heat_width,
-        heat_height,
-        i18n.t("heatmap.w3"),
-    )
+    # Viewport clipado: nada dentro dele escapa para summary/footer/
+    # tab bar nem para o mundo. O clip e restaurado em qualquer
+    # caminho de saida.
+    old_clip = _screen.get_clip()
+    _screen.set_clip(pygame.Rect(x0, viewport_y, width, viewport_h))
+    try:
+        _draw_panel_viewport(x0, viewport_y, width, viewport_h, panel_id)
+    finally:
+        _screen.set_clip(old_clip)
 
-    start = end
-    end = start + cfg.HIDDEN_BIASES
-    y = _draw_heatmap(
-        _screen,
-        weights[start:end],
-        x0 + padding,
-        y,
-        heat_width,
-        heat_height,
-        i18n.t("heatmap.b1"),
-    )
-
-    start = end
-    end = start + cfg.HIDDEN_BIASES_2
-    y = _draw_heatmap(
-        _screen,
-        weights[start:end],
-        x0 + padding,
-        y,
-        heat_width,
-        heat_height,
-        i18n.t("heatmap.b2"),
-    )
-
-    start = end
-    end = start + cfg.RECURRENCE_WEIGHTS
-    y = _draw_heatmap(
-        _screen,
-        weights[start:end],
-        x0 + padding,
-        y,
-        heat_width,
-        heat_height,
-        i18n.t("heatmap.r"),
-    )
+    _draw_inspection_summary(x0, summary_y, width, SUMMARY_H)
+    _draw_panel_footer(x0, footer_y, width, FOOTER_H, panel_id)
 
 
 def init() -> None:
@@ -596,13 +871,18 @@ def init() -> None:
     )
     pygame.display.set_caption(cfg.WINDOW_TITLE)
 
-    # Icone da janela. Carregado do PNG empacotado junto ao modulo.
-    # Falha e nao-fatal: o icone e cosmetico e nao deve impedir o jogo
-    # de rodar.
+    # Icone da janela e do brand do HUD. Carregado uma unica vez;
+    # a Surface original alimenta display.set_icon(), a versao
+    # reduzida alimenta _draw_telemetry_brand(). Falha e nao-fatal:
+    # o icone e cosmetico e o HUD degrada para so texto.
+    global _hud_icon
     icon_path = os.path.join(os.path.dirname(__file__), "icon.png")
     try:
-        pygame.display.set_icon(pygame.image.load(icon_path))
+        original = pygame.image.load(icon_path)
+        pygame.display.set_icon(original)
+        _hud_icon = pygame.transform.smoothscale(original, (18, 18))
     except (pygame.error, FileNotFoundError) as e:
+        _hud_icon = None
         print(f"[icon] falha ao carregar {icon_path}: {e!r}")
 
     _clock = pygame.time.Clock()
@@ -640,6 +920,50 @@ def _recompute_scale_and_offset(width: int, height: int) -> None:
     _offset_y = (height - int(base_h * _scale)) // 2
 
 
+def on_resize(width: int, height: int) -> None:
+    """Recomputa geometria para o novo tamanho de janela.
+
+    Nao chama set_mode(): o Pygame ja redimensionou a display Surface
+    quando VIDEORESIZE dispara. So atualiza _scale/_offset_* para o
+    tamanho efetivo atual.
+    """
+    _recompute_scale_and_offset(width, height)
+
+
+def screen_to_world(pos: tuple[int, int]) -> tuple[int, int] | None:
+    """Converte posicao de tela para coordenada logica do mundo.
+
+    Retorna None se o clique cai fora da imagem do mundo (letterbox,
+    faixa da lateral, ou qualquer regiao nao coberta pela Surface do
+    mundo apos scale/offset).
+
+    Usa exatamente a geometria que draw() entrega:
+    target_w = int(base_w * _scale), target_h = int(base_h * _scale).
+    Nao faz clamp final: depois do bounds check ele seria um no-op e
+    esconderia erro geometrico.
+    """
+    sx, sy = pos
+    screen_w, _ = _screen.get_size()
+
+    if sx >= screen_w - cfg.INSPECTION_PANEL_WIDTH:
+        return None
+
+    base_w = layout.LAYOUT.world_width * layout.LAYOUT.pixel_scale
+    base_h = layout.LAYOUT.world_height * layout.LAYOUT.pixel_scale
+    target_w = int(base_w * _scale)
+    target_h = int(base_h * _scale)
+
+    local_x = sx - _offset_x
+    local_y = sy - _offset_y
+
+    if not (0 <= local_x < target_w and 0 <= local_y < target_h):
+        return None
+
+    world_x = int(local_x * layout.LAYOUT.world_width / target_w)
+    world_y = int(local_y * layout.LAYOUT.world_height / target_h)
+    return world_x, world_y
+
+
 def toggle_fullscreen() -> None:
     """Alterna entre modo janela e tela cheia.
 
@@ -667,8 +991,11 @@ def toggle_fullscreen() -> None:
         height = layout.LAYOUT.window_height
         _screen = pygame.display.set_mode((width, height), pygame.RESIZABLE)
 
-    _recompute_scale_and_offset(width, height)
-    draw()
+    on_resize(*_screen.get_size())
+    # Sem draw() aqui: o redraw vem do DispatchResult do adapter
+    # registrado em simulation.run(). Chamar draw() diretamente
+    # contradiz o contrato de panels.py (handlers retornam redraw=True
+    # e o loop grafico decide quando desenhar).
 
 
 def _build_image() -> np.ndarray:
@@ -740,7 +1067,7 @@ def _draw_highlights(image: np.ndarray) -> None:
     risco de invalidacao por dois scans O(N) por frame sobre ~600
     bichos. Nao vale.
     """
-    if not state.inspection_mode:
+    if ui_state.active_panel != ui_state.PANEL_INSPECTION:
         return
 
     candidate = world.discovery_candidate(
@@ -778,7 +1105,7 @@ def _draw_inspection_marker(image: np.ndarray) -> None:
     mundo nao produzir marcador truncado. Ambas sao ciano; a FORMA
     carrega a distincao vivo/morto.
     """
-    if not state.inspection_mode:
+    if ui_state.active_panel != ui_state.PANEL_INSPECTION:
         return
 
     critter_id = state.inspected_critter_id
@@ -854,7 +1181,7 @@ def _draw_trail(image: np.ndarray) -> None:
     o rastro e uma sequencia de pontos, nao uma linha conectada,
     entao o cruzamento so mostra dois aglomerados de pontos.
     """
-    if not state.inspection_mode:
+    if ui_state.active_panel != ui_state.PANEL_INSPECTION:
         return
     trail = state.inspected_trail
     n = len(trail)
@@ -873,240 +1200,324 @@ def _draw_trail(image: np.ndarray) -> None:
             image[x, y] = (gray, gray, gray)
 
 
-def _measure_block(
-    lines: list[tuple[str, tuple[int, int, int], bool]],
-) -> tuple[int, int]:
-    """Mede a largura/altura de um bloco do HUD.
-
-    `lines` e lista de (texto, cor, negrito). Retorna (width, height)
-    em pixels, ja incluindo padding.
-    """
-    width = 0
-    height = 0
-    for text, _, bold in lines:
-        font = _font_hud_title if bold else _font
-        surface = font.render(text, True, (0, 0, 0))
-        width = max(width, surface.get_width())
-        height += surface.get_height() + 2
-    return width, height
-
-
-def _draw_hud_block(
-    x0: int,
-    y0: int,
-    lines: list[tuple[str, tuple[int, int, int], bool]],
-    padding: int = 8,
+def _draw_hud_kv(
+    surface: pygame.Surface,
+    label: str,
+    value: str,
+    x: int,
+    y: int,
+    *,
+    value_color: tuple[int, int, int] = _HUD_TEXT,
 ) -> int:
-    """Desenha um bloco do HUD com fundo translucido e borda.
+    """Desenha `LABEL    VALUE` e retorna o Y da proxima linha.
 
-    Retorna o Y logo abaixo do bloco.
+    Label em secundaria, value em primaria (ou cor passada). Nao e um
+    sistema de widgets: apenas o par label/value com spacing fixo.
     """
-    content_width, content_height = _measure_block(lines)
-    width = content_width + 2 * padding
-    height = content_height + 2 * padding
+    label_surface = _font.render(label, True, _HUD_SEC)
+    surface.blit(label_surface, (x, y))
+
+    value_surface = _font.render(value, True, value_color)
+    value_x = (
+        x + cfg.HUD_TELEMETRY_WIDTH - 2 * cfg.HUD_PADDING - value_surface.get_width()
+    )
+    surface.blit(value_surface, (value_x, y))
+
+    return y + max(label_surface.get_height(), value_surface.get_height()) + 2
+
+
+def _draw_hud_kv_inline(
+    surface: pygame.Surface,
+    pairs: list[tuple[str, str]],
+    x: int,
+    y: int,
+    *,
+    gap: int = 12,
+) -> int:
+    """Desenha `LABEL VALUE   LABEL VALUE ...` em sequencia horizontal.
+
+    Sem alinhamento a direita: cada par flui da esquerda para a
+    direita, separado por `gap` pixels. Usado no bloco de parametros
+    do Telemetry HUD, onde varios pares curtos dividem a mesma
+    linha para reduzir a altura total do painel.
+
+    Retorna o Y da proxima linha (mesma regra de _draw_hud_kv).
+    """
+    cursor_x = x
+    line_h = 0
+    for label, value in pairs:
+        label_surface = _font.render(label, True, _HUD_SEC)
+        surface.blit(label_surface, (cursor_x, y))
+        cursor_x += label_surface.get_width() + 4
+
+        value_surface = _font.render(value, True, _HUD_TEXT)
+        surface.blit(value_surface, (cursor_x, y))
+        cursor_x += value_surface.get_width() + gap
+
+        line_h = max(line_h, label_surface.get_height(), value_surface.get_height())
+
+    return y + line_h + 2
+
+
+def _draw_hud_divider(surface: pygame.Surface, x: int, y: int, width: int) -> int:
+    """Desenha um separador horizontal e retorna o Y apos o gap."""
+    pygame.draw.line(surface, cfg.HUD_DIVIDER_COLOR, (x, y), (x + width, y), 1)
+    return y + cfg.HUD_SECTION_GAP
+
+
+def _zone_summary() -> str:
+    """Resumo de zonas para o Telemetry HUD (estado puro, sem [Z]).
+
+    Construido direto de state.zones / state.zones_active /
+    cfg.NUMBER_OF_ZONES / cfg.ZONE_RADIUS. Nao usa format_zones_txt()
+    porque aquele concatena documentacao de atalho, que pertence ao
+    Command Dock (Patch 3), nao a telemetria.
+    """
+    if state.zones is None:
+        return i18n.t("hud.zone_summary_none")
+    key = "hud.zone_summary_on" if state.zones_active else "hud.zone_summary_off"
+    return i18n.t(key, n=cfg.NUMBER_OF_ZONES, r=cfg.ZONE_RADIUS)
+
+
+def _draw_telemetry_brand(x0: int, y0: int, width: int) -> pygame.Rect:
+    """Desenha a faixa de brand: [icon] PRIMORDIAL SOUP ... [REC] RPS.
+
+    Sem fundo e sem borda. Retorna o Rect logico ocupado (geometria,
+    nao decoracao). Se _hud_icon for None, o titulo comeca em x0 e
+    nenhum espaco e reservado para o icone.
+    """
+    icon_size = 18
+    icon_gap = 6
+    inner_pad = cfg.HUD_PADDING
+
+    title_surface = _font_hud_title.render(
+        cfg.WINDOW_TITLE.upper(), True, cfg.HUD_TITLE_COLOR
+    )
+
+    # Compoe da esquerda para a direita: icon (opcional) + titulo.
+    text_x = x0 + inner_pad
+    if _hud_icon is not None:
+        icon_x = text_x
+        icon_y = y0 + max(0, (title_surface.get_height() - icon_size) // 2)
+        _screen.blit(_hud_icon, (icon_x, icon_y))
+        text_x = icon_x + icon_size + icon_gap
+    _screen.blit(title_surface, (text_x, y0))
+
+    # Compoe da direita para a esquerda: RPS e (se ativo) REC.
+    rps_surfaces = _render_rps_compact()
+    rps_width = sum(s.get_width() for s in rps_surfaces)
+
+    right_edge = x0 + width - inner_pad
+    rps_x = right_edge - rps_width
+    rps_y = y0 + max(
+        0, (title_surface.get_height() - _font_hud_title.get_height()) // 2
+    )
+    for surface in rps_surfaces:
+        _screen.blit(surface, (rps_x, rps_y))
+        rps_x += surface.get_width()
+
+    if state.recording:
+        rec_surface = _font_hud_title.render(
+            i18n.t("hud.recording_on"), True, _RECORDING_COLOR
+        )
+        # 8 px de respiro entre REC e RPS.
+        rec_gap = 8
+        rec_x = right_edge - rps_width - rec_gap - rec_surface.get_width()
+        _screen.blit(rec_surface, (rec_x, rps_y))
+
+    return pygame.Rect(x0, y0, width, title_surface.get_height())
+
+
+def _draw_telemetry_panel(x0: int, y0: int, width: int) -> pygame.Rect:
+    """Desenha o painel operacional (status + parametros).
+
+    Unica regiao do Telemetry HUD com fundo e borda. Altura derivada
+    do conteudo real:
+        5 linhas de status
+        + 1 separador (HUD_SECTION_GAP)
+        + 5 linhas de parametros
+        + 2 * HUD_PADDING
+    """
+    STATUS_LINES = 5
+    PARAMETER_LINES = 5
+
+    line_h = _font.get_height() + 2
+    content_h = STATUS_LINES * line_h + cfg.HUD_SECTION_GAP + PARAMETER_LINES * line_h
+    height = content_h + 2 * cfg.HUD_PADDING
 
     background = pygame.Surface((width, height), pygame.SRCALPHA)
-    background.fill((*_HUD_BG, 210))
+    background.fill((*cfg.HUD_BG_COLOR, cfg.HUD_OVERLAY_ALPHA))
     _screen.blit(background, (x0, y0))
     pygame.draw.rect(_screen, _HUD_BORDER, (x0, y0, width, height), 1)
 
-    y = y0 + padding
-    for text, color, bold in lines:
-        font = _font_hud_title if bold else _font
-        surface = font.render(text, True, color)
-        _screen.blit(surface, (x0 + padding, y))
-        y += surface.get_height() + 2
+    inner_x = x0 + cfg.HUD_PADDING
+    inner_w = width - 2 * cfg.HUD_PADDING
 
-    return y0 + height + 6
+    y = y0 + cfg.HUD_PADDING
+
+    # --- Status ---
+    y = _draw_hud_kv(
+        _screen,
+        i18n.t("hud.label.tick"),
+        str(state.tick_count),
+        inner_x,
+        y,
+    )
+    y = _draw_hud_kv(
+        _screen,
+        i18n.t("hud.label.speed"),
+        f"{state.ticks_per_frame}x",
+        inner_x,
+        y,
+    )
+    y = _draw_hud_kv(
+        _screen,
+        i18n.t("hud.label.births"),
+        str(state.births),
+        inner_x,
+        y,
+    )
+    y = _draw_hud_kv(
+        _screen,
+        i18n.t("hud.label.deaths"),
+        str(state.deaths),
+        inner_x,
+        y,
+    )
+    y = _draw_hud_kv(
+        _screen,
+        i18n.t("hud.label.slot"),
+        state.active_save_slot,
+        inner_x,
+        y,
+    )
+
+    # --- Separador ---
+    y = _draw_hud_divider(_screen, inner_x, y, inner_w)
+
+    # --- Parametros ---
+    mutation_mode = i18n.t(f"hud.value.mutation_mode.{cfg.MUTATION_MODE}")
+    y = _draw_hud_kv_inline(
+        _screen,
+        [
+            (i18n.t("hud.label.mutation"), f"{state.mutation_rate}%"),
+            (i18n.t("hud.label.mode"), mutation_mode),
+        ],
+        inner_x,
+        y,
+    )
+    y = _draw_hud_kv_inline(
+        _screen,
+        [
+            (i18n.t("hud.label.local"), f"{state.local_scale_fraction}%"),
+            (
+                i18n.t("hud.label.global"),
+                f"{int(cfg.GLOBAL_PROBABILITY * 100)}%@{int(cfg.GLOBAL_SCALE_FRACTION * 100)}%",
+            ),
+        ],
+        inner_x,
+        y,
+    )
+    environment = i18n.t(f"hud.value.environment.{cfg.ENVIRONMENTAL_MODIFIERS}")
+    y = _draw_hud_kv_inline(
+        _screen,
+        [
+            (i18n.t("hud.label.environment"), environment),
+            (i18n.t("hud.label.zones"), _zone_summary()),
+            (i18n.t("hud.label.zone_hp"), f"{state.zone_hp_effect:+d}"),
+        ],
+        inner_x,
+        y,
+    )
+    reproduction_gates = i18n.t(
+        "hud.reproduction_gates",
+        age=cfg.REPRODUCTION_MIN_AGE,
+        hp=cfg.REPRODUCTION_HP_GATE,
+        score=cfg.REPRODUCTION_MIN_SCORE,
+        enc=cfg.REPRODUCTION_MIN_ENCOUNTERS,
+    )
+    y = _draw_hud_kv_inline(
+        _screen,
+        [
+            (i18n.t("hud.label.reproduction"), reproduction_gates),
+        ],
+        inner_x,
+        y,
+    )
+    y = _draw_hud_kv_inline(
+        _screen,
+        [
+            (
+                i18n.t("hud.label.weights"),
+                f"L {cfg.LONGEVITY_WEIGHT:.1f}  E {cfg.EXPLORATION_WEIGHT:.1f}  "
+                f"I {cfg.INTERACTION_WEIGHT:.1f}  R {cfg.REPRODUCTION_WEIGHT:.1f}",
+            ),
+        ],
+        inner_x,
+        y,
+    )
+
+    return pygame.Rect(x0, y0, width, height)
 
 
-def _lineage_header_text() -> str:
-    """Constroi o cabecalho da tabela de linhagens a partir dos
-    rotulos de coluna traduzidos."""
-    parts = []
-    for key, width in _LINEAGE_TABLE_HEADER:
-        label = i18n.t(key)
-        parts.append(f"{label:>{width}}")
-    return "  ".join(parts)
+def _draw_lineage_table(x0: int, y0: int, width: int) -> pygame.Rect:
+    """Desenha a tabela R/G/B, sem fundo e sem borda.
 
+    Alinhamento interno: comeca em x0 + HUD_PADDING, mesma linha
+    vertical do conteudo do painel central, para continuidade visual.
+    """
+    inner_x = x0 + cfg.HUD_PADDING
 
-def _draw_hud() -> None:
     hp = average_hp_per_lineage()
     lt = longest_lifetime()
     gen = max_generation()
     pops = [len(ag["agents"]) for ag in agents]
     scores = average_composite_score_per_lineage()
 
-    zones_txt = format_zones_txt()
+    y = y0
 
-    # --- Bloco A: status ---
-    #
-    # O indicador de gravacao e anexado na primeira linha (tick/speed)
-    # quando gravando, para o usuario sempre saber que o GIF esta
-    # sendo capturado — mesmo com o painel aberto, que esconde o
-    # console. O flag e espelho do estado em recording.py; ler aqui e
-    # barato e seguro.
-    tick_line = i18n.t(
-        "hud.tick_speed", tick=state.tick_count, speed=state.ticks_per_frame
-    )
-    if state.recording:
-        tick_line += "  " + i18n.t("hud.recording_on")
+    header = _font.render(_lineage_header_text(), True, _HUD_SEC)
+    _screen.blit(header, (inner_x, y))
+    y += header.get_height() + 2
 
-    status_block: list[tuple[str, tuple[int, int, int], bool]] = [
-        (
-            tick_line,
-            _RECORDING_COLOR if state.recording else _HUD_TEXT,
-            state.recording,
-        ),
-        (
-            i18n.t("hud.births_deaths", births=state.births, deaths=state.deaths),
-            _HUD_TEXT,
-            False,
-        ),
-        (
-            i18n.t("hud.save_slot", slot=state.active_save_slot),
-            _HUD_SEC,
-            False,
-        ),
-    ]
-
-    # --- Bloco B: parametros de experimento ---
-    #
-    # O parametro ativo (state.active_param) e destacado com dois
-    # sinais: um marcador " <" ao lado do valor e cor amarela na
-    # linha toda. So o marcador pode passar batido; so a cor nao diz
-    # QUAL valor numa linha compartilhada esta ativo. Juntos sao
-    # inequivocos.
-    #
-    # mut e local compartilham uma linha (hud.mutation), entao cada
-    # um tem seu placeholder de marcador. O efeito de HP das zonas
-    # tem linha propria, movido para ca do bloco de controles porque
-    # e parametro, nao lembrete de tecla.
-    marker = i18n.t("hud.active_marker")
-    mut_marker = marker if state.active_param == cfg.PARAM_MUTATION else ""
-    local_marker = marker if state.active_param == cfg.PARAM_LOCAL_SCALE else ""
-    zone_marker = (
-        marker if state.active_param == cfg.PARAM_ZONE_HP_EFFECT else ""
-    )
-
-    mut_line_color = (
-        cfg.INSPECTION_HIGHLIGHT_COLOR
-        if state.active_param == cfg.PARAM_MUTATION
-        else _HUD_TEXT
-    )
-    local_line_color = (
-        cfg.INSPECTION_HIGHLIGHT_COLOR
-        if state.active_param == cfg.PARAM_LOCAL_SCALE
-        else _HUD_TEXT
-    )
-    zone_line_color = (
-        cfg.INSPECTION_HIGHLIGHT_COLOR
-        if state.active_param == cfg.PARAM_ZONE_HP_EFFECT
-        else _HUD_TEXT
-    )
-
-    # mut e local compartilham linha: se QUALQUER um estiver ativo, a
-    # linha fica amarela. O marcador desambigua qual dos dois.
-    mutation_line_color = (
-        cfg.INSPECTION_HIGHLIGHT_COLOR
-        if state.active_param in (cfg.PARAM_MUTATION, cfg.PARAM_LOCAL_SCALE)
-        else _HUD_TEXT
-    )
-
-    params_block: list[tuple[str, tuple[int, int, int], bool]] = [
-        (
-            i18n.t(
-                "hud.mutation",
-                mut=state.mutation_rate,
-                mut_marker=mut_marker,
-                mode=cfg.MUTATION_MODE,
-                local=state.local_scale_fraction,
-                local_marker=local_marker,
-                gp=int(cfg.GLOBAL_PROBABILITY * 100),
-                gf=int(cfg.GLOBAL_SCALE_FRACTION * 100),
-            ),
-            mutation_line_color,
-            False,
-        ),
-        (
-            i18n.t("hud.zone_hp_param", v=state.zone_hp_effect) + zone_marker,
-            zone_line_color,
-            False,
-        ),
-        (
-            i18n.t(
-                "hud.repro_gates",
-                age=cfg.REPRODUCTION_MIN_AGE,
-                hp=cfg.REPRODUCTION_HP_GATE,
-                score=f"{cfg.REPRODUCTION_MIN_SCORE:.2f}",
-                enc=cfg.REPRODUCTION_MIN_ENCOUNTERS,
-            ),
-            _HUD_SEC,
-            False,
-        ),
-        (
-            i18n.t(
-                "hud.selection",
-                crit=cfg.REPRODUCTION_CRITERION,
-                w1=f"{cfg.LONGEVITY_WEIGHT:.1f}",
-                w2=f"{cfg.EXPLORATION_WEIGHT:.1f}",
-                w3=f"{cfg.INTERACTION_WEIGHT:.1f}",
-                w4=f"{cfg.REPRODUCTION_WEIGHT:.1f}",
-            ),
-            _HUD_TEXT,
-            False,
-        ),
-        (
-            i18n.t(
-                "hud.environment",
-                env=cfg.ENVIRONMENTAL_MODIFIERS,
-                zones=zones_txt,
-            ),
-            _HUD_TEXT,
-            False,
-        ),
-    ]
-
-    # --- Bloco C: controles ---
-    controls_block: list[tuple[str, tuple[int, int, int], bool]] = [
-        (i18n.t("hud.section_sim"), _HUD_SEC, False),
-        (i18n.t("hud.controls_1"), _HUD_SEC, False),
-        (i18n.t("hud.controls_2"), _HUD_SEC, False),
-        (i18n.t("hud.section_tune"), _HUD_SEC, False),
-        (i18n.t("hud.controls_3"), _HUD_SEC, False),
-        (i18n.t("hud.controls_4"), _HUD_SEC, False),
-        (i18n.t("hud.section_analysis"), _HUD_SEC, False),
-        (i18n.t("hud.controls_5"), _HUD_SEC, False),
-        (i18n.t("hud.controls_6"), _HUD_SEC, False),
-        (i18n.t("hud.controls_7"), _HUD_SEC, False),
-        (i18n.t("hud.controls_8"), _HUD_SEC, False),
-    ]
-
-    # --- Bloco D: por linhagem ---
-    lineage_block: list[tuple[str, tuple[int, int, int], bool]] = [
-        (_lineage_header_text(), _HUD_SEC, False),
-    ]
     for ag, h, t, g, p, s in zip(agents, hp, lt, gen, pops, scores):
         line = _LINEAGE_TABLE_ROW_FMT.format(
             id=ag["id"], hp=h, lt=t, gen=g, pop=p, score=s
         )
-        lineage_block.append((line, ag["color"], False))
+        surface = _font.render(line, True, ag["color"])
+        _screen.blit(surface, (inner_x, y))
+        y += surface.get_height() + 2
 
-    y = 8
-    x = 8
-    y = _draw_hud_block(x, y, status_block)
-    y = _draw_hud_block(x, y, params_block)
-    y = _draw_hud_block(x, y, lineage_block)
-    y = _draw_hud_block(x, y, controls_block)
+    return pygame.Rect(x0, y0, width, y - y0)
 
 
-def _chart_panel_x0() -> int:
-    """Borda esquerda do painel de chart, considerando o painel de
-    inspecao (que ocupa a direita da tela)."""
-    x0 = layout.LAYOUT.window_width - cfg.CHART_WIDTH - cfg.CHART_MARGIN
-    if state.inspection_mode:
-        x0 -= cfg.INSPECTION_PANEL_WIDTH
-    return x0
+def _draw_telemetry_hud() -> pygame.Rect:
+    """Compositor do Telemetry HUD.
+
+    Tres regioes empilhadas verticalmente:
+        brand frameless  (icon + titulo + REC + RPS)
+        painel com moldura (status + parametros)
+        tabela frameless   (R/G/B)
+
+    Retorna o bounding box da composicao inteira, para que o
+    contrato estrutural existente (contido na area do mundo,
+    largura HUD_TELEMETRY_WIDTH) continue valido.
+
+    O gate de floating_hud_visible e responsabilidade de draw();
+    esta funcao desenha incondicionalmente.
+    """
+    x0 = cfg.HUD_MARGIN
+    y0 = cfg.HUD_MARGIN
+    width = cfg.HUD_TELEMETRY_WIDTH
+
+    GAP_BRAND_PANEL = 5
+    GAP_PANEL_LINEAGE = 7
+
+    brand_rect = _draw_telemetry_brand(x0, y0, width)
+    panel_rect = _draw_telemetry_panel(x0, brand_rect.bottom + GAP_BRAND_PANEL, width)
+    lineage_rect = _draw_lineage_table(x0, panel_rect.bottom + GAP_PANEL_LINEAGE, width)
+
+    return brand_rect.union(panel_rect).union(lineage_rect)
 
 
 def _draw_generic_chart(
@@ -1245,19 +1656,21 @@ def _series_from_history(
     return [[(tick, values[k]) for tick, values in data] for k in range(n_values)]
 
 
-def _draw_metric_chart(x0: int, y0: int) -> None:
-    """Desenha o painel unico de chart para a metrica selecionada.
+def _draw_metric_chart(
+    x0: int, y0: int, width: int | None = None, height: int | None = None
+) -> None:
+    """Desenha o chart da metrica selecionada.
 
-    A tecla M cicla por todas as entradas de cfg.ADVANCED_METRICS,
-    incluindo "populacao" como primeira. Nao ha mais painel fixo de
-    "populacao por linhagem": populacao e so uma das metricas do
-    ciclo, com o mesmo caminho de codigo e a mesma janela temporal
-    (METRICS_INTERVAL ticks) das outras.
-
-    Titulos:
-      - "populacao por linhagem" para a metrica populacao;
-      - "metrica: <label>  (M cicla)" para as demais.
+    Largura e altura default sao cfg.CHART_WIDTH / cfg.CHART_HEIGHT
+    (compatibilidade com chamadas antigas). Quando chamada de dentro
+    do viewport de Metrics, recebe width/height ajustados a area
+    disponivel.
     """
+    if width is None:
+        width = cfg.CHART_WIDTH
+    if height is None:
+        height = cfg.CHART_HEIGHT
+
     name = state.selected_metric
     data = list(state.metrics_history.get(name, []))
     readable_label = i18n.t(f"metric.{name}")
@@ -1268,9 +1681,7 @@ def _draw_metric_chart(x0: int, y0: int) -> None:
         title = i18n.t("chart.metric_title", label=readable_label)
 
     if len(data) < 2:
-        _draw_generic_chart(
-            x0, y0, cfg.CHART_WIDTH, cfg.CHART_HEIGHT, [], title, [], []
-        )
+        _draw_generic_chart(x0, y0, width, height, [], title, [], [])
         return
 
     series = _series_from_history(data)
@@ -1282,87 +1693,120 @@ def _draw_metric_chart(x0: int, y0: int) -> None:
         labels = [ag["id"] for ag in agents]
         colors = [_LINEAGE_COLORS[k % len(_LINEAGE_COLORS)] for k in range(len(series))]
 
-    _draw_generic_chart(
-        x0, y0, cfg.CHART_WIDTH, cfg.CHART_HEIGHT, series, title, labels, colors
-    )
+    _draw_generic_chart(x0, y0, width, height, series, title, labels, colors)
 
 
-def _draw_chart_panel() -> None:
-    """Painel unico de chart, canto superior direito.
+def _draw_keycap(
+    surface: pygame.Surface,
+    key: str,
+    x: int,
+    y: int,
+) -> pygame.Rect:
+    """Desenha um keycap e retorna o Rect ocupado.
 
-    Antes eram dois paineis empilhados (populacao fixa no topo,
-    metrica ciclando embaixo). Agora e um so: M cicla por todas as
-    metricas incluindo populacao, e este painel renderiza a
-    selecionada.
+    Borda e texto amarelos (INSPECTION_HIGHLIGHT_COLOR), fundo escuro
+    (HUD_KEY_BG_COLOR). Sem rounded corners: retangulo discreto,
+    consistente com o resto da UI.
     """
-    x0 = _chart_panel_x0()
-    y0 = cfg.CHART_MARGIN
-    _draw_metric_chart(x0, y0)
+    pad_x = 6
+    pad_y = 2
+    text_surface = _font.render(key, True, cfg.INSPECTION_HIGHLIGHT_COLOR)
+    w = text_surface.get_width() + 2 * pad_x
+    h = text_surface.get_height() + 2 * pad_y
+
+    pygame.draw.rect(surface, cfg.HUD_KEY_BG_COLOR, (x, y, w, h))
+    pygame.draw.rect(surface, cfg.INSPECTION_HIGHLIGHT_COLOR, (x, y, w, h), 1)
+    surface.blit(text_surface, (x + pad_x, y + pad_y))
+    return pygame.Rect(x, y, w, h)
 
 
-_RPS_CYCLE: tuple[tuple[str, str, str], ...] = (
-    ("R", "B", "G"),
-    ("G", "R", "B"),
-    ("B", "G", "R"),
-)
+def _draw_shortcut(
+    surface: pygame.Surface,
+    key: str,
+    action: str,
+    x: int,
+    y: int,
+) -> pygame.Rect:
+    """Desenha `[KEY] acao` e retorna o Rect total ocupado."""
+    key_rect = _draw_keycap(surface, key, x, y)
+    action_surface = _font.render(action, True, _HUD_TEXT)
+    action_x = key_rect.right + 4
+    action_y = y + (key_rect.height - action_surface.get_height()) // 2
+    surface.blit(action_surface, (action_x, action_y))
 
-_COLOR_BY_ID: dict[str, tuple[int, int, int]] = {
-    "R": (255, 72, 72),
-    "G": (72, 255, 96),
-    "B": (80, 140, 255),
-}
-_TIP_TEXT_COLOR: tuple[int, int, int] = (200, 200, 200)
+    total_w = key_rect.width + 4 + action_surface.get_width()
+    total_h = key_rect.height
+    return pygame.Rect(x, y, total_w, total_h)
 
 
-def _draw_rps_tip() -> None:
-    """Dica do ciclo RPS, canto inferior direito.
+def _draw_command_dock() -> pygame.Rect:
+    """Desenha o Command Dock e retorna o Rect ocupado.
 
-    A largura da caixa e medida a partir do texto renderizado em vez
-    de constante fixa. Isso evita clipping quando as strings mudam
-    (ex: a traducao PT usa seta e palavras mais longas). Medir e
-    barato: tres linhas x cinco segmentos, uma vez por frame.
+    Cada grupo vira uma linha: `LABEL  [key] acao  [key] acao ...`.
+    Largura = largura util do mundo - 2*HUD_MARGIN. Nao invade a
+    sidebar. Sem hit-testing: os keycaps sao representacao visual.
     """
-    line_height = 18
-    padding = 8
+    screen_w, screen_h = _screen.get_size()
+    usable_w = screen_w - cfg.INSPECTION_PANEL_WIDTH
+    width = int((usable_w - 2 * cfg.HUD_MARGIN) * 0.38)
+    x0 = cfg.HUD_MARGIN
 
-    # Pre-renderiza todos os segmentos para medir a linha mais larga.
-    rendered_rows: list[list[pygame.Surface]] = []
-    max_row_width = 0
-    for me, enemy, ally in _RPS_CYCLE:
-        segments: list[tuple[str, tuple[int, int, int]]] = [
-            (me, _COLOR_BY_ID[me]),
-            (i18n.t("rps.enemy"), _TIP_TEXT_COLOR),
-            (enemy, _COLOR_BY_ID[enemy]),
-            (i18n.t("rps.ally"), _TIP_TEXT_COLOR),
-            (ally, _COLOR_BY_ID[ally]),
-        ]
-        surfaces = [_font_tip.render(text, True, color) for text, color in segments]
-        rendered_rows.append(surfaces)
-        row_width = sum(s.get_width() for s in surfaces)
-        if row_width > max_row_width:
-            max_row_width = row_width
-
-    width = max_row_width + 2 * padding
-    height = padding * 2 + line_height * len(_RPS_CYCLE)
-
-    x0 = layout.LAYOUT.window_width - width - cfg.CHART_MARGIN
-    y0 = layout.LAYOUT.window_height - height - cfg.CHART_MARGIN
-
-    # Desliza para a esquerda se o painel estiver aberto.
-    if state.inspection_mode:
-        x0 -= cfg.INSPECTION_PANEL_WIDTH
+    line_h = _font.get_height() + 4
+    group_gap = 2
+    # Estimativa de altura: 4 grupos x line_h + 3 gaps + 2*padding.
+    n_groups = len(_COMMAND_GROUPS)
+    height = 2 * cfg.HUD_PADDING + n_groups * line_h + (n_groups - 1) * group_gap
+    y0 = screen_h - cfg.HUD_MARGIN - height
 
     background = pygame.Surface((width, height), pygame.SRCALPHA)
-    background.fill((*_CHART_BG, 220))
+    background.fill((*cfg.HUD_BG_COLOR, cfg.HUD_OVERLAY_ALPHA))
     _screen.blit(background, (x0, y0))
-    pygame.draw.rect(_screen, _CHART_AXIS, (x0, y0, width, height), 1)
+    pygame.draw.rect(_screen, _HUD_BORDER, (x0, y0, width, height), 1)
 
-    for i, surfaces in enumerate(rendered_rows):
-        y = y0 + padding + i * line_height
-        x = x0 + padding
-        for surface in surfaces:
-            _screen.blit(surface, (x, y))
-            x += surface.get_width()
+    # Largura reservada para o rotulo do grupo, para os keycaps
+    # comecarem alinhados entre as linhas. Medido do maior rotulo
+    # traduzido (PAINEIS/RAPIDAS sao os mais longos em PT).
+    label_w = 0
+    for label_key, _shortcuts in _COMMAND_GROUPS:
+        s = _font.render(i18n.t(label_key), True, _HUD_SEC)
+        if s.get_width() > label_w:
+            label_w = s.get_width()
+    label_col_x = x0 + cfg.HUD_PADDING
+    shortcuts_x = label_col_x + label_w + 10
+
+    y = y0 + cfg.HUD_PADDING
+    for label_key, shortcuts in _COMMAND_GROUPS:
+        label_surface = _font.render(i18n.t(label_key), True, _HUD_SEC)
+        _screen.blit(label_surface, (label_col_x, y + 2))
+
+        x = shortcuts_x
+        for key, action_key in shortcuts:
+            rect = _draw_shortcut(_screen, key, i18n.t(action_key), x, y)
+            x = rect.right + 12
+
+        y += line_h + group_gap
+
+    return pygame.Rect(x0, y0, width, height)
+
+
+def _render_rps_compact() -> list[pygame.Surface]:
+    """Linha compacta do ciclo RPS: R -> B -> G -> R.
+
+    Substitui o antigo painel RPS tip de 3 linhas. Letras coloridas
+    por linhagem; setas em cinza neutro. Lista de Surfaces para o
+    chamador medir a largura total e desenhar sequencialmente.
+    """
+    arrow_color = _HUD_SEC
+    parts: list[tuple[str, tuple[int, int, int]]] = [
+        ("R", _LINEAGE_COLORS[0]),
+        (" \u2192 ", arrow_color),
+        ("B", _LINEAGE_COLORS[2]),
+        (" \u2192 ", arrow_color),
+        ("G", _LINEAGE_COLORS[1]),
+        (" \u2192 ", arrow_color),
+        ("R", _LINEAGE_COLORS[0]),
+    ]
+    return [_font_hud_title.render(t, True, c) for t, c in parts]
 
 
 def draw() -> None:
@@ -1381,11 +1825,16 @@ def draw() -> None:
     # cheia quando a proporcao do monitor difere da do mundo).
     _screen.fill((0, 0, 0))
     _screen.blit(surface, (_offset_x, _offset_y))
-    _draw_hud()
-    _draw_chart_panel()
-    _draw_rps_tip()
-    if state.inspection_mode:
-        _draw_inspection_panel()
+
+    # Elementos flutuantes sobre o mundo: gate unico aqui, nao dentro
+    # de _draw_hud/_draw_rps_tip. A autoridade de composicao e draw().
+    # A lateral direita fica FORA do gate: ocupa faixa estrutural
+    # reservada, nao se sobrepoe ao mapa.
+    if ui_state.floating_hud_visible:
+        _draw_telemetry_hud()
+        _draw_command_dock()
+
+    _draw_lateral_panel()
     pygame.display.flip()
 
     # Gravacao de tela: captura o frame COMPLETO renderizado (mundo +

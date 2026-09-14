@@ -5,7 +5,7 @@
 </p>
 
 <p align="center">
-  <img alt="Version" src="https://img.shields.io/badge/version-0.4.0-blue">
+  <img alt="Version" src="https://img.shields.io/badge/version-0.5.0-blue">
   <img alt="License: MIT" src="https://img.shields.io/badge/License-MIT-yellow.svg">
   <img alt="Python" src="https://img.shields.io/badge/python-3.12-3776AB?logo=python&logoColor=white">
   <img alt="Idioma" src="https://img.shields.io/badge/🇧🇷_code-PT--BR-009C3B">
@@ -46,7 +46,7 @@ Each critter can:
 
 There is no player-controlled creature and no predefined winning strategy.
 
-The interesting part is watching behavior emerge from simple rules, inheritance, environmental pressure, and lots of numerical linear algebra.
+The interesting part is watching behavior emerge from simple rules, inheritance, environmental pressure, and a lot of numerical linear algebra.
 
 > 🧠 The critters do not learn through backpropagation. Their neural networks are inherited. Evolution does the optimization — slowly, noisily, and without reading the documentation.
 
@@ -77,15 +77,9 @@ Every simulation tick roughly follows this cycle:
          mutate
 ```
 
-The world is **toroidal**.
+The world is **toroidal**. Walk through the right edge and you return on the left. Leave through the bottom and you reappear at the top.
 
-Walk through the right edge and you return on the left. Leave through the bottom and you reappear at the top.
-
-There are no walls.
-
-Pac-Man would understand immediately.
-
-Three lineages — **R**, **G**, and **B** — coexist in a non-transitive ecological cycle. No lineage has a permanent universal advantage over the other two.
+Three lineages — **R**, **G**, **B** — coexist in a non-transitive ecological cycle. No lineage has a permanent universal advantage.
 
 Add environmental zones, mutation, selection pressure and finite populations, and the result becomes surprisingly difficult to predict.
 
@@ -125,33 +119,61 @@ SPACE
 
 Life begins.
 
-No paperwork required.
-
 ---
 
 ## 🎮 Essential controls
 
-You can learn almost everything else later.
+The graphical interface has three layers:
 
-| Key             | Action                                  |
-| --------------- | --------------------------------------- |
-| **SPACE**       | Pause / resume                          |
-| **= / +**       | Advance exactly one tick                |
-| **R**           | Create a completely new run             |
-| **I**           | Open / close inspection mode            |
-| **Mouse click** | Observe a critter                       |
-| **← / →**       | Change the discovery criterion          |
-| **Tab**         | Change the discovery lineage filter     |
-| **Enter**       | Observe the current discovery candidate |
-| **M**           | Change the chart metric                 |
-| **S / L**       | Save / load                             |
-| **N**           | Change save slot                        |
-| **Z**           | Enable / disable environmental zones    |
-| **G**           | Start / stop GIF recording              |
-| **F11**         | Fullscreen                              |
-| **ESC**         | Leave the universe                      |
+* **global commands** — always active;
+* **panel activation** — each key focuses a panel;
+* **contextual navigation** — operates inside the focused panel.
 
-Some ecological parameters can also be adjusted while the simulation is running.
+### Global commands
+
+| Key       | Action                              |
+| --------- | ----------------------------------- |
+| **SPACE** | Pause / resume                      |
+| **= / +** | Advance exactly one tick            |
+| **R**     | Create a completely new run         |
+| **L**     | Load the active save slot           |
+| **N**     | Cycle the active save slot          |
+| **P**     | Print the current simulation state  |
+| **Z**     | Toggle environmental zones          |
+| **G**     | Start / stop GIF recording          |
+| **H**     | Show / hide floating HUD            |
+| **F11**   | Fullscreen                          |
+| **ESC**   | Return to world focus, or quit      |
+
+### Panel activation
+
+Each key focuses the corresponding panel. It does not toggle the panel and it does not perform the panel's action directly.
+
+| Key   | Panel         |
+| ----- | ------------- |
+| **I** | Inspection    |
+| **C** | Configuration |
+| **M** | Metrics       |
+| **S** | Session       |
+| **T** | Tools         |
+
+### Inside a focused panel
+
+| Key           | Action                                |
+| ------------- | ------------------------------------- |
+| **Tab**       | Next panel                            |
+| **Shift+Tab** | Previous panel                        |
+| **↑ / ↓**     | Move the cursor                       |
+| **← / →**     | Adjust the selected VALUE / ENUM      |
+| **Enter**     | Activate the selected ACTION / TOGGLE |
+| **ESC**       | Return focus to the world             |
+
+### Mouse
+
+| Input          | Action                                       |
+| -------------- | -------------------------------------------- |
+| **Left click** | Observe the critter under the cursor, if any |
+| **Wheel**      | Scroll the lateral panel                     |
 
 See [Controls](docs/controls.md) for the complete reference.
 
@@ -159,64 +181,33 @@ See [Controls](docs/controls.md) for the complete reference.
 
 ## 🔍 Watch a critter
 
-Press **I** to open the inspection panel.
+Press **I** to focus the Inspection panel.
 
-This is where Primordial Soup stops looking like colored noise and starts becoming biology with debugging tools.
+The panel shows a **Discovery** candidate and lets you decide who to follow.
 
-The inspection system distinguishes two ideas:
-
-### Discovery
-
-Discovery answers:
-
-> **Who looks interesting right now?**
-
-You can change:
-
-* the selection criterion with **← / →**;
-* the lineage filter with **Tab**.
-
-The simulation then identifies a candidate matching that lens.
-
-Changing the discovery lens does **not** silently replace the critter you are already observing.
-
-That distinction is deliberate.
-
-### Observation
-
-Observation answers:
-
-> **Who am I actually following?**
-
-You explicitly choose an observed critter by:
-
-* opening inspection mode;
-* clicking one directly;
-* or pressing **Enter** to adopt the current discovery candidate.
-
-Think of it this way:
+Two distinct ideas:
 
 ```text
-DISCOVERY                          OBSERVATION
+DISCOVERY
+"Who looks interesting right now?"
 
-criterion: oldest                 critter #1847
-lineage: G                        lineage: R
-candidate: #903                   status: alive
-      │
-      │ ENTER
-      ▼
-observe #903
+OBSERVATION
+"Who am I actually following?"
 ```
 
-Changing your search criteria does not magically teleport the microscope.
+You change **Discovery** by selecting **Criterion** or **Lineage filter** and using **← / →**.
 
-If the observed critter dies, observation does not automatically jump to another individual. Its final state is preserved so you can inspect what happened.
+You choose who to **Observe** by selecting **Observe candidate** and pressing **Enter**, or by clicking a critter in the world.
 
-Death ends the critter.
+Changing discovery does not silently replace your observation.
 
-It does not end the autopsy.
+Leaving Inspection does not end your observation either. The stable critter ID stays selected and the trail keeps accumulating. Only the visual overlay — candidate marker, observed marker, death marker, trail — is drawn when Inspection is focused.
 
-See [Inspection](docs/inspection.md) for the full system.
+To end an observation explicitly, use **Clear observation** in the Inspection panel.
+
+If the observed critter dies, its final state is preserved. Death ends the critter. It does not end the autopsy.
+
+See [Inspection](docs/inspection.md) for the full model.
 
 ---
 
@@ -238,63 +229,34 @@ There is no central controller telling individuals what to do.
 
 Two genetically different critters standing in the same place may make completely different decisions.
 
-And because their networks are inherited, successful behavior can propagate across generations even though nobody explicitly programmed that behavior.
-
-For the implementation details, see [Architecture](docs/architecture.md).
+See [Architecture](docs/architecture.md) for the implementation.
 
 ---
 
 ## 🧬 Evolution
 
-Reproduction is not simply:
+Reproduction is not simply "alive → have children".
 
-```text
-alive → have children
-```
-
-That would make evolutionary biology suspiciously easy.
-
-Individuals must satisfy reproductive conditions before they can become candidate parents. Selection can take survival, exploration, interaction and reproductive success into account.
+Individuals must satisfy reproductive conditions before they can become candidate parents. Selection takes survival, exploration, interaction and reproductive success into account.
 
 Eligible parents contribute genomes to offspring through crossover, followed by mutation.
 
 Over many generations this creates a feedback loop:
 
 ```text
-behavior
-   ↓
-ecological outcome
-   ↓
-selection
-   ↓
-reproduction
-   ↓
-inheritance
-   ↓
-mutation
-   ↓
-new behavior
+behavior → ecological outcome → selection → reproduction
+   → inheritance → mutation → new behavior
 ```
 
-There is no guarantee that evolution finds a globally optimal solution.
+Populations can converge, specialize, oscillate, get stuck, or go extinct with impressive efficiency.
 
-Populations can converge.
-
-They can specialize.
-
-They can oscillate.
-
-They can get stuck.
-
-They can also go extinct with impressive efficiency.
-
-See [Evolution](docs/evolution.md) for the actual reproductive and genetic model.
+See [Evolution](docs/evolution.md).
 
 ---
 
 ## 🌍 Ecology
 
-The world contains three interacting lineages:
+Three interacting lineages:
 
 ```text
 R
@@ -302,25 +264,9 @@ G
 B
 ```
 
-Their relationships form a non-transitive cycle: ecological advantage depends on who else is present.
+Their relationships form a non-transitive cycle.
 
-This prevents the simulation from reducing immediately to a simple “strongest lineage wins” system.
-
-Population density also matters.
-
-So do:
-
-* HP;
-* encounters;
-* environmental zones;
-* reproduction constraints;
-* mutation;
-* spatial distribution;
-* and plain old bad luck.
-
-Environmental zones can be beneficial, neutral or harmful depending on their current HP effect.
-
-A refuge can become a trap while the simulation is running.
+Environmental zones can be beneficial, neutral or harmful. A refuge can become a trap while the simulation is running.
 
 Evolution receives no advance notice.
 
@@ -330,29 +276,11 @@ Evolution receives no advance notice.
 
 Do not look only at population size.
 
-Interesting signals include:
-
-* population by lineage;
-* average HP;
-* longest lifetime;
-* maximum generation;
-* average composite score;
-* mutation behavior;
-* extinction events;
-* spatial clustering;
-* lineage dominance;
-* repeated movement patterns;
-* and changes in the individuals selected by different inspection criteria.
+Useful signals: population by lineage, average HP, longest lifetime, maximum generation, average composite score, spatial clustering, extinction events, changes in the individuals selected by different inspection criteria.
 
 A population surviving for a long time does not necessarily mean it is evolving in an interesting way.
 
-Likewise, chaos is not automatically adaptation.
-
-The charts tell part of the story.
-
-Inspection tells another.
-
-Repeated experiments tell much more.
+Charts tell part of the story. Inspection tells another. Repeated experiments tell much more.
 
 ---
 
@@ -360,68 +288,19 @@ Repeated experiments tell much more.
 
 A few good starting experiments:
 
-### Low mutation
+* **Low mutation** — does the population stabilize around a small set of strategies?
+* **High mutation** — does diversity help adaptation, or does inheritance become too noisy?
+* **Environmental traps** — can populations evolve behavior that reduces exposure to dangerous regions?
+* **Long runs** — do metrics keep improving, or does the system plateau?
+* **Same seed, different rule** — was the difference caused by the parameter or by random history?
 
-Reduce mutation and run for many generations.
-
-Question:
-
-> Does the population stabilize around a small set of strategies?
-
-### High mutation
-
-Increase mutation aggressively.
-
-Question:
-
-> Does diversity improve adaptation, or does inheritance become too noisy to preserve useful behavior?
-
-### Environmental traps
-
-Make environmental zones harmful.
-
-Question:
-
-> Can populations evolve behavior that reduces exposure to dangerous regions?
-
-### Long runs
-
-Run tens of thousands of ticks.
-
-Question:
-
-> Do lifetime, generation depth and composite score continue improving, or does the system reach a plateau?
-
-### Same seed, different rule
-
-Run two headless experiments from the same seed while changing exactly one parameter.
-
-Question:
-
-> Was the difference caused by the parameter or by random history?
-
-More structured experiments live in [Experiments](docs/experiments.md).
-
-Lab coat optional.
-
-Fixed random seed recommended.
+See [Experiments](docs/experiments.md).
 
 ---
 
 ## 🤖 Headless experiments
 
 Primordial Soup can run without opening the graphical interface.
-
-That is useful for:
-
-* long experiments;
-* reproducible runs;
-* parameter sweeps;
-* automated tests;
-* CI;
-* collecting savegames for later inspection.
-
-Example:
 
 ```bash
 python -m primordial_soup --new -d 10000 -s world_a --seed 42
@@ -433,12 +312,6 @@ Continue an existing run:
 python -m primordial_soup -l world_a -d 5000
 ```
 
-Long run without per-tick noise:
-
-```bash
-python -m primordial_soup --new -d 100000 -s world_a --seed 42 -q
-```
-
 A save produced headlessly can be opened later in the graphical simulation.
 
 See [Headless experiments](docs/headless.md).
@@ -447,23 +320,15 @@ See [Headless experiments](docs/headless.md).
 
 ## 💾 Save, kill the universe, restore it
 
-The simulation provides multiple save slots.
+Four graphical save slots: `default`, `world_a`, `world_b`, `world_c`.
 
-This makes comparative experiments much easier:
+Cycled with **N**.
 
-```text
-run A → save world_a
-run B → save world_b
-run C → save world_c
-```
+Save through **S → Session → Save now → Enter**.
 
-Then load each world and inspect the resulting population.
+Load the active slot with **L**.
 
-Savegames are versioned because genomes, neural architectures and simulation state evolve together with the project.
-
-When the format changes incompatibly, Primordial Soup prefers rejecting an invalid world over quietly resurrecting it incorrectly.
-
-Even artificial life deserves data integrity.
+Savegames are versioned because genomes, neural architectures and simulation state evolve together with the project. When the format changes incompatibly, Primordial Soup prefers rejecting an invalid world over quietly resurrecting it incorrectly.
 
 See [Persistence](docs/persistence.md).
 
@@ -471,38 +336,17 @@ See [Persistence](docs/persistence.md).
 
 ## 🧪 Primordial Soup is an experiment, not a biological model
 
-The simulation borrows ideas from:
-
-* artificial life;
-* evolutionary algorithms;
-* neural networks;
-* ecology;
-* inheritance;
-* mutation;
-* selection;
-* spatial interaction.
+The simulation borrows ideas from artificial life, evolutionary algorithms, neural networks, ecology, inheritance, mutation, selection, spatial interaction.
 
 But it is intentionally simplified.
 
-A critter is not an organism.
+A critter is not an organism. HP is not metabolism. A neural matrix is not a biological brain. A few thousand generations in NumPy do not settle evolutionary biology.
 
-HP is not metabolism.
-
-A neural matrix is not a biological brain.
-
-A few thousand generations in NumPy do not settle evolutionary biology.
-
-The value of the project lies elsewhere: it provides a compact environment where complex population-level behavior can emerge from explicit rules that are easy to inspect, modify and experiment with.
-
-That makes it useful as both a programming project and a playground for thinking about adaptive systems.
+The value of the project is a compact environment where complex population-level behavior can emerge from explicit rules that are easy to inspect, modify and experiment with.
 
 ---
 
 ## 📚 Documentation
-
-The README gives you the map.
-
-The documents below contain the territory.
 
 | Document                                   | What it answers                                                 |
 | ------------------------------------------ | --------------------------------------------------------------- |
@@ -520,7 +364,7 @@ The documents below contain the territory.
 A useful rule of thumb:
 
 ```text
-README         → Why should I care?
+README          → Why should I care?
 Getting started → How do I run it?
 Simulation      → What is happening?
 Evolution       → Why does it change?
@@ -532,22 +376,11 @@ Architecture    → How is it implemented?
 
 ## 🛠️ Want to modify the universe?
 
-Start with:
-
-```text
-docs/architecture.md
-docs/configuration.md
-```
+Start with `docs/architecture.md` and `docs/configuration.md`.
 
 The codebase separates the laws of the simulation from the machinery that executes them.
 
-If you want to change the physics, ecology, cognition or inheritance model, understand that distinction first.
-
-Otherwise you may accidentally discover a new law of nature called:
-
-```text
-regression
-```
+Otherwise you may accidentally discover a new law of nature called `regression`.
 
 ---
 

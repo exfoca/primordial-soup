@@ -7,8 +7,9 @@ Usuario declara SCREEN_WIDTH / SCREEN_HEIGHT em config.py; este modulo
 deriva PIXEL_SCALE, WORLD_WIDTH, WORLD_HEIGHT, WINDOW_WIDTH e
 WINDOW_HEIGHT para o mundo preencher o espaco disponivel.
 
-O painel de inspecao tem largura FIXA e ocupa sempre a faixa direita,
-independente de inspection_mode. Mundo e painel nunca se sobrepoem.
+O painel lateral tem largura FIXA e ocupa sempre a faixa direita,
+independente de qual painel esta focado. Mundo e painel nunca se
+sobrepoem.
 
 Regras (ver _derive):
   1. available_w = SCREEN_WIDTH - INSPECTION_PANEL_WIDTH

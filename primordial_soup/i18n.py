@@ -10,10 +10,23 @@ NAO traduzido aqui (deliberado):
   - Chaves do savegame (sempre portugues; ver persistence.py).
   - Cabecalhos do CSV e chaves de metrica (sempre portugues; ver
     config.py).
-  - Valores canonicos de config lidos pelo codigo (ver config.py).
   - IDs de linhagem "R", "G", "B" (identificadores, nao exibicao).
   - Nomes de coluna do agente / constantes de indice (internos).
   - Nomes de arquivo (genome_pool.pkl, _metricas.csv).
+
+Valores canonicos de config NAO sao alterados nem localizados
+internamente. Quando um valor canonico e exibido ao usuario, a
+camada de apresentacao pode mapea-lo para uma representacao
+localizada (ver hud.value.mutation_mode.* e hud.value.environment.*).
+A distincao e:
+
+    canonical value != display value
+
+Nunca:
+
+    cfg.MUTATION_MODE = "duas_escalas"
+
+apenas porque a interface esta em portugues.
 
 O idioma de exibicao e preferencia do usuario. NAO e parte do estado
 da simulacao e NAO e resetado por state.reset_counters().
@@ -25,36 +38,60 @@ from . import state
 TRANSLATIONS: dict[str, dict[str, str]] = {
     "en": {
         # --- HUD: global block ---
-        "hud.tick_speed": "tick={tick}  speed={speed}x",
-        "hud.births_deaths": "births={births}  deaths={deaths}",
-        "hud.mutation": "mut={mut}%{mut_marker}  mode={mode}  local={local}%{local_marker}  global={gp}%@{gf}%",
-        "hud.selection": "selection={crit}  L/E/I/R={w1}/{w2}/{w3}/{w4}",
-        "hud.environment": "env={env}  {zones}",
-        "hud.save_slot": "slot: {slot}",
-        "hud.zones_none": "none",
-        "hud.zones_fmt": "{n}x r={r} ({bonus}hp)",
-        "hud.zones_off_suffix": "{base} [off]",
-        "hud.zones_damage": "DANGER",
-        "hud.zones_zkey": "  [Z]",
-        "hud.metric_prefix": "metric (M): {label}",
-        "hud.inspection_prefix": "inspection (i): {state}",
         "hud.on": "ON",
         "hud.off": "OFF",
-        # --- HUD: controls block ---
-        "hud.section_sim": "── simulation ─────────────────────────",
-        "hud.controls_1": "SPACE pause  = step  R recreate  ESC quit",
-        "hud.controls_2": "S save  L load  N slot  P print",
-        "hud.section_tune": "── adjust ────────────────────────────",
-        "hud.controls_3": "U mut  O local  E zone HP  then up/down",
-        "hud.controls_4": ", . speed  Z zones on/off",
-        "hud.zone_hp_param": "zone HP effect={v}",
-        "hud.repro_gates": "repro: age>={age} hp<{hp} score>={score} enc>={enc}",
-        "hud.active_marker": " ◄",
-        "hud.section_analysis": "── analysis ──────────────────────────",
-        "hud.controls_5": "M metric  I inspect  click observes",
-        "hud.controls_6": "← → criterion  Tab lineage",
-        "hud.controls_7": "Enter observes candidate  F11 fullscreen",
-        "hud.controls_8": "H reset hp  T language  G record GIF",
+        # --- Command Dock (Patch 3) ---
+        "command.group.simulation": "SIM",
+        "command.group.panels": "PANELS",
+        "command.group.navigation": "NAV",
+        "command.group.quick": "QUICK",
+
+        "command.pause": "pause",
+        "command.step": "step",
+        "command.new_world": "new",
+        "command.fullscreen": "fullscreen",
+        "command.back_quit": "back/quit",
+
+        "command.inspect": "inspect",
+        "command.configuration": "config",
+        "command.metrics": "metrics",
+        "command.session": "session",
+        "command.tools": "tools",
+
+        "command.select": "select",
+        "command.change": "change",
+        "command.panel": "panel",
+        "command.activate": "activate",
+        "command.observe": "observe",
+
+        "command.hide_hud": "hide HUD",
+        "command.load": "load",
+        "command.slot": "slot",
+        "command.zones": "zones",
+        "command.record": "record",
+        # --- Telemetry HUD: labels atomicos (Patch 2) ---
+        "hud.label.tick": "TICK",
+        "hud.label.speed": "SPEED",
+        "hud.label.births": "BIRTHS",
+        "hud.label.deaths": "DEATHS",
+        "hud.label.slot": "SLOT",
+        "hud.label.mutation": "MUT",
+        "hud.label.mode": "MODE",
+        "hud.label.local": "LOCAL",
+        "hud.label.global": "GLOBAL",
+        "hud.label.environment": "ENV",
+        "hud.label.zones": "ZONES",
+        "hud.label.zone_hp": "ZONE HP",
+        "hud.label.reproduction": "REPRO",
+        "hud.label.weights": "WEIGHTS",
+        "hud.value.mutation_mode.surgical": "surgical",
+        "hud.value.mutation_mode.two_scales": "two scales",
+        "hud.value.environment.zonas": "zones",
+        "hud.reproduction_gates":
+            "age>={age} hp<{hp} score>={score:.2f} enc>={enc}",
+        "hud.zone_summary_on": "{n}x r={r} ON",
+        "hud.zone_summary_off": "{n}x r={r} OFF",
+        "hud.zone_summary_none": "none",
         # --- Inspection criteria and lineage filter ---
         "criterion.most_evolved": "most evolved",
         "criterion.oldest": "oldest",
@@ -77,6 +114,38 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "panel.enter_hint": "Enter = observe",
         "panel.hint_navigation": "←→ criterion | Tab lineage",
         "panel.hint_actions": "Enter observe | click choose | I exit",
+        # --- Panel titles ---
+        "panel.inspection.title": "INSPECTION",
+        "panel.configuration.title": "CONFIGURATION",
+        "panel.metrics.title": "METRICS",
+        "panel.session.title": "SESSION",
+        "panel.tools.title": "TOOLS",
+        # --- Panel items ---
+        "item.criterion": "Criterion",
+        "item.lineage_filter": "Lineage filter",
+        "item.discovery_candidate": "Candidate",
+        "item.observe_candidate": "Observe candidate",
+        "item.clear_observation": "Clear observation",
+        "item.speed": "Simulation speed",
+        "item.mutation_rate": "Mutation rate",
+        "item.local_scale": "Local mutation scale",
+        "item.zones": "Environmental zones",
+        "item.zone_hp_effect": "Zone HP effect",
+        "item.heal_all": "Heal all critters",
+        "item.metric": "Metric",
+        "item.save_slot": "Save slot",
+        "item.save": "Save now",
+        "item.load": "Load",
+        "item.new_world": "New world",
+        "item.language": "Language",
+        "item.recording": "Recording",
+        "item.print_state": "Print state",
+        # --- Footers ---
+        "footer.inspection": "↑↓ navigate | ←→ change | Tab panel | Enter activate | Esc world",
+        "footer.configuration": "↑↓ navigate | ←→ change | Tab panel | Enter activate | Esc world",
+        "footer.metrics": "↑↓ navigate | ←→ change | Tab panel | Enter activate | Esc world",
+        "footer.session": "↑↓ navigate | ←→ change | Tab panel | Enter activate | Esc world",
+        "footer.tools": "↑↓ navigate | ←→ change | Tab panel | Enter activate | Esc world",
         # --- HUD: recording indicator ---
         "hud.recording_on": "● REC",
         # --- HUD: lineage table column labels ---
@@ -98,9 +167,6 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "metric.geracao_maxima": "max generation",
         "metric.score_composto_medio": "average composite score",
         "metric.taxa_de_mutacao": "mutation rate (%)",
-        # --- RPS tip ---
-        "rps.enemy": "  -> enemy: ",
-        "rps.ally": "  |  ally: ",
         # --- Inspection panel ---
         "panel.title": "INSPECTION",
         "panel.no_selection": "no critter observed",
@@ -119,6 +185,7 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "panel.last_action": "last action:",
         "panel.position": "position:",
         "panel.vision_title": "vision 11x11 (center {x},{y})",
+        "panel.vision_unavailable_dead": "vision unavailable after death",
         # --- Heatmaps ---
         "heatmap.w1": "W1 (input->hidden1)",
         "heatmap.w2": "W2 (hidden1->hidden2)",
@@ -128,17 +195,8 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "heatmap.r": "R (recurrence)",
         # --- Console logs ---
         "log.recreate": "[recreate] population reset, tick=0",
-        "log.inspection_on": "[inspection] ON — {desc}",
-        "log.inspection_on_empty": "[inspection] ON (no living critters)",
-        "log.inspection_on_auto": "[inspection] ON — auto-selected {desc}",
-        "log.inspection_off": "[inspection] OFF",
-        "log.inspection_select": "[inspection] {desc}",
-        "log.inspection_miss": "[inspection] nobody at ({x},{y}) radius={r}",
         "log.load_lineage_count": "[load] save has {saved} lineages, expected {expected}.",
         "log.load_lineage_shape": "[load] lineage {id}: pool={pool} agents={agents} ids={ids} (expected {expected}).",
-        "log.stale_selection": "(stale selection)",
-        "log.selection_desc": "lineage={id} id={i} score={s} gen={g} time={t} pos=({x},{y})",
-        "log.selection_desc_dead": "id={id} (dead; observation frozen)",
         "log.inspection_no_match": "[inspection] no match for criterion={criterion} lineage={lineage}",
         "log.inspection_observe": "[inspection] observing {desc}",
         "log.heal_all": "[heal] {n} critters restored to full HP",
@@ -169,7 +227,7 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "log.save_metrics_ok": "[save] metrics exported: {path}",
         "log.save_metrics_fail": "[save] failed to export metrics ({e})",
         "log.tick_summary": "tick={t} lifetimes={lt} generations={g} pop={p} mut={m}% mode={modo} local={l}% global={gg}%@{gf}% genes={genes}",
-        "log.print_state": "tick={t} lifetimes={lt} generations={g} pop={p} speed={s}x mut={m}% mode={modo} local={l}% global={gg}%@{gf}% genes={genes} environment={a} zones={z} metric={met} inspection={i} slot={slot}",
+        "log.print_state": "tick={t} lifetimes={lt} generations={g} pop={p} speed={s}x mut={m}% mode={modo} local={l}% global={gg}%@{gf}% genes={genes} environment={a} zones={z} metric={met} slot={slot}",
         # --- Recording logs ---
         "log.recording_start": "[recording] ON -> {path}  ({fps} fps, max {max} frames, scale {scale})",
         "log.recording_ok": "[recording] {path} saved: {n} frames @ {fps} fps ({kb} KB)",
@@ -180,36 +238,60 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
     },
     "pt": {
         # --- HUD: global block ---
-        "hud.tick_speed": "tick={tick}  speed={speed}x",
-        "hud.births_deaths": "nasc={births}  mortes={deaths}",
-        "hud.mutation": "mut={mut}%{mut_marker}  modo={mode}  local={local}%{local_marker}  global={gp}%@{gf}%",
-        "hud.selection": "selection={crit}  L/E/I/R={w1}/{w2}/{w3}/{w4}",
-        "hud.environment": "env={env}  {zones}",
-        "hud.save_slot": "slot: {slot}",
-        "hud.zones_none": "nenhum",
-        "hud.zones_fmt": "{n}x r={r} ({bonus}hp)",
-        "hud.zones_off_suffix": "{base} [off]",
-        "hud.zones_damage": "PERIGO",
-        "hud.zones_zkey": "  [Z]",
-        "hud.metric_prefix": "métrica (M): {label}",
-        "hud.inspection_prefix": "inspeção (i): {state}",
         "hud.on": "ON",
         "hud.off": "OFF",
-        # --- HUD: controls block ---
-        "hud.section_sim": "── simulação ─────────────────────────",
-        "hud.controls_1": "SPACE pausa  = step  R recria  ESC sai",
-        "hud.controls_2": "S salva  L carrega  N slot  P imprime",
-        "hud.section_tune": "── ajuste ────────────────────────────",
-        "hud.controls_3": "U mut  O local  E efeito HP zonas  depois ↑/↓",
-        "hud.controls_4": ", . velocidade  Z zonas on/off",
-        "hud.zone_hp_param": "efeito HP zonas={v}",
-        "hud.repro_gates": "repro: idade>={age} hp<{hp} score>={score} enc>={enc}",
-        "hud.active_marker": " ◄",
-        "hud.section_analysis": "── análise ───────────────────────────",
-        "hud.controls_5": "M métrica  I inspeção  clique observa",
-        "hud.controls_6": "← → critério  Tab linhagem",
-        "hud.controls_7": "Enter observa candidato  F11 tela cheia",
-        "hud.controls_8": "H resetar hp  T idioma  G grava GIF",
+        # --- Command Dock (Patch 3) ---
+        "command.group.simulation": "SIM",
+        "command.group.panels": "PAINÉIS",
+        "command.group.navigation": "NAV",
+        "command.group.quick": "RÁPIDAS",
+
+        "command.pause": "pausa",
+        "command.step": "step",
+        "command.new_world": "novo",
+        "command.fullscreen": "tela cheia",
+        "command.back_quit": "volta/sai",
+
+        "command.inspect": "inspeção",
+        "command.configuration": "config",
+        "command.metrics": "métricas",
+        "command.session": "sessão",
+        "command.tools": "ferramentas",
+
+        "command.select": "seleciona",
+        "command.change": "altera",
+        "command.panel": "painel",
+        "command.activate": "ativa",
+        "command.observe": "observa",
+
+        "command.hide_hud": "ocultar HUD",
+        "command.load": "carrega",
+        "command.slot": "slot",
+        "command.zones": "zonas",
+        "command.record": "grava",
+        # --- Telemetry HUD: labels atomicos (Patch 2) ---
+        "hud.label.tick": "PASSO",
+        "hud.label.speed": "VEL",
+        "hud.label.births": "NASC",
+        "hud.label.deaths": "MORTES",
+        "hud.label.slot": "SALV.",
+        "hud.label.mutation": "MUT",
+        "hud.label.mode": "MODO",
+        "hud.label.local": "LOCAL",
+        "hud.label.global": "GLOBAL",
+        "hud.label.environment": "AMB",
+        "hud.label.zones": "ZONAS",
+        "hud.label.zone_hp": "HP ZONA",
+        "hud.label.reproduction": "REPRO",
+        "hud.label.weights": "PESOS",
+        "hud.value.mutation_mode.surgical": "cirurgica",
+        "hud.value.mutation_mode.two_scales": "duas escalas",
+        "hud.value.environment.zonas": "zonas",
+        "hud.reproduction_gates":
+            "idade>={age} hp<{hp} pont>={score:.2f} enc>={enc}",
+        "hud.zone_summary_on": "{n}x r={r} ATIVAS",
+        "hud.zone_summary_off": "{n}x r={r} INATIVAS",
+        "hud.zone_summary_none": "nenhuma",
         # --- Critérios de inspeção e filtro de linhagem ---
         "criterion.most_evolved": "mais evoluído",
         "criterion.oldest": "mais velho",
@@ -232,6 +314,38 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "panel.enter_hint": "Enter = observar",
         "panel.hint_navigation": "←→ critério | Tab linhagem",
         "panel.hint_actions": "Enter observar | clique escolher | I sair",
+        # --- Titulos dos Paineis ---
+        "panel.inspection.title": "INSPEÇÃO",
+        "panel.configuration.title": "CONFIGURAÇÃO",
+        "panel.metrics.title": "MÉTRICAS",
+        "panel.session.title": "SESSÃO",
+        "panel.tools.title": "FERRAMENTAS",
+        # --- Itens dos Paineis ---
+        "item.criterion": "Critério",
+        "item.lineage_filter": "Filtro de linhagem",
+        "item.discovery_candidate": "Candidato",
+        "item.observe_candidate": "Observar candidato",
+        "item.clear_observation": "Limpar observação",
+        "item.speed": "Velocidade da simulação",
+        "item.mutation_rate": "Taxa de mutação",
+        "item.local_scale": "Escala local de mutação",
+        "item.zones": "Zonas ambientais",
+        "item.zone_hp_effect": "Efeito de HP das zonas",
+        "item.heal_all": "Curar todos os bichos",
+        "item.metric": "Métrica",
+        "item.save_slot": "Slot de save",
+        "item.save": "Salvar agora",
+        "item.load": "Carregar",
+        "item.new_world": "Novo mundo",
+        "item.language": "Idioma",
+        "item.recording": "Gravação",
+        "item.print_state": "Imprimir estado",
+        # --- Rodapes ---
+        "footer.inspection": "↑↓ navega | ←→ altera | Tab painel | Enter ativa | Esc mundo",
+        "footer.configuration": "↑↓ navega | ←→ altera | Tab painel | Enter ativa | Esc mundo",
+        "footer.metrics": "↑↓ navega | ←→ altera | Tab painel | Enter ativa | Esc mundo",
+        "footer.session": "↑↓ navega | ←→ altera | Tab painel | Enter ativa | Esc mundo",
+        "footer.tools": "↑↓ navega | ←→ altera | Tab painel | Enter ativa | Esc mundo",
         # --- HUD: recording indicator ---
         "hud.recording_on": "● GRAV",
         # --- HUD: lineage table column labels ---
@@ -240,7 +354,7 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "col.lt": "temp",
         "col.gen": "ger",
         "col.pop": "pop",
-        "col.score": "score",
+        "col.score": "pont",
         # --- Charts ---
         "chart.population_title": "população por linhagem",
         "chart.metric_title": "métrica: {label}  (M cicla)",
@@ -253,9 +367,6 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "metric.geracao_maxima": "geração máxima",
         "metric.score_composto_medio": "score composto médio",
         "metric.taxa_de_mutacao": "taxa de mutação (%)",
-        # --- RPS tip ---
-        "rps.enemy": "  →  inimigo: ",
-        "rps.ally": "  |  aliado: ",
         # --- Inspection panel ---
         "panel.title": "INSPEÇÃO",
         "panel.no_selection": "nenhum bicho observado",
@@ -274,6 +385,7 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "panel.last_action": "última ação:",
         "panel.position": "posição:",
         "panel.vision_title": "visão 11x11 (centro {x},{y})",
+        "panel.vision_unavailable_dead": "visão indisponível após a morte",
         # --- Heatmaps ---
         "heatmap.w1": "W1 (entrada->oculta1)",
         "heatmap.w2": "W2 (oculta1->oculta2)",
@@ -283,17 +395,8 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "heatmap.r": "R (recorrência)",
         # --- Console logs ---
         "log.recreate": "[recreate] população reiniciada, tick=0",
-        "log.inspection_on": "[inspecao] ON — {desc}",
-        "log.inspection_on_empty": "[inspecao] ON (nenhum agente vivo)",
-        "log.inspection_on_auto": "[inspecao] ON — auto-selecionado {desc}",
-        "log.inspection_off": "[inspecao] OFF",
-        "log.inspection_select": "[inspecao] {desc}",
-        "log.inspection_miss": "[inspecao] ninguém em ({x},{y}) raio={r}",
         "log.load_lineage_count": "[load] save tem {saved} linhagens, esperado {expected}.",
         "log.load_lineage_shape": "[load] linhagem {id}: pool={pool} agents={agents} ids={ids} (esperado {expected}).",
-        "log.stale_selection": "(seleção obsoleta)",
-        "log.selection_desc": "linhagem={id} id={i} score={s} ger={g} tempo={t} pos=({x},{y})",
-        "log.selection_desc_dead": "id={id} (morto; observacao congelada)",
         "log.inspection_no_match": "[inspecao] sem correspondencia para criterio={criterion} linhagem={lineage}",
         "log.inspection_observe": "[inspecao] observando {desc}",
         "log.heal_all": "[cura] {n} bichos restaurados ao HP cheio",
@@ -324,7 +427,7 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "log.save_metrics_ok": "[save] métricas exportadas: {path}",
         "log.save_metrics_fail": "[save] falha ao exportar métricas ({e})",
         "log.tick_summary": "tick={t} lifetimes={lt} geracoes={g} pop={p} mut={m}% modo={modo} local={l}% global={gg}%@{gf}% genes={genes}",
-        "log.print_state": "tick={t} lifetimes={lt} geracoes={g} pop={p} speed={s}x mut={m}% modo={modo} local={l}% global={gg}%@{gf}% genes={genes} ambiente={a} zonas={z} metrica={met} inspecao={i} slot={slot}",
+        "log.print_state": "tick={t} lifetimes={lt} geracoes={g} pop={p} speed={s}x mut={m}% modo={modo} local={l}% global={gg}%@{gf}% genes={genes} ambiente={a} zonas={z} metrica={met} slot={slot}",
         # --- Recording logs ---
         "log.recording_start": "[gravacao] ON -> {path}  ({fps} fps, max {max} frames, escala {scale})",
         "log.recording_ok": "[gravacao] {path} salvo: {n} frames @ {fps} fps ({kb} KB)",

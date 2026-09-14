@@ -1,40 +1,27 @@
 # 🌍 The Simulation
 
-Primordial Soup is a small artificial universe populated by autonomous neural critters.
+Primordial Soup is a small artificial universe populated by autonomous
+neural critters.
 
-They are born.
-
-They look around.
-
-They make decisions.
-
-They collide with other critters.
-
-They gain and lose HP.
-
-Some survive long enough to reproduce.
-
-Their descendants inherit modified versions of their neural networks.
-
-Eventually everyone dies.
+They are born. They look around. They make decisions. They collide with
+other critters. They gain and lose HP. Some survive long enough to
+reproduce. Their descendants inherit modified versions of their neural
+networks. Eventually everyone dies.
 
 The interesting part is everything that happens in between.
 
-This document explains the **simulation itself**.
-
-No Python knowledge is required.
-
-If you are looking for implementation details, see [Architecture](architecture.md).
+This document explains the **simulation itself**. No Python knowledge is
+required. For implementation details, see [Architecture](architecture.md).
 
 ---
 
-## What are we actually simulating?
+# What are we actually simulating?
 
 Primordial Soup is an **artificial-life simulation**.
 
-It does not attempt to reproduce real biology in detail.
-
-Instead, it builds a deliberately small evolutionary system containing several ingredients associated with adaptive processes:
+It does not attempt to reproduce real biology in detail. Instead, it
+builds a deliberately small evolutionary system containing several
+ingredients associated with adaptive processes:
 
 ```text
 individual variation
@@ -56,25 +43,11 @@ evolutionary dynamics
 
 Each individual behaves according to its own inherited neural network.
 
-There is no script saying:
+There is no script saying "if enemy nearby: run away". There is no
+handcrafted rule saying "if zone is dangerous: avoid it".
 
-```text
-if enemy nearby:
-    run away
-```
-
-There is no handcrafted rule saying:
-
-```text
-if zone is dangerous:
-    avoid it
-```
-
-The neural network receives information, produces movement decisions, and whatever consequences follow become part of the individual's evolutionary history.
-
-Good strategy is therefore not defined directly.
-
-It emerges — if evolution manages to find one.
+Good strategy is not defined directly. It emerges — if evolution
+manages to find one.
 
 ---
 
@@ -97,44 +70,9 @@ A critter has:
 * an offspring count;
 * and a composite score used by selection.
 
-Conceptually:
-
-```text
-CRITTER
-
-identity
-lineage
-
-body
-├── position
-├── HP
-└── age
-
-brain
-├── inherited neural weights
-└── temporary recurrent state
-
-life history
-├── generation
-├── cells explored
-├── encounters
-├── offspring
-└── composite score
-```
-
-It is deliberately a small model.
-
-There are no organs.
-
-No hunger variable.
-
-No stomach.
-
-No immune system.
-
-No taxes.
-
-We had to draw the line somewhere.
+It is deliberately a small model. There are no organs, no hunger
+variable, no stomach, no immune system, no taxes. We had to draw the
+line somewhere.
 
 ---
 
@@ -142,22 +80,11 @@ We had to draw the line somewhere.
 
 Every critter receives a unique, stable ID.
 
-This matters because the population is constantly changing.
-
-Critters die.
-
-New ones are born.
-
-Internal data structures are compacted.
-
+This matters because the population is constantly changing. Critters
+die. New ones are born. Internal data structures are compacted.
 Positions change every tick.
 
-A critter therefore cannot safely be identified by:
-
-```text
-"the fifth red critter"
-```
-
+A critter cannot safely be identified by "the fifth red critter"
 because five ticks later the fifth red critter may be someone else.
 
 Instead:
@@ -168,13 +95,7 @@ critter #1847
 
 continues to mean **critter #1847** for its entire life.
 
-This stable identity is particularly important for inspection and persistence.
-
-You can observe an individual while the rest of the population changes around it without accidentally switching to its neighbor because an array was reorganized.
-
-It sounds obvious.
-
-Computers occasionally require considerable engineering to achieve obvious things.
+This stable identity is important for inspection and persistence.
 
 ---
 
@@ -188,25 +109,16 @@ G — Green
 B — Blue
 ```
 
-They participate in a cyclic ecological relationship.
-
-For each lineage, one other lineage behaves as an ally and one as an enemy:
+For each lineage, one other lineage behaves as an ally and one as an
+enemy:
 
 ```text
-R:
-    ally  → G
-    enemy → B
-
-G:
-    ally  → B
-    enemy → R
-
-B:
-    ally  → R
-    enemy → G
+R:  ally → G    enemy → B
+G:  ally → B    enemy → R
+B:  ally → R    enemy → G
 ```
 
-Or visually:
+Visually:
 
 ```text
 R → G → B → R
@@ -224,58 +136,33 @@ G harms B
 
 This is a **non-transitive relationship**.
 
-There is no universally strongest lineage.
+There is no universally strongest lineage. If one lineage becomes
+extremely common, the ecological conditions experienced by the others
+change.
 
-If one lineage becomes extremely common, the ecological conditions experienced by the others change.
+That can create oscillations, temporary dominance, population crashes,
+recoveries, spatial segregation, or extinction.
 
-That can create:
-
-* oscillations;
-* temporary dominance;
-* population crashes;
-* recoveries;
-* spatial segregation;
-* or extinction.
-
-Rock beats scissors.
-
-Scissors beats paper.
-
-Paper beats rock.
-
-And then someone puts all three inside NumPy.
+Rock beats scissors. Scissors beats paper. Paper beats rock. And then
+someone puts all three inside NumPy.
 
 ---
 
 # 🌐 The world is a torus
 
-Primordial Soup has no hard borders.
+No hard borders. The world wraps around itself horizontally and
+vertically.
 
-The world wraps around itself horizontally and vertically.
-
-If a critter walks beyond the right edge:
-
-```text
-┌───────────────────┐
-│                   │
-│ ← appears here    │ → leaves here
-│                   │
-└───────────────────┘
-```
-
-If it leaves through the bottom, it returns from the top.
+If a critter walks beyond the right edge, it appears on the left. If it
+leaves through the bottom, it returns from the top.
 
 Mathematically, the world behaves like a **2D torus**.
 
-That means there are no privileged corners and no walls that creatures can exploit as artificial shelters.
+Every position has a continuous neighborhood. There are no privileged
+corners and no walls.
 
-Every position has a continuous neighborhood.
-
-So if you ever find yourself saying:
-
-> “The blue lineage has migrated east.”
-
-Remember that east eventually becomes west.
+If you ever find yourself saying "the blue lineage has migrated east",
+remember that east eventually becomes west.
 
 ---
 
@@ -285,7 +172,7 @@ Critters do not see the whole world.
 
 Each one receives a local view around its current position.
 
-The current vision radius is five cells, producing an:
+Vision radius is five cells, producing an:
 
 ```text
 11 × 11
@@ -293,9 +180,8 @@ The current vision radius is five cells, producing an:
 
 observation window.
 
-For every position in that window, the critter receives information about the density of all three lineages.
-
-Conceptually:
+For every position in that window, the critter receives information
+about the density of all three lineages.
 
 ```text
 11 × 11 spatial cells
@@ -305,34 +191,23 @@ Conceptually:
 363 visual inputs
 ```
 
-The critter is therefore not asking:
+The critter is not asking "is Bob standing at coordinate 42,17?". It
+sees something closer to "how much red, green and blue presence exists
+around me?".
 
-> “Is Bob standing at coordinate 42,17?”
-
-It sees something closer to:
-
-> “How much red, green and blue presence exists around me?”
-
-The perception wraps around the toroidal world as well.
-
-A critter near the right edge can therefore see individuals near the left edge.
-
-There is no visual cliff at the boundary.
-
----
+Perception wraps around the toroidal world.
 
 ## Internal perception
 
-Vision is not the entire neural input.
+Vision is not the entire neural input. The critter also receives
+information about itself:
 
-The critter also receives information about itself.
-
-The current model includes four internal inputs related to:
-
-* HP;
-* age;
-* previous action;
-* low-HP state.
+```text
+HP
+age
+previous action
+low-HP state
+```
 
 Together:
 
@@ -344,27 +219,9 @@ Together:
 367 neural inputs
 ```
 
-This distinction matters.
-
-Two critters can see exactly the same external scene and still make different decisions because:
-
-* their genomes differ;
-* their HP differs;
-* their age differs;
-* their previous neural state differs;
-* their previous action differs.
-
-Behavior is therefore a function of both:
-
-```text
-world
-+
-individual state
-+
-memory
-+
-genome
-```
+Two critters can see exactly the same external scene and still make
+different decisions because their genomes, HP, age, previous neural
+state and previous action may differ.
 
 ---
 
@@ -372,29 +229,20 @@ genome
 
 Every critter carries an inherited neural network.
 
-The current network has:
+Current architecture:
 
 ```text
 367 inputs
-
         ↓
-
-25 neurons
-first hidden layer
-
+25 neurons (first hidden layer)
         ↓
-
-12 neurons
-second hidden layer
-
+12 neurons (second hidden layer)
         ↓
-
 9 outputs
 ```
 
-The first hidden layer also receives a recurrent contribution from its own previous state.
-
-Conceptually:
+The first hidden layer also receives a recurrent contribution from its
+own previous state.
 
 ```text
                     previous hidden state
@@ -408,15 +256,9 @@ input → hidden layer 1 → hidden layer 2 → movement outputs
 
 This gives the critter a limited form of short-term memory.
 
-It is not memory in the human sense.
-
-The critter does not remember:
-
-> “Yesterday I met a green individual named Steve.”
-
-It carries forward a numerical neural state that can influence its next decision.
-
-Still, this means behavior can depend on recent history rather than only on the current frame.
+It is not memory in the human sense. The critter does not remember
+"yesterday I met a green individual named Steve". It carries forward a
+numerical neural state that can influence its next decision.
 
 ---
 
@@ -424,13 +266,8 @@ Still, this means behavior can depend on recent history rather than only on the 
 
 The network weights are encoded directly in the critter's genome.
 
-There is no training phase using gradient descent.
-
-No backpropagation occurs during the critter's lifetime.
-
-No optimizer updates its weights after a mistake.
-
-Instead:
+No training phase. No gradient descent. No backpropagation during life.
+No optimizer updates weights after a mistake.
 
 ```text
 genome
@@ -444,24 +281,15 @@ survival and reproduction
 descendants
 ```
 
-The genome changes between generations through:
+The genome changes between generations through crossover and mutation.
 
-* crossover;
-* mutation.
-
-The individual's neural weights remain its inherited weights during life.
-
-In other words:
+The individual's neural weights remain its inherited weights during
+life.
 
 ```text
-machine learning:
-    improve the model
-
-Primordial Soup:
-    kill the model and let its children try again
+machine learning:  improve the model
+Primordial Soup:   kill the model and let its children try again
 ```
-
-Evolution has strong opinions about checkpointing.
 
 ---
 
@@ -473,31 +301,16 @@ They correspond to the Moore neighborhood:
 
 ```text
 ↖  ↑  ↗
-
 ←  •  →
-
 ↙  ↓  ↘
 ```
 
-The center action means:
+The center action means "stay where you are".
 
-```text
-stay where you are
-```
-
-The highest network output determines the chosen action.
-
-A small built-in impulse favors the stay-still action slightly.
-
-This prevents movement from being automatically preferable simply because neural outputs happen to be noisy.
+The highest network output determines the chosen action. A small
+built-in impulse favors the stay-still action slightly.
 
 Movement itself has no strategic meaning imposed by the simulator.
-
-Moving north is not intrinsically good.
-
-Staying still is not intrinsically bad.
-
-The consequences depend on what is around the critter.
 
 ---
 
@@ -505,7 +318,7 @@ The consequences depend on what is around the critter.
 
 Each critter is born with HP.
 
-Under the current default configuration:
+Current default:
 
 ```text
 initial HP = 10,000
@@ -517,9 +330,7 @@ Every tick applies a small baseline decay:
 -1 HP
 ```
 
-So even a critter living in complete isolation cannot survive forever.
-
-To extend its life, it must benefit from favorable interactions or environmental effects.
+A critter living in complete isolation cannot survive forever.
 
 A critter dies when:
 
@@ -529,11 +340,24 @@ HP <= 0
 
 Death is permanent.
 
-There are no resurrection mechanics in evolution.
+The operator can reset HP for surviving individuals through the
+Configuration panel:
 
-The **H** control can reset HP for surviving individuals, but that is an operator intervention, not part of natural simulation dynamics.
+```text
+C
+↓
+Configuration
+↓
+Heal all critters
+↓
+Enter
+```
 
-Even artificial gods get debug commands.
+That is an operator intervention, not part of natural simulation
+dynamics.
+
+The global **H** accelerator has no effect on HP. It toggles the
+floating HUD, which is purely visual.
 
 ---
 
@@ -541,21 +365,19 @@ Even artificial gods get debug commands.
 
 Sharing a position with an ally grants an HP benefit.
 
-Under the current default configuration:
+Current default:
 
 ```text
 ally present → +100 HP
 ```
 
-This creates a cooperative pressure.
+This creates a cooperative pressure. A lineage may benefit from
+remaining spatially close to its allied lineage.
 
-A lineage may benefit from remaining spatially close to its allied lineage.
+But the ecology is cyclic. Your ally is someone else's enemy.
 
-But the ecology is cyclic.
-
-Your ally is someone else's enemy.
-
-So large cooperative clusters may also create opportunities for another lineage.
+So large cooperative clusters may also create opportunities for another
+lineage.
 
 Ecology rarely leaves a free lunch unattended.
 
@@ -573,37 +395,28 @@ enemy present → -100 HP
 
 If an ally is present at the same time, enemy damage is reduced.
 
-The ally therefore acts partly as protection during conflict.
-
-The effects are combined algebraically rather than choosing exactly one interaction.
+The effects are combined algebraically rather than choosing exactly one
+interaction.
 
 For example, ignoring environmental zones:
 
 ```text
-alone
-→ -1 HP
-
-ally
-→ +99 HP
-
-enemy
-→ -101 HP
-
-ally + enemy
-→ +49 HP
+alone             → -1 HP
+ally              → +99 HP
+enemy             → -101 HP
+ally + enemy      → +49 HP
 ```
 
 The base metabolic decay is included in those totals.
-
-This means the same spatial location can produce very different survival outcomes depending on the local ecological composition.
 
 ---
 
 # 👥 Overcrowding
 
-Critters are also penalized for sharing a cell with members of their **own lineage**.
+Critters are penalized for sharing a cell with members of their own
+lineage.
 
-Under the current defaults:
+Current default:
 
 ```text
 own-lineage overcrowding → -100 HP
@@ -611,17 +424,13 @@ own-lineage overcrowding → -100 HP
 
 This creates pressure against unlimited stacking.
 
-Without it, a lineage could potentially discover that the world's greatest evolutionary strategy is:
+Without it, a lineage could discover that the world's greatest
+evolutionary strategy is "everyone stand on the same pixel".
 
-```text
-everyone stand on the same pixel
-```
-
-Nature has produced stranger strategies, but we do not need to encourage this one.
+Nature has produced stranger strategies, but we do not need to encourage
+this one.
 
 Overcrowding is independent of ally and enemy effects.
-
-Several pressures may therefore apply during the same tick.
 
 ---
 
@@ -631,39 +440,24 @@ The world contains spatial environmental zones.
 
 A zone is a region where HP is modified while a critter is inside it.
 
-Depending on the current configuration, a zone can behave as:
-
 ```text
 positive effect → refuge
-
 zero effect     → neutral geography
-
 negative effect → hazard
 ```
 
 The zone effect can be changed while the simulation is running.
 
-That creates a useful experimental mechanism.
+A population may evolve under beneficial zones and suddenly find that
+yesterday's refuge is today's toxic swamp.
 
-A population may evolve under beneficial zones and suddenly find that:
-
-```text
-yesterday's refuge
-=
-today's toxic swamp
-```
-
-The critters are not informed.
-
-They must experience the consequences.
+The critters are not informed. They must experience the consequences.
 
 Evolution does not ship release notes.
 
 ---
 
 # 🧮 Several effects can happen at once
-
-The simulation does not treat ecological interactions as mutually exclusive states.
 
 A critter may simultaneously experience:
 
@@ -675,27 +469,17 @@ A critter may simultaneously experience:
 
 The final HP change is the combination of those effects.
 
-So a single location might be:
+A single location might be beneficial for one lineage, harmful for
+another, survivable only with allies, disastrous under overcrowding, or
+excellent until the zone effect changes.
 
-* beneficial for one lineage;
-* harmful for another;
-* survivable only with allies;
-* disastrous under overcrowding;
-* or excellent until the zone effect changes.
-
-This is one source of emergent complexity.
-
-The rules themselves are simple.
-
-Their combinations are not.
+The rules themselves are simple. Their combinations are not.
 
 ---
 
 # ⏱️ What happens during one tick?
 
 Order matters.
-
-A simulation tick follows a defined sequence:
 
 ```text
 1. perceive
@@ -710,54 +494,24 @@ A simulation tick follows a defined sequence:
 10. record metrics
 ```
 
-At a higher level:
-
-```text
-WORLD AT TIME T
-      │
-      ▼
-   perceive
-      │
-      ▼
- neural decision
-      │
-      ▼
-     move
-      │
-      ▼
-WORLD AT TIME T+1 POSITIONALLY
-      │
-      ▼
-ecological consequences
-      │
-      ├── survive
-      ├── die
-      └── possibly reproduce
-```
-
 Two ordering decisions are especially important.
-
----
 
 ## Everyone perceives before ecological consequences
 
-Critters decide based on the current spatial world.
-
-They do not receive information from some halfway-updated universe where one lineage has already been punished and another has not.
-
----
+Critters decide based on the current spatial world. They do not receive
+information from a halfway-updated universe where one lineage has
+already been punished and another has not.
 
 ## Interaction happens after movement
 
 All movement occurs before HP consequences are calculated.
 
-Otherwise, processing order would become part of the ecology.
+Otherwise, processing order would become part of the ecology. The first
+lineage updated could receive an accidental advantage simply because
+Python reached it first.
 
-The first lineage updated could receive an accidental advantage simply because Python reached it first.
-
-That would not be evolution.
-
-That would be a scheduling bug wearing a lab coat.
+That would not be evolution. That would be a scheduling bug wearing a
+lab coat.
 
 ---
 
@@ -765,19 +519,15 @@ That would be a scheduling bug wearing a lab coat.
 
 Every surviving tick increases an individual's age.
 
-Age matters for several reasons:
+Age matters for longevity measurement, evaluation, reproductive
+eligibility, inspection, and distinguishing genuine long-term survival
+from temporary population growth.
 
-* it measures longevity;
-* it contributes to evaluation;
-* it can affect reproductive eligibility;
-* it is useful when inspecting individuals;
-* it helps distinguish genuine long-term survival from temporary population growth.
+An old critter is not necessarily a good critter. It may simply have
+been lucky.
 
-An old critter is not necessarily a good critter.
-
-It may simply have been lucky.
-
-That is why selection can consider several dimensions instead of relying only on longevity.
+That is why selection considers several dimensions instead of relying
+only on longevity.
 
 ---
 
@@ -785,111 +535,64 @@ That is why selection can consider several dimensions instead of relying only on
 
 The simulation tracks whether a critter moves through the world.
 
-Exploration contributes to its life history and can influence composite selection.
+Exploration contributes to its life history and can influence composite
+selection.
 
-This creates a potential evolutionary tension.
-
-Remaining in a safe location may help immediate survival.
-
-Exploring may expose the critter to:
-
-* enemies;
-* overcrowding;
-* hazardous zones.
-
-But exploration may also lead toward:
-
-* allies;
-* beneficial zones;
-* more useful spatial behavior;
-* better composite fitness.
+This creates a potential evolutionary tension. Remaining in a safe
+location may help immediate survival. Exploring may expose the critter
+to enemies, overcrowding, hazardous zones — but may also lead toward
+allies, beneficial zones, more useful spatial behavior, better
+composite fitness.
 
 Evolution is not told which strategy is correct.
-
-That depends on the ecology that actually emerges.
 
 ---
 
 # 🤝 Encounters
 
-A critter accumulates encounters when it occupies a cell containing another lineage.
+A critter accumulates encounters when it occupies a cell containing
+another lineage.
 
-Encounters therefore reflect ecological contact rather than mere movement.
+Encounters reflect ecological contact rather than mere movement.
 
-They matter because interaction is part of the current selection model.
+A creature that lives a very long time by avoiding absolutely everything
+may survive well while performing poorly on other evolutionary
+dimensions.
 
-A creature that lives a very long time by avoiding absolutely everything may survive well while performing poorly on other evolutionary dimensions.
-
-Whether that matters depends on the configured selection pressure.
-
-The simulator distinguishes:
-
-```text
-surviving
-```
-
-from:
-
-```text
-being reproductively successful
-```
-
-Those are related.
-
-They are not identical.
+The simulator distinguishes surviving from being reproductively
+successful. Those are related. They are not identical.
 
 ---
 
 # 🏆 Composite score
 
-Primordial Soup can evaluate individuals using several aspects of their life history.
-
-The current composite score combines:
-
-* longevity;
-* exploration;
-* encounters;
-* reproduction.
-
-Conceptually:
+The current composite score combines longevity, exploration, encounters
+and reproduction.
 
 ```text
-fitness =
-    longevity contribution
-  + exploration contribution
-  + interaction contribution
-  + reproduction contribution
+score =
+    0.5 × normalized longevity
+  + 0.3 × normalized exploration
+  + 0.3 × normalized encounters
+  + 0.3 × normalized reproduction
 ```
 
 Each component is normalized relative to the individual's own lineage.
 
-This is important.
+This is important. Suppose one lineage has only a few surviving members
+while another has hundreds. A globally normalized score could cause the
+small lineage to become meaningless simply because another lineage
+currently dominates.
 
-Suppose one lineage has only a few surviving members while another has hundreds.
+Per-lineage normalization preserves meaningful competition **within**
+each lineage.
 
-A globally normalized score could cause the small lineage to become meaningless simply because another lineage currently dominates the world.
+The composite score is not an absolute universal measure of
+intelligence.
 
-Per-lineage normalization preserves meaningful competition **within** each lineage.
-
-The composite score is therefore not an absolute universal measure of intelligence.
-
-A score of:
-
-```text
-0.7
-```
-
-does not mean:
-
-> “This critter is 70% intelligent.”
-
-It means:
-
-> “Under the current scoring rules and relative lineage context, this individual performs well across the measured dimensions.”
-
-Evolutionary fitness is contextual.
-
-So are most performance reviews.
+A score of 0.7 does not mean "this critter is 70% intelligent". It
+means: under the current scoring rules and relative lineage context,
+this individual performs well across the measured dimensions.
 
 ---
 
@@ -897,53 +600,27 @@ So are most performance reviews.
 
 Being alive is not enough to reproduce.
 
-A potential parent must currently pass several eligibility gates.
-
-Under the current default rules, it must be:
+Default eligibility gates:
 
 ```text
-old enough
-AND
-below the reproductive HP gate
-AND
-above the minimum composite score
-AND
-experienced enough in encounters
-```
-
-Currently those defaults are:
-
-```text
-minimum age      = 5,555 ticks
-HP               < 10,000
-composite score >= 0.6
-encounters      >= 6
+age        >= 5,555 ticks
+HP         <  10,000
+score      >= 0.6
+encounters >= 6
 ```
 
 All gates must pass.
 
-A critter can therefore be:
-
-* very old but insufficiently interactive;
-* highly interactive but too young;
-* high-scoring but too healthy;
-* wounded but evolutionarily unimpressive.
+A critter can be very old but insufficiently interactive. Highly
+interactive but too young. High-scoring but too healthy. Wounded but
+evolutionarily unimpressive.
 
 None of those conditions alone guarantees reproduction.
 
-This deliberately separates:
+This deliberately separates existence from eligibility to pass genes
+forward.
 
-```text
-existence
-```
-
-from:
-
-```text
-eligibility to pass genes forward
-```
-
-For the full model, see [Evolution](evolution.md).
+See [Evolution](evolution.md) for the full model.
 
 ---
 
@@ -951,38 +628,19 @@ For the full model, see [Evolution](evolution.md).
 
 Reproduction is a global scheduled event.
 
-The lineages do not all reproduce simultaneously.
-
 The opportunity rotates:
 
 ```text
 R → G → B → R → ...
 ```
 
-Under the current defaults, a reproductive turn becomes available every:
+Default interval: every `150` ticks.
 
-```text
-150 ticks
-```
+When a lineage receives its turn, eligible individuals may be selected
+as parents. The other lineages still perceive, move, interact, gain or
+lose HP, age, die. They simply do not reproduce during that turn.
 
-When a lineage receives its turn, eligible individuals may be selected as parents.
-
-The other lineages still:
-
-* perceive;
-* move;
-* interact;
-* gain or lose HP;
-* age;
-* die.
-
-They simply do not reproduce during that turn.
-
-This prevents reproduction from becoming an uncontrolled continuous flood and gives the reproductive process a clear temporal structure.
-
-The universe has mating season.
-
-It is maintained by an integer counter.
+The universe has mating season. It is maintained by an integer counter.
 
 Romance remains undefeated.
 
@@ -990,15 +648,11 @@ Romance remains undefeated.
 
 # 👨‍👩‍👧 Parent selection
 
-Passing the eligibility gates does not automatically make an individual a parent.
+Passing the eligibility gates does not automatically make an individual
+a parent.
 
-Eligible individuals are ranked according to the configured reproductive criterion.
-
-The strongest subset forms the reproductive pool.
-
-Parents are then drawn from that pool.
-
-Conceptually:
+Eligible individuals are ranked. The strongest subset forms the
+reproductive pool. Parents are drawn from that pool.
 
 ```text
 population
@@ -1019,25 +673,12 @@ reproductive pool
 parent pair
 ```
 
-This creates two distinct filters:
-
-```text
-Can you reproduce?
-```
-
-and then:
-
-```text
-Among those who can, who gets the opportunity?
-```
-
-That distinction matters when interpreting selection pressure.
+Two distinct filters: Can you reproduce? Among those who can, who gets
+the opportunity?
 
 ---
 
 # 👶 Birth
-
-When two parents reproduce, their genomes are combined and mutated to generate offspring.
 
 A newborn receives:
 
@@ -1052,19 +693,19 @@ A newborn receives:
 * zero exploration history;
 * zero recurrent neural state.
 
-The new generation is:
+New generation is:
 
 ```text
 max(parent A generation, parent B generation) + 1
 ```
 
-So generation measures genealogical depth.
+Generation measures genealogical depth.
 
 ---
 
 # 🧠 Memory is not inherited
 
-A newborn inherits neural **structure and weights** through its genome.
+A newborn inherits neural structure and weights through its genome.
 
 It does not inherit its parents' temporary neural state.
 
@@ -1074,33 +715,21 @@ At birth:
 recurrent memory = 0
 ```
 
-This is an important distinction.
-
 A parent can pass along a brain capable of producing a useful behavior.
+It cannot pass along "what it was thinking three ticks ago".
 
-It cannot pass along:
-
-```text
-what it was thinking three ticks ago
-```
-
-Genes are inherited.
-
-Experience is not.
+Genes are inherited. Experience is not.
 
 At least not in this universe.
 
 ---
 
-# 🧬 Crossover
+# 🧬 Crossover and mutation
 
 A child's genome is not simply a clone of one parent.
 
 Genetic material from two parents is combined through crossover.
-
-Depending on configuration, crossover may operate using different strategies.
-
-The current system supports mechanisms designed to mix parental information while retaining some structure.
+Offspring may then mutate.
 
 Conceptually:
 
@@ -1108,58 +737,18 @@ Conceptually:
 parent A genome ─┐
                  ├── crossover ── child genome
 parent B genome ─┘
+                        │
+                        ▼
+                     mutation
 ```
 
-This produces variation even before mutation occurs.
+Crossover rearranges existing genetic material. Mutation creates new
+variation.
 
-See [Evolution](evolution.md) for the crossover strategies.
+There is no universally correct mutation rate. That is one of the things
+worth experimenting with.
 
----
-
-# ☢️ Mutation
-
-After crossover, offspring may mutate.
-
-Mutation introduces new genetic variation.
-
-Depending on configuration, mutations can be:
-
-* local and relatively small;
-* broader and more disruptive.
-
-This creates the classic exploration/exploitation tension.
-
-Too little variation can cause a population to converge around mediocre solutions.
-
-Too much variation can continually destroy useful inherited structure.
-
-Conceptually:
-
-```text
-very low mutation
-    ↓
-stable inheritance
-    ↓
-possible stagnation
-
-
-moderate mutation
-    ↓
-variation + inheritance
-    ↓
-adaptive search
-
-
-extreme mutation
-    ↓
-constant disruption
-    ↓
-useful structure may not survive
-```
-
-There is no universally correct mutation rate.
-
-That is one of the things worth experimenting with.
+See [Evolution](evolution.md).
 
 ---
 
@@ -1173,27 +762,12 @@ HP <= 0
 
 Dead individuals are removed from the living population.
 
-Their descendants remain.
+Their descendants remain. Their evolutionary effects remain.
 
-Their evolutionary effects remain.
+If the individual was being observed, Primordial Soup preserves a
+snapshot of its final state.
 
-Their genes may already exist throughout later generations.
-
-If the individual was being observed, however, Primordial Soup preserves a snapshot of its final state.
-
-The inspection system freezes:
-
-* identity;
-* lineage;
-* final body state;
-* final genome;
-* death tick.
-
-This allows you to continue examining the individual after death.
-
-The simulation moves on.
-
-The microscope does not.
+The simulation moves on. The microscope does not.
 
 See [Inspection](inspection.md).
 
@@ -1205,78 +779,36 @@ A lineage is extinct when it has no living individuals left.
 
 The simulation does not automatically repopulate it.
 
-Extinction may result from:
+Extinction may result from ecological pressure, poor inherited behavior,
+unfavorable spatial distribution, excessive mutation, reproductive
+failure, environmental change, population collapse, stochastic history,
+or several of these at once.
 
-* ecological pressure;
-* poor inherited behavior;
-* unfavorable spatial distribution;
-* excessive mutation;
-* reproductive failure;
-* environmental change;
-* population collapse;
-* stochastic history;
-* or several of these at once.
+Because ecological relations are cyclic, losing one lineage can also
+radically alter the environment experienced by the remaining two.
 
-Because ecological relations are cyclic, losing one lineage can also radically alter the environment experienced by the remaining two.
-
-Removing one participant from a non-transitive system changes the game itself.
-
-Extinction is therefore not just:
-
-```text
-population = 0
-```
-
-It can be an ecosystem-level transition.
+Removing one participant from a non-transitive system changes the game
+itself.
 
 ---
 
-# 📈 What does “evolution is working” mean?
+# 📈 What does "evolution is working" mean?
 
-This question deserves care.
+Evolution is not equivalent to "population goes up". Nor to "score goes
+up forever".
 
-Evolution is not equivalent to:
+Observable signals include lineage population, lifetime, generation
+depth, HP, composite score, encounters, exploration, reproductive
+success, spatial organization, behavioral patterns.
 
-```text
-population goes up
-```
-
-Nor is it equivalent to:
-
-```text
-score goes up forever
-```
-
-The simulation contains several observable signals:
-
-* lineage population;
-* lifetime;
-* generation depth;
-* HP;
-* composite score;
-* encounters;
-* exploration;
-* reproductive success;
-* spatial organization;
-* behavioral patterns.
-
-A population may adapt by becoming:
-
-* longer-lived;
-* more reproductively successful;
-* better at finding allies;
-* better at avoiding enemies;
-* better at exploiting environmental zones;
-* less prone to overcrowding;
-* or some combination of these.
+A population may adapt by becoming longer-lived, more reproductively
+successful, better at finding allies, better at avoiding enemies, better
+at exploiting environmental zones, less prone to overcrowding, or some
+combination.
 
 But stochastic variation can also produce temporary trends.
 
-One run is a story.
-
-Repeated controlled runs are evidence.
-
-This distinction becomes important once you begin treating Primordial Soup as an experimental system rather than an animated screensaver.
+One run is a story. Repeated controlled runs are evidence.
 
 See [Experiments](experiments.md).
 
@@ -1284,148 +816,48 @@ See [Experiments](experiments.md).
 
 # 🧪 Emergence
 
-No rule explicitly says:
-
-```text
-form a colony
-```
-
-or:
-
-```text
-avoid blue
-```
-
-or:
-
-```text
-stay near environmental zones
-```
-
-Yet patterns resembling those strategies may appear.
+No rule explicitly says "form a colony" or "avoid blue" or "stay near
+environmental zones". Yet patterns resembling those strategies may
+appear.
 
 That is what makes artificial-life systems interesting.
-
-Simple local rules can produce complicated population-level outcomes.
 
 But there is an important warning.
 
 Humans are extremely good at seeing intention.
 
-If a critter repeatedly moves toward green individuals, it is tempting to say:
+If a critter repeatedly moves toward green individuals, it is tempting
+to say "it likes green". The simulation supports a more careful
+statement: "its inherited neural dynamics currently produce movement
+correlated with local green density".
 
-> “It likes green.”
-
-The simulation supports a more careful statement:
-
-> “Its inherited neural dynamics currently produce movement correlated with local green density.”
-
-Less romantic.
-
-Much harder to misinterpret.
-
-Emergent behavior should be measured whenever possible rather than explained only through visual intuition.
+Less romantic. Much harder to misinterpret.
 
 ---
 
 # 🔬 What this simulation is not
 
-Primordial Soup is not:
+Primordial Soup is not a realistic model of biological evolution, animal
+cognition, real genetics or real ecosystems.
 
-* a realistic model of biological evolution;
-* a model of animal cognition;
-* a model of real genetics;
-* a model of real ecosystems;
-* evidence that neural networks resemble biological brains in detail;
-* evidence that an observed behavior is intentional;
-* a universal definition of evolutionary fitness.
+It is not evidence that neural networks resemble biological brains in
+detail, that an observed behavior is intentional, or a universal
+definition of evolutionary fitness.
 
 Its abstractions are intentionally compact.
 
-For example:
+HP stands in for survival pressure. Genome stores neural parameters.
+Crossover combines numerical genomes. Mutation perturbs those
+parameters. Composite score implements a configurable selection
+pressure.
 
-```text
-HP
-```
-
-stands in for survival pressure.
-
-```text
-genome
-```
-
-stores neural parameters.
-
-```text
-crossover
-```
-
-combines numerical genomes.
-
-```text
-mutation
-```
-
-perturbs those parameters.
-
-```text
-composite score
-```
-
-implements a configurable selection pressure.
-
-These constructs borrow vocabulary and ideas from biology, artificial life and evolutionary computation.
-
-They should not be confused with biological equivalence.
-
----
-
-# 🧠 Then what is Primordial Soup useful for?
-
-Primordial Soup is useful as a compact laboratory for exploring questions such as:
-
-* How does selection pressure change population behavior?
-* How much mutation is too much?
-* Can simple neural controllers evolve useful movement policies?
-* What happens when cooperation and competition coexist?
-* What happens when an environment changes after adaptation?
-* Can spatial structure protect populations?
-* How does reproductive gating change evolutionary dynamics?
-* What patterns emerge from non-transitive interactions?
-* How stable are apparent adaptations across random seeds?
-* How does inherited neural structure interact with short-term recurrent state?
-
-It is also useful for studying the engineering of simulations themselves:
-
-* reproducibility;
-* state persistence;
-* vectorized computation;
-* deterministic experimentation;
-* visualization;
-* inspection tooling;
-* evolutionary metrics.
-
-So the project sits somewhere between:
-
-```text
-simulation
-+
-software engineering
-+
-evolutionary computation
-+
-artificial life
-+
-“what happens if I change this number?”
-```
-
-The final category is historically responsible for a significant amount of science.
+These constructs borrow vocabulary and ideas from biology, artificial
+life and evolutionary computation. They should not be confused with
+biological equivalence.
 
 ---
 
 # 🧭 The complete lifecycle
-
-Putting everything together:
 
 ```text
                      ┌───────────────┐
@@ -1515,34 +947,15 @@ Putting everything together:
               └──────┴───────────────→ next tick
 ```
 
-That is Primordial Soup.
-
-A small set of explicit rules.
-
-A large number of possible histories.
-
-And absolutely no guarantee that the critters will behave sensibly.
+A small set of explicit rules. A large number of possible histories. And
+absolutely no guarantee that the critters will behave sensibly.
 
 ---
 
-## Where to go next
+# Where to go next
 
-To understand how selection, reproductive gates, crossover and mutation work in detail:
-
-→ [Evolution](evolution.md)
-
-To understand how to follow individual critters:
-
-→ [Inspection](inspection.md)
-
-To design controlled comparisons:
-
-→ [Experiments](experiments.md)
-
-To change the laws described here:
-
-→ [Configuration](configuration.md)
-
-To understand how all of this maps onto Python and NumPy:
-
-→ [Architecture](architecture.md)
+→ [Evolution](evolution.md) — selection, gates, crossover and mutation
+→ [Inspection](inspection.md) — following individual critters
+→ [Experiments](experiments.md) — controlled comparisons
+→ [Configuration](configuration.md) — changing the laws described here
+→ [Architecture](architecture.md) — the Python and NumPy machinery

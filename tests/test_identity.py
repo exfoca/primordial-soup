@@ -158,12 +158,10 @@ def test_recreate_save_load_preserves_ids(
     corretamente em _validate_identity. Este teste exercita o
     lifecycle inteiro da tecla R e falha se a ordem regredir.
 
-    monkeypatch de controls.draw evita depender de Pygame/renderizador
-    inicializado: recreate() termina chamando draw().
+    recreate() nao desenha mais: o redraw e responsabilidade do loop
+    grafico via DispatchResult. Por isso nao ha monkeypatch de draw.
     """
     from primordial_soup import controls, persistence
-
-    monkeypatch.setattr(controls, "draw", lambda: None)
 
     controls.recreate()
 

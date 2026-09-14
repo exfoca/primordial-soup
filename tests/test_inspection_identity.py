@@ -156,7 +156,7 @@ def test_load_clears_inspection_session(fresh_world, tmp_path):
     assert len(state.inspected_trail) == 0
 
 
-def test_disable_inspection_clears_everything(fresh_world):
+def test_clear_selection_clears_everything(fresh_world):
     state.set_inspection_selection(int(agents[0]["ids"][0]))
     state.inspected_trail.append((1, 1))
     state.set_inspection_selection(None)

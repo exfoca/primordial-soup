@@ -443,8 +443,18 @@ def _validate_identity(
 # Save
 
 
-def save(path: str | None = None) -> None:
+def save(path: str | None = None) -> bool:
     """Escreve o payload no formato canonico em portugues.
+
+    Retorna True se o .pkl foi gravado com sucesso; False caso
+    contrario. O CSV de metricas e sidecar analitico: falha nele
+    gera warning, mas nao invalida o checkpoint.
+
+    Escrita atomica: o payload e gravado num arquivo temporario no
+    mesmo diretorio e movido com os.replace(). Disco cheio, processo
+    interrompido ou erro de serializacao nao corrompem um save
+    anteriormente valido — o alvo so e substituido quando o
+    temporario esta completo.
 
     `path` default = slot ativo (state.active_save_slot) via
     save_path(). O CSV de metricas companheiro vai para
@@ -455,25 +465,13 @@ def save(path: str | None = None) -> None:
     Strings de exibicao (HUD, charts) sao traduzidas em render time e
     nunca tocam o savegame.
 
-    A chave "zonas_ativas" guarda o toggle de runtime das zonas
-    ambientais. Opcional no load (default True), entao saves
-    pre-toggle mantem o comportamento original: zonas visiveis e
-    concedendo bonus de HP. SAVE_VERSION NAO e incrementado por ela —
-    ausencia e estado legitimo, nao formato incompativel.
-
-    As chaves "nascimentos" / "mortes" guardam os contadores
-    cumulativos de nascimento/morte da run. Mesma politica de
-    "zonas_ativas": opcional no load (default 0), sem bump de
-    SAVE_VERSION. Saves antigos que precedem esses contadores
-    simplesmente carregam com ambos em 0, que e a unica resposta
-    semanticamente correta — a informacao nunca foi gravada e nao
-    pode ser reconstruida.
-
-    A chave "efeito_hp_zonas" guarda o efeito de HP de runtime
-    aplicado a bichos dentro de zona. Mesma politica: opcional no
-    load (default cfg.HP_EFFECT_IN_ZONE), sem bump de SAVE_VERSION.
-    Saves pre-chave carregam com o default do config, reproduzindo o
-    comportamento original.
+    Sob o contrato v11, todos os campos do payload sao obrigatorios.
+    Ausencia de qualquer um deles e rejeicao no load, nao fallback:
+    um checkpoint so e continuacao exata se todo o estado de
+    continuacao estiver presente. Os campos cuja ausencia era tratada
+    como estado legitimo em versoes anteriores ("zonas_ativas",
+    "nascimentos", "mortes", "efeito_hp_zonas") passaram a ser
+    obrigatorios em v11. Ver _validate_save_compatibility e load().
     """
     if path is None:
         path = save_path()
@@ -544,8 +542,23 @@ def save(path: str | None = None) -> None:
             for ag in agents
         ],
     }
-    with open(path, "wb") as f:
-        pickle.dump(data, f)
+    # Escrita atomica: grava em .tmp ao lado do alvo e renomeia.
+    # os.replace e atomico em POSIX e Windows para o mesmo volume.
+    tmp_path = path + ".tmp"
+    try:
+        with open(tmp_path, "wb") as f:
+            pickle.dump(data, f)
+        os.replace(tmp_path, path)
+    except (OSError, pickle.PicklingError) as e:
+        # Limpa o temporario se ele ficou pela metade.
+        try:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+        except OSError:
+            pass
+        print(f"[save] falha ao gravar {path}: {e!r}")
+        return False
+
     print(
         i18n.t(
             "log.save_ok",
@@ -576,6 +589,8 @@ def save(path: str | None = None) -> None:
         print(i18n.t("log.save_metrics_ok", path=csv_path))
     except OSError as e:
         print(i18n.t("log.save_metrics_fail", e=repr(e)))
+
+    return True
 
 
 # Load

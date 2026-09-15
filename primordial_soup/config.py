@@ -5,7 +5,7 @@ from typing import Final
 
 # 0. IDENTIDADE
 WORLD_NAME: Final = "Primordial Soup"
-WORLD_VERSION: Final = "0.5.0"
+WORLD_VERSION: Final = "0.6.0"
 RANDOM_SEED: Final = None
 
 
@@ -16,6 +16,13 @@ SCREEN_WIDTH: Final = 1920
 SCREEN_HEIGHT: Final = 1080
 
 TARGET_PIXEL_SCALE: Final = 4
+
+# Zoom de apresentacao (camera). Nao pertence a RuntimeRules: e
+# view-only, nao persiste em checkpoint, nao e HOT, nao altera
+# PIXEL_SCALE nem layout.LAYOUT.
+MIN_ZOOM: Final = 1.0
+MAX_ZOOM: Final = 8.0
+ZOOM_STEP: Final = 1.20
 
 MIN_WORLD_WIDTH: Final = 400
 MIN_WORLD_HEIGHT: Final = 300
@@ -33,7 +40,7 @@ TOTAL_LINEAGES: Final = len(LINEAGES)
 INITIAL_POPULATION_PER_LINEAGE: Final = 50
 
 # Teto por linhagem. Inteiro positivo.
-MAX_POPULATION_PER_LINEAGE: Final = 333
+MAX_POPULATION_PER_LINEAGE: Final = 350
 
 
 # 4. PERCEPCAO — o que uma criatura ve
@@ -45,6 +52,7 @@ VISION_INPUTS: Final = VISION_SIDE**2 * VISION_CHANNELS
 INTERNAL_STATE_INPUTS: Final = 4
 NETWORK_INPUTS: Final = VISION_INPUTS + INTERNAL_STATE_INPUTS
 
+# HOT default: effective value lives in RuntimeRules.low_hp_threshold.
 LOW_HP_THRESHOLD: Final = 2_000
 
 
@@ -76,15 +84,23 @@ GENOME_SIZE: Final = (
 
 
 # 6. METABOLISMO — vida, dano e morte
+# WARM/static: defines founders, newborns, Heal all and normalization.
 INITIAL_HP: Final = 10_000
 BASE_DECAY_PER_TICK: Final = 1
+# HOT default: effective decision bias lives in RuntimeRules.
 STAY_STILL_IMPULSE: Final = 1
 
-DAMAGE_PER_ENEMY: Final = 100
-DAMAGE_PER_OWN_OVERCROWDING: Final = 100
-BONUS_PER_ALLY: Final = 100
+PREDATION_TRANSFER: Final = 100
+DAMAGE_PER_OWN_OVERCROWDING: Final = 10
 
+# HOT default: effective mortality threshold lives in RuntimeRules.
 DIE_WHEN_HP_LESS_OR_EQUAL: Final = 0
+
+MIN_LOW_HP_THRESHOLD: Final = 0
+MAX_LOW_HP_THRESHOLD: Final = INITIAL_HP
+
+MIN_DEATH_HP_THRESHOLD: Final = 0
+MAX_DEATH_HP_THRESHOLD: Final = INITIAL_HP
 
 
 # 6b. MODIFICADORES AMBIENTAIS — heterogeneidade geografica
@@ -95,24 +111,55 @@ ZONE_RADIUS: Final = 27
 HP_EFFECT_IN_ZONE: Final = 5
 
 
+# 6c. NINHOS — geometria estatica por linhagem
+# Ha exatamente um ninho por linhagem. A posicao no tuple de
+# state.nests corresponde ao indice canonico da linhagem (0 -> R,
+# 1 -> G, 2 -> B), definido por cfg.LINEAGES.
+#
+# Estas constantes sao estaticas: nao entram em RuntimeRules, nao
+# aparecem no painel Configuration e nao sao persistidas.
+#
+# NEST_RADIUS define o disco funcional de protecao. O limite e
+# inclusivo: distancia toroidal quadratica <= radius^2 pertence ao
+# ninho. NEST_SPAWN_RADIUS define a vizinhanca discreta em torno do
+# centro usada para posicionar descendentes.
+NESTS_PER_LINEAGE: Final = 1
+NEST_RADIUS: Final = 20
+NEST_SPAWN_RADIUS: Final = 1
+
+# Teto de candidatos sorteados por linhagem durante generate_nests().
+# Esgotar o teto e erro de configuracao do mundo (zonas grandes demais,
+# raio grande demais, mundo pequeno demais): generate_nests() falha
+# ruidosamente em vez de retornar geometria incompleta ou sobreposta.
+MAX_NEST_PLACEMENT_ATTEMPTS: Final = 10_000
+
+
 # 7. SELECAO — quem se torna pai
-# Nao persistido; lido em runtime por evolution.py.
+# config.py contem os defaults e dominios canonicos. Para parametros
+# ja promovidos, o valor efetivo durante a execucao vive em RuntimeRules.
+REPRODUCTION_CRITERIA: Final = (
+    "composite",
+    "longevity",
+)
 REPRODUCTION_CRITERION: Final = "composite"
-LONGEVITY_WEIGHT: Final = 0.5
+LONGEVITY_WEIGHT: Final = 0.3
 EXPLORATION_WEIGHT: Final = 0.3
 INTERACTION_WEIGHT: Final = 0.3
 REPRODUCTION_WEIGHT: Final = 0.3
 
-REPRODUCTIVE_POOL_FRACTION: Final = 1 / 3
+REPRODUCTIVE_POOL_FRACTION: Final = 0.9
+
+# Contratos estruturais fixos: o algoritmo materializa exatamente dois
+# filhos complementares a partir de exatamente dois pais.
 OFFSPRING_PER_PAIR: Final = 2
 REPRODUCE_IN_PAIRS: Final = True
 
-# Tentativas por linhagem por tick:
-# attempts = max(1, ceil(len(agents) / REPRODUCTION_ATTEMPTS_DIVISOR))
+# Default de bootstrap. O hot path usa
+# RuntimeRules.reproduction_attempts_divisor.
 REPRODUCTION_ATTEMPTS_DIVISOR: Final = 50
 
 # Portao 1: idade minima.
-REPRODUCTION_MIN_AGE: Final = 5555
+REPRODUCTION_MIN_AGE: Final = 5000
 
 # Portao 2: HP estritamente abaixo deste valor.
 REPRODUCTION_HP_GATE: Final = 10000
@@ -135,11 +182,28 @@ REPRODUCTION_MIN_ENCOUNTERS: Final = 6
 
 
 # 8. HERANCA — crossover e mutacao
-# Nenhum destes valores e persistido.
+# config.py contem os defaults canonicos. CROSSOVER_MODE,
+# CROSSOVER_PROBABILITY e BLOCK_SIZE sao defaults de bootstrap; os valores
+# efetivos durante a execucao vivem em RuntimeRules. MUTATION_MODE e toda a
+# parametrizacao comportamental de two_scales tambem sao runtime.
+CROSSOVER_MODES: Final = (
+    "blocks",
+    "uniform",
+    "two_points",
+)
 CROSSOVER_MODE: Final = "blocks"
 BLOCK_SIZE: Final = 64
 CROSSOVER_PROBABILITY: Final = 0.5
 
+MIN_CROSSOVER_PROBABILITY: Final = 0.0
+MAX_CROSSOVER_PROBABILITY: Final = 1.0
+MIN_BLOCK_SIZE: Final = 1
+MAX_BLOCK_SIZE: Final = GENOME_SIZE
+
+MUTATION_MODES: Final = (
+    "two_scales",
+    "surgical",
+)
 MUTATION_MODE: Final = "two_scales"
 
 INITIAL_MUTATION_RATE: Final = 5
@@ -160,6 +224,65 @@ MIN_MUTATED_GENES: Final = 1
 MAX_MUTATED_GENES: Final = 50
 MIN_LOCAL_SCALE_FRACTION: Final = 1
 MAX_LOCAL_SCALE_FRACTION: Final = 100
+
+MIN_GLOBAL_PROBABILITY: Final = 0
+MAX_GLOBAL_PROBABILITY: Final = 100
+MIN_GLOBAL_SCALE_FRACTION: Final = 1
+MAX_GLOBAL_SCALE_FRACTION: Final = 100
+
+MIN_MUTATION_SIGMA: Final = 0.01
+MAX_MUTATION_SIGMA: Final = MAX_GENE_VALUE - MIN_GENE_VALUE
+
+# Limites runtime das regras ecologicas.
+# Base decay aceita 0. Predation transfer e overcrowding tem minimo
+# 10: zerar essas regras quebraria o contrato do resolver.
+MIN_BASE_DECAY_PER_TICK: Final = 0
+MAX_BASE_DECAY_PER_TICK: Final = 10_000
+
+MIN_PREDATION_TRANSFER: Final = 10
+MAX_PREDATION_TRANSFER: Final = 200
+PREDATION_TRANSFER_STEP: Final = 10
+
+MIN_DAMAGE_PER_OWN_OVERCROWDING: Final = 10
+MAX_DAMAGE_PER_OWN_OVERCROWDING: Final = 200
+DAMAGE_PER_OWN_OVERCROWDING_STEP: Final = 10
+
+# Limites runtime das regras reprodutivas (v13). Escolhas:
+#   interval >= 1: 0 congelaria a reproducao.
+#   hp_gate <= INITIAL_HP: preserva a invariante do projeto
+#   (HP gate <= INITIAL_HP); com gate > INITIAL_HP todo recem-nascido
+#   ja seria elegivel, anulando o portao.
+#   hp_gate >= 1: com gate 0 nenhum bicho vivo (HP > 0) seria elegivel.
+MIN_REPRODUCTION_INTERVAL: Final = 1
+MAX_REPRODUCTION_INTERVAL: Final = 100_000
+
+MIN_REPRODUCTION_MIN_AGE: Final = 0
+MAX_REPRODUCTION_MIN_AGE: Final = 1_000_000
+
+MIN_REPRODUCTION_HP_GATE: Final = 1
+MAX_REPRODUCTION_HP_GATE: Final = INITIAL_HP
+
+MIN_REPRODUCTION_MIN_ENCOUNTERS: Final = 0
+MAX_REPRODUCTION_MIN_ENCOUNTERS: Final = 1_000_000
+
+MIN_REPRODUCTION_PARENT_HP_BONUS: Final = 0
+MAX_REPRODUCTION_PARENT_HP_BONUS: Final = INITIAL_HP
+
+# Limites runtime do score de selecao (v14). Pesos nao sao
+# probabilidades e nao precisam somar 1.0. Cada componente normalizado
+# fica aproximadamente em [0, 1], portanto quatro pesos no teto 5.0
+# produzem score teorico maximo 20.0.
+MIN_SELECTION_WEIGHT: Final = 0.0
+MAX_SELECTION_WEIGHT: Final = 5.0
+MIN_REPRODUCTION_MIN_SCORE: Final = 0.0
+MAX_REPRODUCTION_MIN_SCORE: Final = 4.0 * MAX_SELECTION_WEIGHT
+
+# Limites runtime da pressao reprodutiva (v16).
+MIN_REPRODUCTION_POOL_FRACTION: Final = 0.01
+MAX_REPRODUCTION_POOL_FRACTION: Final = 1.0
+
+MIN_REPRODUCTION_ATTEMPTS_DIVISOR: Final = 1
+MAX_REPRODUCTION_ATTEMPTS_DIVISOR: Final = MAX_POPULATION_PER_LINEAGE
 
 # Limites de runtime para o efeito de HP das zonas.
 MIN_ZONE_HP_EFFECT: Final = -100
@@ -206,9 +329,6 @@ TARGET_FPS: Final = 60
 WINDOW_TITLE: Final = WORLD_NAME
 HUD_COLOR: Final = (0, 255, 0)
 HUD_FONT: Final = ("monospace", 14, True)
-
-MIN_TICKS_PER_FRAME: Final = 1
-MAX_TICKS_PER_FRAME: Final = 256
 
 OVERLAP_POLICY: Final = "max"
 
@@ -288,7 +408,32 @@ SAVE_FORMAT: Final = "pickle"
 # v10 identidade estavel dos individuos;
 # v11 estado exato de continuacao:
 #     fase do scheduler reprodutivo + estado dos RNGs.
-SAVE_VERSION: Final = 11
+# v12: primeira persistencia de regras ecologicas runtime;
+#     contrato posteriormente substituido por v21.
+# v13 runtime reproduction rules:
+#     interval, minimum age, HP gate, minimum encounters,
+#     parent HP reward.
+# v14 runtime selection-score rules:
+#     minimum score, longevity weight, exploration weight,
+#     interaction weight, reproduction weight.
+# v15 runtime selection criterion:
+#     reproduction_criterion.
+# v16 runtime reproduction-pressure rules:
+#     reproduction_pool_fraction, reproduction_attempts_divisor.
+# v17 runtime genetic operator modes:
+#     crossover_mode, mutation_mode.
+# v18 runtime crossover tuning:
+#     crossover_probability, block_size.
+# v19 runtime two-scale mutation tuning:
+#     local_scale_sigma, global_probability, global_scale_fraction,
+#     global_scale_sigma.
+# v20 runtime behavior/lifecycle:
+#     low_hp_threshold, stay_still_impulse, death_hp_threshold.
+# v21: contrato ecologico atual + geometria persistente de nests:
+#     base_decay_per_tick, predation_transfer,
+#     damage_per_own_overcrowding, nests.
+#     Incompativel com v20.
+SAVE_VERSION: Final = 21
 ARCHITECTURE_VERSION: Final = "mlp-1x25x12-rec"
 GENOME_VERSION: Final = "layout-v4"
 
@@ -344,24 +489,50 @@ assert OUTPUT_ACTIVATION in ("linear", "sigmoid", "tanh", "relu"), (
 )
 assert HIDDEN_NEURONS_2 > 0, "A segunda camada oculta deve ter neurônios."
 
-# CROSSOVER_MODE / MUTATION_MODE aceitam grafias EN e PT durante a migração.
-assert CROSSOVER_MODE in ("uniform", "blocks", "two_points"), (
-    "CROSSOVER_MODE desconhecido."
+assert CROSSOVER_MODE in CROSSOVER_MODES, "CROSSOVER_MODE desconhecido."
+assert (
+    MIN_CROSSOVER_PROBABILITY <= CROSSOVER_PROBABILITY <= MAX_CROSSOVER_PROBABILITY
+), "CROSSOVER_PROBABILITY fora da faixa runtime."
+assert MIN_BLOCK_SIZE <= BLOCK_SIZE <= MAX_BLOCK_SIZE, (
+    "BLOCK_SIZE fora da faixa runtime."
 )
-assert BLOCK_SIZE > 0, "BLOCK_SIZE deve ser positivo."
-assert MUTATION_MODE in ("surgical", "two_scales"), "MUTATION_MODE desconhecido."
+assert MUTATION_MODE in MUTATION_MODES, "MUTATION_MODE desconhecido."
 assert 0.0 < LOCAL_SCALE_FRACTION <= 1.0, "LOCAL_SCALE_FRACTION em (0, 1]."
-assert 0.0 < GLOBAL_SCALE_FRACTION <= 1.0, "GLOBAL_SCALE_FRACTION em (0, 1]."
-assert 0.0 <= GLOBAL_PROBABILITY <= 1.0, "GLOBAL_PROBABILITY em [0, 1]."
-assert LOCAL_SCALE_SIGMA > 0.0, "LOCAL_SCALE_SIGMA deve ser positivo."
-assert GLOBAL_SCALE_SIGMA > 0.0, "GLOBAL_SCALE_SIGMA deve ser positivo."
-assert REPRODUCTION_CRITERION in ("longevity", "composite"), (
+assert (
+    MIN_GLOBAL_SCALE_FRACTION
+    <= int(GLOBAL_SCALE_FRACTION * 100)
+    <= MAX_GLOBAL_SCALE_FRACTION
+), "GLOBAL_SCALE_FRACTION fora da faixa runtime."
+assert (
+    MIN_GLOBAL_PROBABILITY <= int(GLOBAL_PROBABILITY * 100) <= MAX_GLOBAL_PROBABILITY
+), "GLOBAL_PROBABILITY fora da faixa runtime."
+assert MIN_MUTATION_SIGMA <= LOCAL_SCALE_SIGMA <= MAX_MUTATION_SIGMA, (
+    "LOCAL_SCALE_SIGMA fora da faixa runtime."
+)
+assert MIN_MUTATION_SIGMA <= GLOBAL_SCALE_SIGMA <= MAX_MUTATION_SIGMA, (
+    "GLOBAL_SCALE_SIGMA fora da faixa runtime."
+)
+assert REPRODUCTION_CRITERION in REPRODUCTION_CRITERIA, (
     "REPRODUCTION_CRITERION desconhecido."
 )
-assert LONGEVITY_WEIGHT >= 0.0, "LONGEVITY_WEIGHT não-negativo."
-assert EXPLORATION_WEIGHT >= 0.0, "EXPLORATION_WEIGHT não-negativo."
-assert INTERACTION_WEIGHT >= 0.0, "INTERACTION_WEIGHT não-negativo."
-assert REPRODUCTION_WEIGHT >= 0.0, "REPRODUCTION_WEIGHT não-negativo."
+assert MIN_SELECTION_WEIGHT <= MAX_SELECTION_WEIGHT, (
+    "Faixa de pesos de selecao invertida."
+)
+assert MIN_REPRODUCTION_MIN_SCORE <= MAX_REPRODUCTION_MIN_SCORE, (
+    "Faixa de score minimo reprodutivo invertida."
+)
+assert MIN_SELECTION_WEIGHT <= LONGEVITY_WEIGHT <= MAX_SELECTION_WEIGHT, (
+    "LONGEVITY_WEIGHT fora da faixa runtime."
+)
+assert MIN_SELECTION_WEIGHT <= EXPLORATION_WEIGHT <= MAX_SELECTION_WEIGHT, (
+    "EXPLORATION_WEIGHT fora da faixa runtime."
+)
+assert MIN_SELECTION_WEIGHT <= INTERACTION_WEIGHT <= MAX_SELECTION_WEIGHT, (
+    "INTERACTION_WEIGHT fora da faixa runtime."
+)
+assert MIN_SELECTION_WEIGHT <= REPRODUCTION_WEIGHT <= MAX_SELECTION_WEIGHT, (
+    "REPRODUCTION_WEIGHT fora da faixa runtime."
+)
 
 # O mundo sempre tem zonas; "nenhum" não é mais aceito.
 assert ENVIRONMENTAL_MODIFIERS == "zonas", (
@@ -369,6 +540,35 @@ assert ENVIRONMENTAL_MODIFIERS == "zonas", (
 )
 assert NUMBER_OF_ZONES >= 0, "NUMBER_OF_ZONES não-negativo."
 assert ZONE_RADIUS > 0, "ZONE_RADIUS deve ser positivo."
+
+assert NESTS_PER_LINEAGE == 1, (
+    "NESTS_PER_LINEAGE == 1. A representacao de state.nests como "
+    "tuple[tuple[int, int], ...] de exatamente TOTAL_LINEAGES "
+    "centros depende desta invariante. Uma lista de ninhos por "
+    "linhagem exigiria repensar o schema."
+)
+assert NEST_RADIUS > 0, "NEST_RADIUS deve ser positivo."
+assert NEST_SPAWN_RADIUS >= 0 and NEST_SPAWN_RADIUS <= NEST_RADIUS, (
+    "NEST_SPAWN_RADIUS em [0, NEST_RADIUS]: spawn deve caber no "
+    "disco funcional do ninho."
+)
+assert MAX_NEST_PLACEMENT_ATTEMPTS > 0, (
+    "MAX_NEST_PLACEMENT_ATTEMPTS deve ser positivo: um teto zero "
+    "impediria generate_nests() de sequer tentar."
+)
+# Sanidade dimensional: MIN_WORLD_* estao na mesma unidade logica de
+# layout.LAYOUT.world_width/world_height (celulas do mundo), conforme
+# layout._derive(). Um disco que envolva o toro em qualquer eixo
+# degenera a semantica de distancia toroidal (todo ponto ficaria a
+# <= radius de qualquer centro). Este e um limite conservador.
+assert 2 * NEST_RADIUS < MIN_WORLD_WIDTH, (
+    "2 * NEST_RADIUS deve caber na largura minima do mundo; caso "
+    "contrario o disco envolve o toro em X."
+)
+assert 2 * NEST_RADIUS < MIN_WORLD_HEIGHT, (
+    "2 * NEST_RADIUS deve caber na altura minima do mundo; caso "
+    "contrario o disco envolve o toro em Y."
+)
 assert isinstance(HP_EFFECT_IN_ZONE, (int, float)), (
     "HP_EFFECT_IN_ZONE deve ser numérico (positivo = bônus, negativo = dano)."
 )
@@ -404,10 +604,23 @@ assert MAX_POPULATION_PER_LINEAGE >= OFFSPRING_PER_PAIR, (
     "MAX_POPULATION_PER_LINEAGE deve ser >= OFFSPRING_PER_PAIR. Um teto "
     "menor que um evento reprodutivo tornaria a reprodução impossível."
 )
-assert REPRODUCTION_ATTEMPTS_DIVISOR >= 1, (
-    "REPRODUCTION_ATTEMPTS_DIVISOR deve ser >= 1 (0 dividiria por zero; "
-    "1 significaria tantas tentativas quantas criaturas vivas)."
+assert OFFSPRING_PER_PAIR == 2, (
+    "A implementação atual materializa exatamente "
+    "dois filhos complementares por evento."
 )
+assert REPRODUCE_IN_PAIRS is True, (
+    "A implementação atual seleciona exatamente dois pais por evento."
+)
+assert (
+    MIN_REPRODUCTION_POOL_FRACTION
+    <= REPRODUCTIVE_POOL_FRACTION
+    <= MAX_REPRODUCTION_POOL_FRACTION
+), "REPRODUCTIVE_POOL_FRACTION fora da faixa runtime."
+assert (
+    MIN_REPRODUCTION_ATTEMPTS_DIVISOR
+    <= REPRODUCTION_ATTEMPTS_DIVISOR
+    <= MAX_REPRODUCTION_ATTEMPTS_DIVISOR
+), "REPRODUCTION_ATTEMPTS_DIVISOR fora da faixa runtime."
 assert REPRODUCTION_MIN_AGE >= 0, "REPRODUCTION_MIN_AGE deve ser >= 0."
 assert REPRODUCTION_HP_GATE > 0, (
     "REPRODUCTION_HP_GATE deve ser positivo. Uma criatura só é pai "
@@ -422,10 +635,9 @@ assert REPRODUCTION_INTERVAL >= 1, (
     "REPRODUCTION_INTERVAL deve ser >= 1. Com 1, o turno rotaciona a cada "
     "tick; com N, a cada N ticks. O valor 0 congelaria a reprodução."
 )
-assert REPRODUCTION_MIN_SCORE >= 0.0, (
-    "REPRODUCTION_MIN_SCORE deve ser >= 0.0. O score composto é "
-    "normalizado por linhagem e não-negativo por construção."
-)
+assert (
+    MIN_REPRODUCTION_MIN_SCORE <= REPRODUCTION_MIN_SCORE <= MAX_REPRODUCTION_MIN_SCORE
+), "REPRODUCTION_MIN_SCORE fora da faixa runtime."
 assert REPRODUCTION_MIN_ENCOUNTERS >= 0, (
     "REPRODUCTION_MIN_ENCOUNTERS deve ser >= 0. Encontros são um "
     "contador não-negativo (um tick com qualquer outra linhagem na mesma célula)."

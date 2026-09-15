@@ -1,4 +1,4 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 exfoca
 
-__version__ = "0.5.0"
+__version__ = "0.6.0"

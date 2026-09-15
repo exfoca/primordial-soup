@@ -70,11 +70,11 @@ def _capture_runtime_snapshot() -> dict:
         # Ambiente.
         "zones": None if state.zones is None else state.zones.copy(),
         "zones_active": state.zones_active,
-        "zone_hp_effect": state.zone_hp_effect,
+        "zone_hp_effect": state.runtime_rules.zone_hp_effect,
         # Parametros runtime de mutacao.
-        "mutation_rate": state.mutation_rate,
-        "mutated_genes": state.mutated_genes,
-        "local_scale_fraction": state.local_scale_fraction,
+        "mutation_rate": state.runtime_rules.mutation_rate,
+        "mutated_genes": state.runtime_rules.mutated_genes,
+        "local_scale_fraction": state.runtime_rules.local_scale_fraction,
         # RNGs. random.getstate() e comparavel com == (tupla pura);
         # np.random.get_state() devolve ndarray, entao tem helper.
         "rng_python_state": random.getstate(),

@@ -11,6 +11,8 @@ disparados via input_dispatcher com o painel Inspection focado e o
 cursor no item certo.
 """
 
+from types import SimpleNamespace
+
 import numpy as np
 import pygame
 import pytest
@@ -157,7 +159,12 @@ def test_empty_lineage_does_not_change_observation(fresh_world):
 # ---------------------------------------------------------------------------
 
 
-def test_observe_sets_observed_to_candidate(fresh_world, monkeypatch):
+def test_enter_on_criterion_observes_candidate(fresh_world, monkeypatch):
+    """Enter com cursor em criterion observa o candidato atual.
+
+    Novo contrato (Patch 2): nao existe mais o item observe_candidate;
+    Enter em qualquer item normal do Inspection observa o candidato.
+    """
     state.discovery_criterion = cfg.CRITERION_MOST_EVOLVED
     state.discovery_lineage_filter = "G"
 
@@ -167,13 +174,46 @@ def test_observe_sets_observed_to_candidate(fresh_world, monkeypatch):
     assert candidate is not None
     expected_id = int(agents[candidate[0]]["ids"][candidate[1]])
 
-    _focus_inspection_with_cursor("observe_candidate")
+    _focus_inspection_with_cursor("criterion")
     _press(monkeypatch, pygame.K_RETURN)
 
     assert state.inspected_critter_id == expected_id
 
 
-def test_observe_without_candidate_keeps_observation(fresh_world, monkeypatch):
+def test_enter_on_lineage_filter_observes_candidate(fresh_world, monkeypatch):
+    """Enter com cursor em lineage_filter observa o candidato."""
+    state.discovery_criterion = cfg.CRITERION_MOST_EVOLVED
+    state.discovery_lineage_filter = "B"
+
+    candidate = world.discovery_candidate(
+        state.discovery_criterion, state.discovery_lineage_filter
+    )
+    assert candidate is not None
+    expected_id = int(agents[candidate[0]]["ids"][candidate[1]])
+
+    _focus_inspection_with_cursor("lineage_filter")
+    _press(monkeypatch, pygame.K_RETURN)
+
+    assert state.inspected_critter_id == expected_id
+
+
+def test_enter_on_clear_observation_clears(fresh_world, monkeypatch):
+    """Enter com cursor em clear_observation limpa a observacao.
+
+    Excecao deliberada do contrato: Clear observation nao observa
+    candidato, limpa.
+    """
+    cid = _first_id()
+    state.set_inspection_selection(cid)
+
+    _focus_inspection_with_cursor("clear_observation")
+    _press(monkeypatch, pygame.K_RETURN)
+
+    assert state.inspected_critter_id is None
+
+
+def test_enter_without_candidate_keeps_observation(fresh_world, monkeypatch):
+    """Sem candidato elegivel, Enter preserva a observacao existente."""
     cid = _first_id()
     state.set_inspection_selection(cid)
 
@@ -182,14 +222,15 @@ def test_observe_without_candidate_keeps_observation(fresh_world, monkeypatch):
     agents[2]["ids"] = agents[2]["ids"][:0]
     state.discovery_lineage_filter = "B"
 
-    _focus_inspection_with_cursor("observe_candidate")
+    _focus_inspection_with_cursor("criterion")
     _press(monkeypatch, pygame.K_RETURN)
 
     assert state.inspected_critter_id == cid
 
 
 def test_observe_clears_death_snapshot(fresh_world, monkeypatch):
-    from primordial_soup.evolution import _capture_death_snapshot_if_needed
+    """Observar novo candidato limpa snapshot e trail."""
+    from primordial_soup.ecology import _capture_death_snapshot_if_needed
 
     cid = int(agents[0]["ids"][0])
     state.set_inspection_selection(cid)
@@ -201,11 +242,36 @@ def test_observe_clears_death_snapshot(fresh_world, monkeypatch):
     assert state.inspection_death_snapshot is not None
 
     state.discovery_lineage_filter = "G"
-    _focus_inspection_with_cursor("observe_candidate")
+    _focus_inspection_with_cursor("criterion")
     _press(monkeypatch, pygame.K_RETURN)
 
     assert state.inspection_death_snapshot is None
     assert len(state.inspected_trail) == 0
+
+
+def test_observe_candidate_action_removed(fresh_world):
+    """O item observe_candidate e o handler dedicado nao existem mais."""
+    from primordial_soup import panels as _panels_mod
+    panel = _panels_mod.PANELS[ui_state.PANEL_INSPECTION]
+    assert panel.find_item("observe_candidate") is None
+    assert panel.find_item("candidate") is None
+
+
+def test_inspection_has_enter_handler(fresh_world):
+    from primordial_soup import panels as _panels_mod
+    panel = _panels_mod.PANELS[ui_state.PANEL_INSPECTION]
+    assert panel.enter_handler is not None
+
+
+def test_candidate_not_interactive(fresh_world):
+    """O antigo Item candidate nao participa do Tab."""
+    from primordial_soup import panels as _panels_mod
+    panel = _panels_mod.PANELS[ui_state.PANEL_INSPECTION]
+    interactive_ids = [
+        panel.items[i].id for i in panel.interactive_indices()
+    ]
+    assert "candidate" not in interactive_ids
+    assert "observe_candidate" not in interactive_ids
 
 
 # ---------------------------------------------------------------------------
@@ -214,7 +280,7 @@ def test_observe_clears_death_snapshot(fresh_world, monkeypatch):
 
 
 def test_navigation_does_not_disturb_death_snapshot(fresh_world, monkeypatch):
-    from primordial_soup.evolution import _capture_death_snapshot_if_needed
+    from primordial_soup.ecology import _capture_death_snapshot_if_needed
 
     cid = int(agents[0]["ids"][0])
     state.set_inspection_selection(cid)
@@ -286,19 +352,15 @@ def test_no_legacy_field_names_referenced(fresh_world):
 # ---------------------------------------------------------------------------
 
 
-def test_candidate_readonly_nao_entra_no_tab(fresh_world):
-    """O item 'candidate' e READ_ONLY; Tab pula direto entre
-    lineage_filter e observe_candidate."""
+def test_candidate_nao_existe_mais(fresh_world):
+    """O Item candidate e observe_candidate foram removidos.
+
+    Patch 2: o candidato e desenhado pelo renderer como card; nao
+    existe mais como Item do painel.
+    """
     panel = panels_module.PANELS[ui_state.PANEL_INSPECTION]
-    interactive_ids = [
-        panel.items[i].id for i in panel.interactive_indices()
-    ]
-    assert "candidate" not in interactive_ids, (
-        "candidate deve ser READ_ONLY e nao entrar na navegacao por Tab"
-    )
-    # E existe como item do painel.
-    assert panel.find_item("candidate") is not None
-    assert panel.find_item("candidate").kind is panels_module.ItemKind.READ_ONLY
+    assert panel.find_item("candidate") is None
+    assert panel.find_item("observe_candidate") is None
 
 
 # ---------------------------------------------------------------------------
@@ -309,25 +371,11 @@ def test_candidate_readonly_nao_entra_no_tab(fresh_world):
 def test_click_on_critter_sets_stable_id(fresh_world, monkeypatch):
     """Clique em um critter vivo seleciona seu stable ID, nao o
     array index."""
-    from primordial_soup import rendering, panels_defs as _pd
-
     # Prepara um critter em posicao conhecida.
     target_li, target_ai = 0, 2
     x = int(agents[target_li]["agents"][target_ai, 1])  # INDEX_X
     y = int(agents[target_li]["agents"][target_ai, 2])  # INDEX_Y
     expected_id = int(agents[target_li]["ids"][target_ai])
-
-    # screen_to_world e chamado antes de find_agent_at; injetamos uma
-    # Surface real para que ele funcione.
-    import pygame as _pg
-    from primordial_soup import layout
-    fake_screen = _pg.Surface(
-        (layout.LAYOUT.window_width, layout.LAYOUT.window_height)
-    )
-    monkeypatch.setattr(rendering, "_screen", fake_screen)
-    rendering._recompute_scale_and_offset(*fake_screen.get_size())
-
-    monkeypatch.setattr(rendering, "screen_to_world", lambda pos: (x, y))
 
     captured = {}
     real_set = state.set_inspection_selection
@@ -393,3 +441,105 @@ def test_click_on_other_critter_changes_observation(fresh_world):
     assert len(state.inspected_trail) == 0, (
         "trocar de bicho via clique deve limpar trail"
     )
+
+def test_telemetry_global_mutation_uses_runtime_rules(monkeypatch):
+    from primordial_soup import rendering
+
+    original = state.runtime_rules
+    captured = []
+    try:
+        state.update_runtime_rules(
+            global_probability=75,
+            global_scale_fraction=40,
+        )
+        monkeypatch.setattr(cfg, "GLOBAL_PROBABILITY", 0.10)
+        monkeypatch.setattr(cfg, "GLOBAL_SCALE_FRACTION", 0.20)
+        monkeypatch.setattr(rendering, "_screen", pygame.Surface((800, 600)))
+        monkeypatch.setattr(
+            rendering,
+            "_font",
+            SimpleNamespace(get_height=lambda: 14),
+        )
+        monkeypatch.setattr(
+            rendering,
+            "_draw_hud_kv",
+            lambda screen, label, value, x, y: y + 1,
+        )
+        monkeypatch.setattr(
+            rendering,
+            "_draw_hud_divider",
+            lambda screen, x, y, width: y + 1,
+        )
+
+        def fake_inline(screen, entries, x, y):
+            captured.append(entries)
+            return y + 1
+
+        monkeypatch.setattr(rendering, "_draw_hud_kv_inline", fake_inline)
+        monkeypatch.setattr(rendering, "_zone_summary", lambda: "zones")
+        rendering._draw_telemetry_panel(0, 0, 400)
+
+        values = [value for entries in captured for _label, value in entries]
+        assert "75%@40%" in values
+        assert "10%@20%" not in values
+    finally:
+        state.set_runtime_rules(original)
+
+
+def test_telemetry_displays_camera_zoom(monkeypatch):
+    """O painel de telemetria mostra o fator de zoom atual da camera.
+
+    Este teste valida apenas a FORMATACAO do HUD (label + valor),
+    nao a matematica da camera. Por isso manipula `_camera.zoom`
+    diretamente em vez de simular wheel. A matematica da camera e
+    coberta por tests/test_rendering_camera.py.
+    """
+    from primordial_soup import i18n
+    from primordial_soup import rendering
+
+    monkeypatch.setattr(rendering, "_screen", pygame.Surface((800, 600)))
+    monkeypatch.setattr(
+        rendering,
+        "_font",
+        SimpleNamespace(get_height=lambda: 14),
+    )
+    monkeypatch.setattr(
+        rendering,
+        "_draw_hud_divider",
+        lambda screen, x, y, width: y + 1,
+    )
+
+    captured_zoom = []
+
+    def fake_kv(screen, label, value, x, y):
+        captured_zoom.append((label, value))
+        return y + 1
+
+    monkeypatch.setattr(rendering, "_draw_hud_kv", fake_kv)
+
+    def capture_inline(screen, entries, x, y):
+        for label, value in entries:
+            captured_zoom.append((label, value))
+        return y + 1
+
+    monkeypatch.setattr(rendering, "_draw_hud_kv_inline", capture_inline)
+    monkeypatch.setattr(rendering, "_zone_summary", lambda: "zones")
+
+    try:
+        rendering.reset_camera()
+        captured_zoom.clear()
+        rendering._draw_telemetry_panel(0, 0, 400)
+        assert (
+            i18n.t("hud.label.zoom"),
+            "1.00x",
+        ) in captured_zoom
+
+        captured_zoom.clear()
+        rendering._camera.zoom = 1.20
+        rendering._draw_telemetry_panel(0, 0, 400)
+        assert (
+            i18n.t("hud.label.zoom"),
+            "1.20x",
+        ) in captured_zoom
+    finally:
+        rendering.reset_camera()

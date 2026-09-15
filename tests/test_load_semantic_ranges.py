@@ -1,9 +1,9 @@
 """Validacao semantica de ranges no loader.
 
-Cobre a camada de DOMINIO adicionada no Patch 3: apos a coercao
-lossless de _coerce_int, cada campo inteiro escalar do payload e
-validado contra seu range operacional. Valores fora do range sao
-rejeitados; NAO sao silenciosamente clamped.
+Cobre a camada de DOMINIO do loader: apos a coercao lossless de
+_coerce_int, cada campo inteiro escalar do payload e validado contra
+seu range operacional. Valores fora do range sao rejeitados; NAO sao
+silenciosamente clamped.
 
 Escopo deliberadamente separado de tests/test_load_atomicity.py:
 aquele arquivo cobre a propriedade estrutural de load() rejeitar sem
@@ -30,10 +30,36 @@ import numpy as np
 import pytest
 
 from primordial_soup import config as cfg
+from primordial_soup import layout
 from primordial_soup import persistence
 from primordial_soup import state
 from primordial_soup import world
 from primordial_soup.state import agents
+
+
+def _valid_test_nests():
+    """Geometria deterministica de ninhos valida para o contrato v21."""
+    radius = cfg.NEST_RADIUS
+    y = radius + 1
+    stride = 2 * radius + 1
+    return (
+        (radius + 1, y),
+        (radius + 1 + stride, y),
+        (radius + 1 + 2 * stride, y),
+    )
+
+
+def _install_checkpoint_geometry():
+    """Instala zones vazias e nests determinísticos.
+
+    Nao consome RNG: fixtures de persistence nao devem alterar a
+    sequencia aleatoria global so por preparar um checkpoint.
+    """
+    state.zones = np.zeros(
+        (layout.LAYOUT.world_width, layout.LAYOUT.world_height),
+        dtype=bool,
+    )
+    state.nests = _valid_test_nests()
 
 
 # ---------------------------------------------------------------------------
@@ -48,6 +74,9 @@ def saved_payload(tmp_path):
     O dict e o payload cru, para o teste mutar um campo especifico
     antes de reescrever. O path e onde o teste reescreve o payload
     mutado.
+
+    Geometry e instalada explicitamente para que o save seja valido
+    sob o contrato v21 sem depender de RNG.
     """
     state.reset_counters()
     world.seed_lineages()
@@ -58,9 +87,10 @@ def saved_payload(tmp_path):
         )
     world.place_initially()
     world.fill_fields()
+    _install_checkpoint_geometry()
 
     path = tmp_path / "save.pkl"
-    persistence.save(str(path))
+    assert persistence.save(str(path)) is True
     with open(path, "rb") as f:
         data = pickle.load(f)
     return path, data
@@ -69,6 +99,8 @@ def saved_payload(tmp_path):
 def _isolate_runtime():
     """Zera o runtime sem depender do payload."""
     state.reset_counters()
+    state.zones = None
+    state.nests = None
     agents.clear()
     world.seed_lineages()
     for ag in agents:
@@ -269,6 +301,11 @@ _ALL_INT_FIELDS = [
     "mutation", "mutategen", "escala_local",
     "tick", "nascimentos", "mortes",
     "efeito_hp_zonas", "reproduction_cooldown", "reproduction_turn",
+    "base_decay_per_tick", "predation_transfer",
+    "damage_per_own_overcrowding",
+    "reproduction_interval", "reproduction_min_age",
+    "reproduction_hp_gate", "reproduction_min_encounters",
+    "reproduction_parent_hp_bonus",
 ]
 
 
@@ -303,12 +340,12 @@ def test_int_fields_reject_bad_types(saved_payload, field, label, bad_value):
 def test_coerce_int_lexical_contract_is_preserved(saved_payload, lexical_value):
     """Formas coerciveis para int continuam validas.
 
-    Protege a compatibilidade lexical existente do loader: o Patch 3
-    adiciona dominio por cima, nao muda o que _coerce_int aceita.
-    Sem esta protecao, alguem poderia "endurecer" o campo e quebrar
-    saves legitimamente produzidos por versoes anteriores, ou
-    payloads serializados por ferramentas que gravaram "5" em vez
-    de 5.
+    Protege a compatibilidade lexical existente do loader: a camada
+    de validacao de dominio adiciona checagem por cima, sem mudar o
+    que _coerce_int aceita. Sem esta protecao, alguem poderia
+    "endurecer" o campo e quebrar saves legitimamente produzidos por
+    versoes anteriores, ou payloads serializados por ferramentas que
+    gravaram "5" em vez de 5.
     """
     path, data = saved_payload
     # Usa um campo de range conhecido: mutation. O valor 5 esta
@@ -382,7 +419,7 @@ def test_zones_active_rejects_non_bool(saved_payload, bad_value):
 # Verificacao leve aqui (sentinela representativo), para nao duplicar
 # o teste pesado de atomicidade de tests/test_load_atomicity.py. A
 # propriedade "load rejeitado nao muta o runtime" ja esta provada
-# la; este teste so confirma que as rejeicoes de range do Patch 3
+# la; este teste so confirma que as rejeicoes de range do loader
 # passam pelo mesmo caminho.
 
 

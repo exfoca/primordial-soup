@@ -12,8 +12,10 @@ import numpy as np
 
 from . import config as cfg
 from . import layout
+from . import nest_geometry
 from . import state
 from . import i18n
+from .runtime_rules import RuntimeRules, validate_runtime_rules
 from .state import agents
 from .world import (
     AGENT_COLUMNS,
@@ -154,6 +156,76 @@ def _parse_int_field(
     if maximum is not None and value > maximum:
         return _INVALID
     return value
+
+
+def _coerce_float(value):
+    """Converte valor numerico finito para builtin float, ou _INVALID."""
+    if isinstance(value, bool):
+        return _INVALID
+
+    if isinstance(value, numbers.Real):
+        numeric = float(value)
+        if not math.isfinite(numeric):
+            return _INVALID
+        return numeric
+
+    if isinstance(value, str):
+        try:
+            numeric = float(value)
+        except (TypeError, ValueError, OverflowError):
+            return _INVALID
+        if not math.isfinite(numeric):
+            return _INVALID
+        return numeric
+
+    return _INVALID
+
+
+def _parse_float_field(
+    record: dict,
+    pt_key: str,
+    en_key: str,
+    *,
+    default=_MISSING,
+    minimum: float | None = None,
+    maximum: float | None = None,
+):
+    """Le, coage e valida um float escalar sem clamp/arredondamento."""
+    raw = _read_key(record, pt_key, en_key)
+    if raw is _MISSING:
+        return _INVALID if default is _MISSING else default
+    value = _coerce_float(raw)
+    if value is _INVALID:
+        return _INVALID
+    if minimum is not None and value < minimum:
+        return _INVALID
+    if maximum is not None and value > maximum:
+        return _INVALID
+    return value
+
+
+def _parse_choice_field(
+    record: dict,
+    pt_key: str,
+    en_key: str,
+    *,
+    allowed,
+    default=_MISSING,
+):
+    """Le uma string canonica pertencente estritamente a `allowed`.
+
+    Nao normaliza, nao coage e nao fabrica fallback. Campos ausentes
+    obrigatorios e qualquer valor nao-str/fora do dominio retornam
+    `_INVALID`.
+    """
+    raw = _read_key(record, pt_key, en_key)
+    if raw is _MISSING:
+        return _INVALID if default is _MISSING else default
+    if type(raw) is not str:
+        return _INVALID
+    if raw not in allowed:
+        return _INVALID
+    return raw
 
 
 def _coerce_int_array(value, ndim: int | None = None):
@@ -440,6 +512,144 @@ def _validate_identity(
     return True
 
 
+# Validacao da geometria de ninhos
+
+
+def _validate_nest_centers(
+    centers,
+    zones: np.ndarray | None,
+) -> tuple[tuple[int, int], ...]:
+    """Valida e canoniza centros de ninho.
+
+    Contrato estrito do schema v21: exatamente TOTAL_LINEAGES centros,
+    cada um uma sequence de 2 elementos, cada coordenada int Python
+    estrito (type(x) is int). Sem coercao: nao usa _coerce_int nem
+    nenhuma representacao alternativa (float integral, np.int64,
+    string, bool). O schema e novo e nao tem legado a preservar.
+
+    Valida tambem:
+      - bounds: 0 <= x < world_width, 0 <= y < world_height;
+      - cada disco nao intersecta zones (se zones nao for None);
+      - nenhum par de discos se sobrepoe (toroidal).
+
+    Retorna a tupla canonica na ordem de cfg.LINEAGES, ou levanta
+    ValueError. Nao muta state, nao consome RNG.
+    """
+    if centers is None:
+        raise ValueError(
+            "_validate_nest_centers: centros ausentes (None)."
+        )
+
+    if isinstance(centers, np.ndarray):
+        raise ValueError(
+            "_validate_nest_centers: centros devem ser sequence "
+            "de tuples de 2 ints, nao ndarray."
+        )
+
+    try:
+        seq = list(centers)
+    except TypeError as exc:
+        raise ValueError(
+            "_validate_nest_centers: centros nao sao iteraveis "
+            f"({exc!r})."
+        )
+
+    if len(seq) != cfg.TOTAL_LINEAGES:
+        raise ValueError(
+            "_validate_nest_centers: esperado exatamente "
+            f"{cfg.TOTAL_LINEAGES} centros, recebido {len(seq)}."
+        )
+
+    width = layout.LAYOUT.world_width
+    height = layout.LAYOUT.world_height
+
+    parsed: list[tuple[int, int]] = []
+    for index, center in enumerate(seq):
+        if isinstance(center, np.ndarray):
+            raise ValueError(
+                f"_validate_nest_centers: centro {index} e ndarray; "
+                "esperado sequence de 2 ints."
+            )
+        if isinstance(center, (str, bytes)):
+            raise ValueError(
+                f"_validate_nest_centers: centro {index} e string; "
+                "esperado sequence de 2 ints."
+            )
+        try:
+            pair = list(center)
+        except TypeError as exc:
+            raise ValueError(
+                f"_validate_nest_centers: centro {index} nao e "
+                f"iteravel ({exc!r})."
+            )
+        if len(pair) != 2:
+            raise ValueError(
+                f"_validate_nest_centers: centro {index} deve ter "
+                f"exatamente 2 elementos, recebido {len(pair)}."
+            )
+
+        x, y = pair
+        if type(x) is not int or type(y) is not int:
+            raise ValueError(
+                f"_validate_nest_centers: centro {index} deve conter "
+                "exatamente 2 int Python estritos (type is int); "
+                f"recebido ({type(x).__name__}, {type(y).__name__})."
+            )
+
+        if not (0 <= x < width):
+            raise ValueError(
+                f"_validate_nest_centers: centro {index} x={x} fora "
+                f"do intervalo [0, {width})."
+            )
+        if not (0 <= y < height):
+            raise ValueError(
+                f"_validate_nest_centers: centro {index} y={y} fora "
+                f"do intervalo [0, {height})."
+            )
+
+        parsed.append((x, y))
+
+    if zones is not None:
+        zones_arr = np.asarray(zones)
+        if zones_arr.dtype != np.bool_:
+            raise ValueError(
+                "_validate_nest_centers: zones deve ter dtype=bool, "
+                f"recebido {zones_arr.dtype}."
+            )
+        expected_shape = (width, height)
+        if zones_arr.shape != expected_shape:
+            raise ValueError(
+                "_validate_nest_centers: zones.shape deve ser "
+                f"{expected_shape}, recebido {zones_arr.shape}."
+            )
+        for index, center in enumerate(parsed):
+            if nest_geometry.nest_intersects_zone(
+                center,
+                zones_arr,
+                radius=cfg.NEST_RADIUS,
+            ):
+                raise ValueError(
+                    f"_validate_nest_centers: centro {index} "
+                    f"({center}) intersecta zona ativa."
+                )
+
+    for i in range(len(parsed)):
+        for j in range(i + 1, len(parsed)):
+            if nest_geometry.nests_overlap(
+                parsed[i],
+                parsed[j],
+                width=width,
+                height=height,
+                radius=cfg.NEST_RADIUS,
+            ):
+                raise ValueError(
+                    f"_validate_nest_centers: centros {i} e {j} "
+                    f"se sobrepoem ({parsed[i]} vs {parsed[j]})."
+                )
+
+    return tuple(parsed)
+
+
 # Save
 
 
@@ -476,13 +686,51 @@ def save(path: str | None = None) -> bool:
     if path is None:
         path = save_path()
 
+    # Geometria de ninhos: validada ANTES de qualquer escrita.
+    # Um checkpoint sem geometria nao e v21 valido; o loader o
+    # rejeitaria. Falhar aqui evita produzir um arquivo que o proprio
+    # codigo recusaria.
+    try:
+        validated_nests = _validate_nest_centers(
+            state.nests,
+            state.zones,
+        )
+    except ValueError as exc:
+        print(
+            f"[save] nests invalidos; checkpoint abortado: {exc}"
+        )
+        return False
+
+    nests_payload = {
+        cfg.LINEAGES[i]["id"]: [
+            validated_nests[i][0],
+            validated_nests[i][1],
+        ]
+        for i in range(cfg.TOTAL_LINEAGES)
+    }
+
     data = {
         "versao": cfg.SAVE_VERSION,
         "arquitetura": cfg.ARCHITECTURE_VERSION,
         "genoma": cfg.GENOME_VERSION,
-        "mutation": state.mutation_rate,
-        "mutategen": state.mutated_genes,
-        "escala_local": state.local_scale_fraction,
+        "mutation": state.runtime_rules.mutation_rate,
+        "mutategen": state.runtime_rules.mutated_genes,
+        # --- v17/v18: operadores geneticos runtime -----------------
+        # Chaves canonicas flat; nunca persistimos labels localizados.
+        "crossover_mode": state.runtime_rules.crossover_mode,
+        "crossover_probability": state.runtime_rules.crossover_probability,
+        "block_size": state.runtime_rules.block_size,
+        "mutation_mode": state.runtime_rules.mutation_mode,
+        "escala_local": state.runtime_rules.local_scale_fraction,
+        # --- v19: tuning two_scales runtime -----------------------
+        "local_scale_sigma": state.runtime_rules.local_scale_sigma,
+        "global_probability": state.runtime_rules.global_probability,
+        "global_scale_fraction": state.runtime_rules.global_scale_fraction,
+        "global_scale_sigma": state.runtime_rules.global_scale_sigma,
+        # --- v20: fechamento behavior/lifecycle runtime ------------
+        "low_hp_threshold": state.runtime_rules.low_hp_threshold,
+        "stay_still_impulse": state.runtime_rules.stay_still_impulse,
+        "death_hp_threshold": state.runtime_rules.death_hp_threshold,
         "tick": state.tick_count,
         # Contador global de identidade. Obrigatorio em v11; o load
         # rejeita se ausente ou inconsistente com os ids salvos.
@@ -503,6 +751,7 @@ def save(path: str | None = None) -> bool:
         # consistente com mutation / mutategen / escala_local / tick
         # / proximo_id. O save ja mistura PT e EN sem cerimonia; a
         # consistencia real e "chave estavel", nao "chave em PT".
+        #
         "reproduction_cooldown": state.reproduction_cooldown,
         "reproduction_turn": state.reproduction_turn,
         # Estado dos dois RNGs globais. Cru: o objeto devolvido por
@@ -522,7 +771,45 @@ def save(path: str | None = None) -> bool:
         # (default cfg.HP_EFFECT_IN_ZONE); ausente em saves
         # pre-chave, estado legitimo. NAO faz parte do contrato de
         # SAVE_VERSION.
-        "efeito_hp_zonas": state.zone_hp_effect,
+        "efeito_hp_zonas": state.runtime_rules.zone_hp_effect,
+        # v21: nests integra a geometria persistente do mundo.
+        # Dict {lineage_id: [x, y]} na ordem canonica. Sem raio,
+        # sem mascara, sem offsets derivados: esses dados sao
+        # funcao de cfg + geometria e nao pertencem ao checkpoint.
+        "nests": nests_payload,
+        # --- v21: regras ecologicas runtime -----------------------
+        # Chaves canonicas flat do contrato ecologico atual.
+        "base_decay_per_tick": state.runtime_rules.base_decay_per_tick,
+        "predation_transfer": state.runtime_rules.predation_transfer,
+        "damage_per_own_overcrowding":
+            state.runtime_rules.damage_per_own_overcrowding,
+        # --- v13: regras reprodutivas runtime --------------------
+        # Chaves planas na raiz, mantendo o schema flat.
+        "reproduction_interval":
+            state.runtime_rules.reproduction_interval,
+        "reproduction_min_age":
+            state.runtime_rules.reproduction_min_age,
+        "reproduction_hp_gate":
+            state.runtime_rules.reproduction_hp_gate,
+        "reproduction_min_encounters":
+            state.runtime_rules.reproduction_min_encounters,
+        "reproduction_parent_hp_bonus":
+            state.runtime_rules.reproduction_parent_hp_bonus,
+        # --- v15: criterio de selecao runtime ---------------------
+        "reproduction_criterion":
+            state.runtime_rules.reproduction_criterion,
+        # --- v16: pressao reprodutiva runtime ----------------------
+        "reproduction_pool_fraction":
+            state.runtime_rules.reproduction_pool_fraction,
+        "reproduction_attempts_divisor":
+            state.runtime_rules.reproduction_attempts_divisor,
+        # --- v14: score de selecao runtime ------------------------
+        "reproduction_min_score":
+            state.runtime_rules.reproduction_min_score,
+        "longevity_weight": state.runtime_rules.longevity_weight,
+        "exploration_weight": state.runtime_rules.exploration_weight,
+        "interaction_weight": state.runtime_rules.interaction_weight,
+        "reproduction_weight": state.runtime_rules.reproduction_weight,
         "linhagens": [
             {
                 "id": ag["id"],
@@ -608,11 +895,13 @@ def load(path: str | None = None) -> bool:
     sera rejeitado no check de versao, nao carregado em silencio. O
     fallback e limitado ao slot default.
 
-    Contrato v11 estrito: um save valido contem exatamente
+    Contrato v21 estrito: um save valido contem exatamente
     cfg.TOTAL_LINEAGES linhagens, cada uma com tres arrays paralelos
     em lockstep, todos os metadados de versao exatamente iguais aos
     atuais, todos os escalares de estado obrigatorios, zona valida
-    com shape derivado do mundo atual, toggle de zonas obrigatorio,
+    com shape derivado do mundo atual, geometria de ninhos valida
+    (exatamente um centro por linhagem, sem interseccao com zonas e
+    sem sobreposicao entre discos), toggle de zonas obrigatorio,
     efeito de HP das zonas dentro do range, scheduler reprodutivo
     presente e estados dos dois RNGs presentes e validos:
         pool.shape   == (N, GENOME_SIZE)
@@ -635,11 +924,13 @@ def load(path: str | None = None) -> bool:
         escalares, zonas, zonas_active, zone_hp_effect,
         next_critter_id, agents, sessao de inspecao, historico de
         metricas.
-      - generate_zones() so e chamado no caminho de commit. Isso
+      - Nem generate_zones() nem generate_nests() sao chamados em
+        qualquer caminho do load (parse, validacao ou commit). Isso
         importa para reprodutibilidade: um load rejeitado nao pode
         consumir draws do RNG global, ou uma run subsequente com
         --seed divergiria de uma run identica que nunca tentou o
-        load rejeitado.
+        load rejeitado. E um load aceito restaura exatamente a
+        geometria salva, sem regeneracao.
       - A fase de commit nao levanta para nenhuma condicao que a
         fase de parse ja validou; o assert final e backstop
         fail-loud para bug genuino, nao caminho esperado.
@@ -686,6 +977,26 @@ def load(path: str | None = None) -> bool:
     # retorna False com `state` ainda intacto.
     # ------------------------------------------------------------------
 
+    # --- v13: reproduction_interval precisa vir ANTES do cooldown --
+    #
+    # A partir de v13, o range valido de reproduction_cooldown depende
+    # do reproduction_interval SALVO, nao da constante estatica. O
+    # loader preserva a ordem: parse interval -> valida -> parse
+    # cooldown usando o interval parseado.
+    parsed_reproduction_interval = _parse_int_field(
+        data,
+        "reproduction_interval",
+        "reproduction_interval",
+        minimum=cfg.MIN_REPRODUCTION_INTERVAL,
+        maximum=cfg.MAX_REPRODUCTION_INTERVAL,
+    )
+    if parsed_reproduction_interval is _INVALID:
+        print(
+            "[load] reproduction_interval ausente ou invalido; "
+            "save invalido."
+        )
+        return False
+
     # --- v11: scheduler reprodutivo (parse) -----------------------
     #
     # Chaves obrigatorias em v11. Ausencia e rejeicao, nao fallback:
@@ -696,12 +1007,16 @@ def load(path: str | None = None) -> bool:
     # Obrigatorios: default=_MISSING faz chave ausente cair em
     # _INVALID, indistinguivel de valor corrompido no contrato do
     # helper. Mensagem unica cobre os dois casos.
+    #
+    # v13: o range maximo do cooldown vem do reproduction_interval
+    # salvo, nao de cfg.REPRODUCTION_INTERVAL. Um cooldown > interval
+    # salvo e rejeitado.
     parsed_reproduction_cooldown = _parse_int_field(
         data,
         "reproduction_cooldown",
         "reproduction_cooldown",
         minimum=0,
-        maximum=cfg.REPRODUCTION_INTERVAL,
+        maximum=parsed_reproduction_interval,
     )
     if parsed_reproduction_cooldown is _INVALID:
         print("[load] reproduction_cooldown ausente ou invalido; save invalido.")
@@ -768,6 +1083,53 @@ def load(path: str | None = None) -> bool:
     # porque o helper nao devolve a causa fina; distinguir "ausente"
     # de "presente mas corrompido" exigiria ampliar o protocolo do
     # helper sem ganho diagnostico proporcional.
+    # --- v17: modos de operadores geneticos runtime ---------------
+    parsed_crossover_mode = _parse_choice_field(
+        data,
+        "crossover_mode",
+        "crossover_mode",
+        allowed=cfg.CROSSOVER_MODES,
+    )
+    if parsed_crossover_mode is _INVALID:
+        print("[load] crossover_mode ausente ou invalido; save invalido.")
+        return False
+
+    # --- v18: tuning interno de crossover runtime -------------------
+    parsed_crossover_probability = _parse_float_field(
+        data,
+        "crossover_probability",
+        "crossover_probability",
+        minimum=cfg.MIN_CROSSOVER_PROBABILITY,
+        maximum=cfg.MAX_CROSSOVER_PROBABILITY,
+    )
+    if parsed_crossover_probability is _INVALID:
+        print(
+            "[load] crossover_probability ausente ou invalido; "
+            "save invalido."
+        )
+        return False
+
+    parsed_block_size = _parse_int_field(
+        data,
+        "block_size",
+        "block_size",
+        minimum=cfg.MIN_BLOCK_SIZE,
+        maximum=cfg.MAX_BLOCK_SIZE,
+    )
+    if parsed_block_size is _INVALID:
+        print("[load] block_size ausente ou invalido; save invalido.")
+        return False
+
+    parsed_mutation_mode = _parse_choice_field(
+        data,
+        "mutation_mode",
+        "mutation_mode",
+        allowed=cfg.MUTATION_MODES,
+    )
+    if parsed_mutation_mode is _INVALID:
+        print("[load] mutation_mode ausente ou invalido; save invalido.")
+        return False
+
     parsed_mutation = _parse_int_field(
         data,
         "mutation",
@@ -799,6 +1161,83 @@ def load(path: str | None = None) -> bool:
     )
     if parsed_local_scale is _INVALID:
         print("[load] escala_local ausente ou invalida; save invalido.")
+        return False
+
+    # --- v19: tuning do operador two_scales runtime ---------------
+    parsed_local_scale_sigma = _parse_float_field(
+        data,
+        "local_scale_sigma",
+        "local_scale_sigma",
+        minimum=cfg.MIN_MUTATION_SIGMA,
+        maximum=cfg.MAX_MUTATION_SIGMA,
+    )
+    if parsed_local_scale_sigma is _INVALID:
+        print("[load] local_scale_sigma ausente ou invalido; save invalido.")
+        return False
+
+    parsed_global_probability = _parse_int_field(
+        data,
+        "global_probability",
+        "global_probability",
+        minimum=cfg.MIN_GLOBAL_PROBABILITY,
+        maximum=cfg.MAX_GLOBAL_PROBABILITY,
+    )
+    if parsed_global_probability is _INVALID:
+        print("[load] global_probability ausente ou invalido; save invalido.")
+        return False
+
+    parsed_global_scale_fraction = _parse_int_field(
+        data,
+        "global_scale_fraction",
+        "global_scale_fraction",
+        minimum=cfg.MIN_GLOBAL_SCALE_FRACTION,
+        maximum=cfg.MAX_GLOBAL_SCALE_FRACTION,
+    )
+    if parsed_global_scale_fraction is _INVALID:
+        print("[load] global_scale_fraction ausente ou invalido; save invalido.")
+        return False
+
+    parsed_global_scale_sigma = _parse_float_field(
+        data,
+        "global_scale_sigma",
+        "global_scale_sigma",
+        minimum=cfg.MIN_MUTATION_SIGMA,
+        maximum=cfg.MAX_MUTATION_SIGMA,
+    )
+    if parsed_global_scale_sigma is _INVALID:
+        print("[load] global_scale_sigma ausente ou invalido; save invalido.")
+        return False
+
+    # --- v20: fechamento behavior/lifecycle runtime ---------------
+    parsed_low_hp_threshold = _parse_int_field(
+        data,
+        "low_hp_threshold",
+        "low_hp_threshold",
+        minimum=cfg.MIN_LOW_HP_THRESHOLD,
+        maximum=cfg.MAX_LOW_HP_THRESHOLD,
+    )
+    if parsed_low_hp_threshold is _INVALID:
+        print("[load] low_hp_threshold ausente ou invalido; save invalido.")
+        return False
+
+    parsed_stay_still_impulse = _parse_float_field(
+        data,
+        "stay_still_impulse",
+        "stay_still_impulse",
+    )
+    if parsed_stay_still_impulse is _INVALID:
+        print("[load] stay_still_impulse ausente ou invalido; save invalido.")
+        return False
+
+    parsed_death_hp_threshold = _parse_int_field(
+        data,
+        "death_hp_threshold",
+        "death_hp_threshold",
+        minimum=cfg.MIN_DEATH_HP_THRESHOLD,
+        maximum=cfg.MAX_DEATH_HP_THRESHOLD,
+    )
+    if parsed_death_hp_threshold is _INVALID:
+        print("[load] death_hp_threshold ausente ou invalido; save invalido.")
         return False
 
     parsed_tick = _parse_int_field(
@@ -879,6 +1318,44 @@ def load(path: str | None = None) -> bool:
         return False
     parsed_zones: np.ndarray = zones_arr
 
+    # --- Ninhos (obrigatorios em v21) ---
+    #
+    # Parse imediatamente apos parsed_zones: nests depende da geometria
+    # de zonas (valida contra parsed_zones), mas nao de zonas_ativas
+    # nem de efeito_hp_zonas. A validacao estrutural e geometrica e
+    # delegada a _validate_nest_centers, a MESMA autoridade usada por
+    # save(). load NUNCA regenera ninhos: payload incompleto ou
+    # invalido e rejeitado.
+    raw_nests = _read_key(data, "nests", "nests")
+    if raw_nests is _MISSING:
+        print("[load] nests ausente; save invalido.")
+        return False
+    if not isinstance(raw_nests, dict):
+        print(
+            "[load] nests deve ser dict, "
+            f"recebido {type(raw_nests).__name__}; save invalido."
+        )
+        return False
+
+    expected_nest_keys = {lineage["id"] for lineage in cfg.LINEAGES}
+    if set(raw_nests.keys()) != expected_nest_keys:
+        print(
+            "[load] nests deve conter exatamente as chaves "
+            f"{sorted(expected_nest_keys)!r}, recebido "
+            f"{sorted(raw_nests.keys())!r}; save invalido."
+        )
+        return False
+
+    raw_centers = tuple(
+        raw_nests[lineage["id"]]
+        for lineage in cfg.LINEAGES
+    )
+    try:
+        parsed_nests = _validate_nest_centers(raw_centers, parsed_zones)
+    except ValueError as exc:
+        print(f"[load] nests invalidos ({exc}); save invalido.")
+        return False
+
     # --- Toggle de zonas (obrigatorio em v11) ---
     #
     # bool estrito: type(x) is bool. Nao aceita np.bool_, strings,
@@ -912,6 +1389,232 @@ def load(path: str | None = None) -> bool:
     )
     if parsed_zone_hp_effect is _INVALID:
         print("[load] efeito_hp_zonas ausente ou invalido; save invalido.")
+        return False
+
+    # --- v12: regras ecologicas runtime ---------------------------
+    # PT e EN coincidem nesses nomes tecnicos; passar a mesma chave
+    # nos dois argumentos e aceitavel porque _read_key so consulta o
+    # segundo alias se o primeiro estiver ausente. Nao alteramos o
+    # helper por isso.
+    parsed_base_decay = _parse_int_field(
+        data,
+        "base_decay_per_tick",
+        "base_decay_per_tick",
+        minimum=cfg.MIN_BASE_DECAY_PER_TICK,
+        maximum=cfg.MAX_BASE_DECAY_PER_TICK,
+    )
+    if parsed_base_decay is _INVALID:
+        print("[load] base_decay_per_tick ausente ou invalido; save invalido.")
+        return False
+
+    parsed_predation_transfer = _parse_int_field(
+        data,
+        "predation_transfer",
+        "predation_transfer",
+        minimum=cfg.MIN_PREDATION_TRANSFER,
+        maximum=cfg.MAX_PREDATION_TRANSFER,
+    )
+    if parsed_predation_transfer is _INVALID:
+        print(
+            "[load] predation_transfer ausente ou invalido; "
+            "save invalido."
+        )
+        return False
+
+    parsed_overcrowding_damage = _parse_int_field(
+        data,
+        "damage_per_own_overcrowding",
+        "damage_per_own_overcrowding",
+        minimum=cfg.MIN_DAMAGE_PER_OWN_OVERCROWDING,
+        maximum=cfg.MAX_DAMAGE_PER_OWN_OVERCROWDING,
+    )
+    if parsed_overcrowding_damage is _INVALID:
+        print(
+            "[load] damage_per_own_overcrowding ausente ou invalido; "
+            "save invalido."
+        )
+        return False
+
+    # --- v13: regras reprodutivas runtime ------------------------
+    # PT e EN coincidem nesses nomes tecnicos; passar a mesma chave
+    # nos dois argumentos e aceitavel porque _read_key so consulta o
+    # segundo alias se o primeiro estiver ausente.
+    parsed_reproduction_min_age = _parse_int_field(
+        data,
+        "reproduction_min_age",
+        "reproduction_min_age",
+        minimum=cfg.MIN_REPRODUCTION_MIN_AGE,
+        maximum=cfg.MAX_REPRODUCTION_MIN_AGE,
+    )
+    if parsed_reproduction_min_age is _INVALID:
+        print(
+            "[load] reproduction_min_age ausente ou invalido; "
+            "save invalido."
+        )
+        return False
+
+    parsed_reproduction_hp_gate = _parse_int_field(
+        data,
+        "reproduction_hp_gate",
+        "reproduction_hp_gate",
+        minimum=cfg.MIN_REPRODUCTION_HP_GATE,
+        maximum=cfg.MAX_REPRODUCTION_HP_GATE,
+    )
+    if parsed_reproduction_hp_gate is _INVALID:
+        print(
+            "[load] reproduction_hp_gate ausente ou invalido; "
+            "save invalido."
+        )
+        return False
+
+    parsed_reproduction_min_encounters = _parse_int_field(
+        data,
+        "reproduction_min_encounters",
+        "reproduction_min_encounters",
+        minimum=cfg.MIN_REPRODUCTION_MIN_ENCOUNTERS,
+        maximum=cfg.MAX_REPRODUCTION_MIN_ENCOUNTERS,
+    )
+    if parsed_reproduction_min_encounters is _INVALID:
+        print(
+            "[load] reproduction_min_encounters ausente ou invalido; "
+            "save invalido."
+        )
+        return False
+
+    parsed_reproduction_parent_hp_bonus = _parse_int_field(
+        data,
+        "reproduction_parent_hp_bonus",
+        "reproduction_parent_hp_bonus",
+        minimum=cfg.MIN_REPRODUCTION_PARENT_HP_BONUS,
+        maximum=cfg.MAX_REPRODUCTION_PARENT_HP_BONUS,
+    )
+    if parsed_reproduction_parent_hp_bonus is _INVALID:
+        print(
+            "[load] reproduction_parent_hp_bonus ausente ou invalido; "
+            "save invalido."
+        )
+        return False
+
+    # --- v15: criterio de selecao runtime ------------------------
+    parsed_reproduction_criterion = _parse_choice_field(
+        data,
+        "reproduction_criterion",
+        "reproduction_criterion",
+        allowed=cfg.REPRODUCTION_CRITERIA,
+    )
+    if parsed_reproduction_criterion is _INVALID:
+        print(
+            "[load] reproduction_criterion ausente ou invalido; "
+            "save invalido."
+        )
+        return False
+
+    # --- v16: pressao reprodutiva runtime ------------------------
+    parsed_reproduction_pool_fraction = _parse_float_field(
+        data,
+        "reproduction_pool_fraction",
+        "reproduction_pool_fraction",
+        minimum=cfg.MIN_REPRODUCTION_POOL_FRACTION,
+        maximum=cfg.MAX_REPRODUCTION_POOL_FRACTION,
+    )
+    if parsed_reproduction_pool_fraction is _INVALID:
+        print(
+            "[load] reproduction_pool_fraction ausente ou invalido; "
+            "save invalido."
+        )
+        return False
+
+    parsed_reproduction_attempts_divisor = _parse_int_field(
+        data,
+        "reproduction_attempts_divisor",
+        "reproduction_attempts_divisor",
+        minimum=cfg.MIN_REPRODUCTION_ATTEMPTS_DIVISOR,
+        maximum=cfg.MAX_REPRODUCTION_ATTEMPTS_DIVISOR,
+    )
+    if parsed_reproduction_attempts_divisor is _INVALID:
+        print(
+            "[load] reproduction_attempts_divisor ausente ou invalido; "
+            "save invalido."
+        )
+        return False
+
+    # --- v14: score de selecao runtime ---------------------------
+    parsed_reproduction_min_score = _parse_float_field(
+        data,
+        "reproduction_min_score",
+        "reproduction_min_score",
+        minimum=cfg.MIN_REPRODUCTION_MIN_SCORE,
+        maximum=cfg.MAX_REPRODUCTION_MIN_SCORE,
+    )
+    if parsed_reproduction_min_score is _INVALID:
+        print("[load] reproduction_min_score ausente ou invalido; save invalido.")
+        return False
+
+    parsed_selection_weights = {}
+    for field_name in (
+        "longevity_weight",
+        "exploration_weight",
+        "interaction_weight",
+        "reproduction_weight",
+    ):
+        parsed = _parse_float_field(
+            data,
+            field_name,
+            field_name,
+            minimum=cfg.MIN_SELECTION_WEIGHT,
+            maximum=cfg.MAX_SELECTION_WEIGHT,
+        )
+        if parsed is _INVALID:
+            print(f"[load] {field_name} ausente ou invalido; save invalido.")
+            return False
+        parsed_selection_weights[field_name] = parsed
+
+    # --- RuntimeRules (construcao local, ainda em PARSE) ---
+    #
+    # Constroi o objeto completo e valida antes do COMMIT. Se falhar,
+    # retorna False sem tocar em state. A origem e a mesma dos quatro
+    # campos individuais; a novidade e que agora eles formam um
+    # contrato unico de runtime.
+    try:
+        parsed_runtime_rules = RuntimeRules(
+            crossover_mode=parsed_crossover_mode,
+            crossover_probability=parsed_crossover_probability,
+            block_size=parsed_block_size,
+            mutation_mode=parsed_mutation_mode,
+            mutation_rate=parsed_mutation,
+            mutated_genes=parsed_mutated_genes,
+            local_scale_fraction=parsed_local_scale,
+            local_scale_sigma=parsed_local_scale_sigma,
+            global_probability=parsed_global_probability,
+            global_scale_fraction=parsed_global_scale_fraction,
+            global_scale_sigma=parsed_global_scale_sigma,
+            low_hp_threshold=parsed_low_hp_threshold,
+            stay_still_impulse=parsed_stay_still_impulse,
+            death_hp_threshold=parsed_death_hp_threshold,
+            zone_hp_effect=parsed_zone_hp_effect,
+            base_decay_per_tick=parsed_base_decay,
+            predation_transfer=parsed_predation_transfer,
+            damage_per_own_overcrowding=parsed_overcrowding_damage,
+            reproduction_interval=parsed_reproduction_interval,
+            reproduction_min_age=parsed_reproduction_min_age,
+            reproduction_hp_gate=parsed_reproduction_hp_gate,
+            reproduction_min_encounters=parsed_reproduction_min_encounters,
+            reproduction_parent_hp_bonus=parsed_reproduction_parent_hp_bonus,
+            reproduction_criterion=parsed_reproduction_criterion,
+            reproduction_pool_fraction=parsed_reproduction_pool_fraction,
+            reproduction_attempts_divisor=parsed_reproduction_attempts_divisor,
+            reproduction_min_score=parsed_reproduction_min_score,
+            longevity_weight=parsed_selection_weights["longevity_weight"],
+            exploration_weight=parsed_selection_weights["exploration_weight"],
+            interaction_weight=parsed_selection_weights["interaction_weight"],
+            reproduction_weight=parsed_selection_weights["reproduction_weight"],
+        )
+        validate_runtime_rules(parsed_runtime_rules)
+    except ValueError as e:
+        print(
+            f"[load] runtime_rules invalido no payload ({e!r}); "
+            f"save invalido."
+        )
         return False
 
     # --- Linhagens (validacao estrutural, tudo para `loaded`) ---
@@ -1135,17 +1838,22 @@ def load(path: str | None = None) -> bool:
         seed_lineages()
 
     # Escalares.
-    state.mutation_rate = parsed_mutation
-    state.mutated_genes = parsed_mutated_genes
-    state.local_scale_fraction = parsed_local_scale
+    #
+    # IMPORTANTE: usa set_runtime_rules (nao update_runtime_rules).
+    # update_runtime_rules tem semantica de intervencao hot e
+    # ajustaria reproduction_cooldown para min(cooldown, interval) se
+    # o interval mudasse. No load nao ha intervencao: o checkpoint
+    # restaura o cooldown EXATO que foi salvo. A atribuicao direta
+    # logo abaixo faz isso.
+    state.set_runtime_rules(parsed_runtime_rules)
     state.tick_count = parsed_tick
     state.last_print = parsed_tick
     state.births = parsed_births
     state.deaths = parsed_deaths
 
-    # v11: scheduler reprodutivo. A fase do turno e restaurada junto
-    # com o resto do estado, para a sequencia de turnos continuar
-    # exatamente de onde parou.
+    # v11: scheduler reprodutivo. Atribuicao direta (nao via
+    # update_runtime_rules), para a fase do turno ser restaurada
+    # exatamente como salva.
     state.reproduction_cooldown = parsed_reproduction_cooldown
     state.reproduction_turn = parsed_reproduction_turn
 
@@ -1158,9 +1866,11 @@ def load(path: str | None = None) -> bool:
     # Zonas: restauracao direta. Sob v11 estrito, `parsed_zones` ja
     # e uma mascara booleana valida com o shape esperado; nao ha
     # caminho de regeneracao, nao ha consumo de RNG no commit.
+    # O efeito de HP das zonas ja foi aplicado via set_runtime_rules
+    # acima, junto com os demais campos runtime.
     state.zones = parsed_zones
+    state.nests = parsed_nests
     state.zones_active = parsed_zones_active
-    state.zone_hp_effect = parsed_zone_hp_effect
 
     # Populacao. In-place em `agents` para preservar a identidade da
     # lista: outros modulos fazem `from .state import agents`.

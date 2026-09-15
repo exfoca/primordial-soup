@@ -30,17 +30,23 @@ def random_population(count: int) -> np.ndarray:
     ).astype(np.float32)
 
 
-def _uniform_mask(n: int, g: int) -> np.ndarray:
+def _uniform_mask(
+    n: int,
+    g: int,
+    crossover_probability: float,
+) -> np.ndarray:
     """[n, g] boolean. True = pega do pai A; False = pega do pai B."""
-    return np.random.rand(n, g) < cfg.CROSSOVER_PROBABILITY
+    return np.random.rand(n, g) < crossover_probability
 
 
-def _blocks_mask(n: int, g: int) -> np.ndarray:
-    """[n, g] boolean. Blocos contiguos de BLOCK_SIZE alternam pai
-    A / pai B.
-    """
+def _blocks_mask(
+    n: int,
+    g: int,
+    block_size: int,
+) -> np.ndarray:
+    """[n, g] boolean. Blocos contiguos alternam pai A / pai B."""
     g = int(g)
-    block = max(1, int(cfg.BLOCK_SIZE))
+    block = int(block_size)
     n_blocks = (g + block - 1) // block
 
     bits = np.random.randint(0, 2, size=(n, n_blocks), dtype=np.int8)
@@ -72,21 +78,24 @@ def _two_points_mask(n: int, g: int) -> np.ndarray:
     return (cols >= c1[:, None]) & (cols < c2[:, None])
 
 
-_MASKS = {
-    "uniform": _uniform_mask,
-    "blocks": _blocks_mask,
-    "two_points": _two_points_mask,
-}
-
-
-def _build_mask(n: int, g: int) -> np.ndarray:
-    try:
-        generator = _MASKS[cfg.CROSSOVER_MODE]
-    except KeyError:
-        raise ValueError(
-            f"Unknown CROSSOVER_MODE: {cfg.CROSSOVER_MODE!r}. Options: {sorted(_MASKS)}"
-        )
-    return generator(n, g)
+def _build_mask(
+    n: int,
+    g: int,
+    crossover_mode: str,
+    *,
+    crossover_probability: float,
+    block_size: int,
+) -> np.ndarray:
+    if crossover_mode == "uniform":
+        return _uniform_mask(n, g, crossover_probability)
+    if crossover_mode == "blocks":
+        return _blocks_mask(n, g, block_size)
+    if crossover_mode == "two_points":
+        return _two_points_mask(n, g)
+    raise ValueError(
+        f"Unknown crossover_mode: {crossover_mode!r}. "
+        "Options: 'blocks', 'two_points', 'uniform'."
+    )
 
 
 def crossover_and_mutate(
@@ -96,12 +105,23 @@ def crossover_and_mutate(
     mutation_rate: int,
     mutated_genes: int,
     local_scale_fraction: int,
+    *,
+    crossover_mode: str,
+    crossover_probability: float,
+    block_size: int,
+    mutation_mode: str,
+    local_scale_sigma: float,
+    global_probability: int,
+    global_scale_fraction: int,
+    global_scale_sigma: float,
 ) -> tuple[list[np.ndarray], list[np.ndarray]]:
     """Gera duas ninhadas complementares de filhos a partir de dois
     pais.
 
-    O algoritmo de crossover e escolhido por cfg.CROSSOVER_MODE; o de
-    mutacao por cfg.MUTATION_MODE.
+    Os onze parametros geneticos runtime chegam explicitamente de
+    RuntimeRules atraves de evolution.py: crossover_mode,
+    crossover_probability, block_size, mutation_mode, mutation_rate,
+    mutated_genes e local_scale_fraction.
 
     `mutation_rate` e a probabilidade (em %) de cada filho sofrer
     mutacao. `mutated_genes` so e usado no modo "surgical".
@@ -109,7 +129,7 @@ def crossover_and_mutate(
     controla a fracao de genes afetados pela mutacao local. A
     conversao % -> fracao acontece em _mutate_two_scales.
 
-    genetics.py NAO importa state: os tres parametros runtime chegam
+    genetics.py NAO importa state: os parametros runtime chegam
     por argumento explicito do caminho de chamada (ver
     evolution._reproduce_one_pair). Isso mantem este modulo puro em
     relacao ao estado global e testavel isoladamente.
@@ -153,14 +173,30 @@ def crossover_and_mutate(
     parents1 = np.broadcast_to(parent1, (offspring_count, cfg.GENOME_SIZE))
     parents2 = np.broadcast_to(parent2, (offspring_count, cfg.GENOME_SIZE))
 
-    masks = _build_mask(offspring_count, cfg.GENOME_SIZE)
+    masks = _build_mask(
+        offspring_count,
+        cfg.GENOME_SIZE,
+        crossover_mode,
+        crossover_probability=crossover_probability,
+        block_size=block_size,
+    )
 
     offspring1 = np.where(masks, parents1, parents2).astype(np.float32)
     offspring2 = np.where(masks, parents2, parents1).astype(np.float32)
 
     probability = mutation_rate / 100.0
     for brood in (offspring1, offspring2):
-        _mutate_batch(brood, probability, mutated_genes, local_scale_fraction)
+        _mutate_batch(
+            brood,
+            probability,
+            mutated_genes,
+            local_scale_fraction,
+            mutation_mode=mutation_mode,
+            local_scale_sigma=local_scale_sigma,
+            global_probability=global_probability,
+            global_scale_fraction=global_scale_fraction,
+            global_scale_sigma=global_scale_sigma,
+        )
 
     return list(offspring1), list(offspring2)
 
@@ -170,10 +206,16 @@ def _mutate_batch(
     probability: float,
     mutated_genes: int,
     local_scale_fraction: int,
+    *,
+    mutation_mode: str,
+    local_scale_sigma: float,
+    global_probability: int,
+    global_scale_fraction: int,
+    global_scale_sigma: float,
 ) -> None:
     """Mutacao vetorizada in-place. brood tem shape [N, G].
 
-    Despacha para o modo configurado em cfg.MUTATION_MODE.
+    Despacha para o `mutation_mode` recebido explicitamente.
 
     `local_scale_fraction` e a fracao de genes afetados pela escala
     local, expressa em PORCENTAGEM INTEIRA (ex: 5 == 5%), vinda de
@@ -188,14 +230,22 @@ def _mutate_batch(
     if brood.size == 0 or probability <= 0.0:
         return
 
-    if cfg.MUTATION_MODE == "surgical":
+    if mutation_mode == "surgical":
         _mutate_surgical(brood, probability, mutated_genes)
-    elif cfg.MUTATION_MODE == "two_scales":
-        _mutate_two_scales(brood, probability, local_scale_fraction)
+    elif mutation_mode == "two_scales":
+        _mutate_two_scales(
+            brood,
+            probability,
+            local_scale_fraction,
+            local_scale_sigma=local_scale_sigma,
+            global_probability=global_probability,
+            global_scale_fraction=global_scale_fraction,
+            global_scale_sigma=global_scale_sigma,
+        )
     else:
         raise ValueError(
-            f"Unknown MUTATION_MODE: {cfg.MUTATION_MODE!r}. "
-            f"Options: 'surgical', 'two_scales'."
+            f"Unknown mutation_mode: {mutation_mode!r}. "
+            "Options: 'surgical', 'two_scales'."
         )
 
 
@@ -233,6 +283,11 @@ def _mutate_two_scales(
     brood: np.ndarray,
     probability: float,
     local_scale_fraction: int,
+    *,
+    local_scale_sigma: float,
+    global_probability: int,
+    global_scale_fraction: int,
+    global_scale_sigma: float,
 ) -> None:
     """Mutacao em duas escalas, in-place.
 
@@ -251,10 +306,9 @@ def _mutate_two_scales(
     fracao (0, 1] acontece aqui, na fronteira da genetica, para
     _apply_noise continuar recebendo fracao como sempre recebeu.
 
-    A escala GLOBAL continua lida de cfg (GLOBAL_SCALE_FRACTION e
-    GLOBAL_SCALE_SIGMA): o runtime nao expoe controle para elas.
-    Apenas a escala local virou parametro runtime, porque o operador
-    a ajusta com O + setas.
+    Os quatro parametros especificos de two_scales chegam por argumento
+    explicito; este hot path nao consulta cfg para parametrizacao do
+    operador.
 
     Note: ruido gaussiano puro pode exceder o range. Aplicamos clamp
     explicito em [MIN_GENE_VALUE, MAX_GENE_VALUE] em vez de rejeitar
@@ -270,29 +324,30 @@ def _mutate_two_scales(
 
     idx_mut = np.nonzero(mutants)[0]
 
-    # Decide, para cada mutante, se a mutacao e global (True) ou
-    # local (False).
-    global_mutations = np.random.rand(idx_mut.size) < cfg.GLOBAL_PROBABILITY
-
-    # Converte a fracao local de % inteira para (0, 1]. state guarda
-    # inteiro em [MIN_LOCAL_SCALE_FRACTION, MAX_LOCAL_SCALE_FRACTION]
-    # = [1, 100]; dividir por 100 da (0.01, 1.0], sempre dentro do
-    # contrato de _apply_noise. A divisao e fora do hot path de
-    # _apply_noise, entao nao ha custo por lote.
+    # Converte os percentuais inteiros exclusivamente na fronteira
+    # genetica. RuntimeRules permanece em unidades amigaveis a UI.
     local_fraction = local_scale_fraction / 100.0
+    global_fraction = global_scale_fraction / 100.0
+    global_probability_fraction = global_probability / 100.0
+
+    # Decide, para cada mutante, se a mutacao e global (True) ou
+    # local (False), usando o snapshot runtime recebido por argumento.
+    global_mutations = (
+        np.random.rand(idx_mut.size) < global_probability_fraction
+    )
 
     # Processa em dois lotes: um global, um local.
     _apply_noise(
         brood,
         idx_mut[global_mutations],
-        cfg.GLOBAL_SCALE_FRACTION,
-        cfg.GLOBAL_SCALE_SIGMA,
+        global_fraction,
+        global_scale_sigma,
     )
     _apply_noise(
         brood,
         idx_mut[~global_mutations],
         local_fraction,
-        cfg.LOCAL_SCALE_SIGMA,
+        local_scale_sigma,
     )
 
 

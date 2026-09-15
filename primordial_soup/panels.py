@@ -127,12 +127,29 @@ class Panel:
     title_key:       chave i18n do titulo
     items:           lista de Item, na ordem de Tab
     footer_key:      chave i18n do rodape contextual (opcional)
+    enter_handler:   callback opcional para redefinir a semantica de
+                     Enter neste painel. Quando presente, o dispatcher
+                     delega Enter para ele em vez do comportamento
+                     generico (ativar o item sob o cursor).
+
+                     Assinatura identica a Handler:
+                         (panel, item_atual_ou_None, 0) -> DispatchResult
+
+                     Usado pelo Inspection para tratar Enter como
+                     "observar candidato", com excecao explicita para
+                     o item Clear observation.
+
+                     Reutiliza a assinatura de Handler de proposito:
+                     um handler contextual e apenas um Handler que nao
+                     responde a setas, entao nao ha razao para criar
+                     um tipo paralelo.
     """
     id: str
     activation_key: int
     title_key: str
     items: list[Item] = field(default_factory=list)
     footer_key: str | None = None
+    enter_handler: Handler | None = None
 
     def interactive_indices(self) -> list[int]:
         """Indices dos itens que participam de Tab, na ordem."""

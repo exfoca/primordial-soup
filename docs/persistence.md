@@ -1,528 +1,605 @@
 # 💾 Persistence
 
-Primordial Soup can stop a world and reconstruct it later.
+A Primordial Soup checkpoint is not a population export.
 
-A valid save preserves enough state that:
+It is a **continuation point for a stochastic universe**.
 
-```text
-save → process ends → load → the same population continues
-```
+The contract is simple:
 
-while refusing to invent missing genomes, repair corrupted identities or
-silently reshape an incompatible world.
+> **Save the world. The universe that comes back is the same universe that went in.**
 
-When continuity and integrity conflict, Primordial Soup prefers
-integrity. A rejected save is better than a successfully loaded fiction.
+That requires more than genomes.
+
+It requires enough state for the next tick after loading to belong to the same history.
 
 ---
 
-# The persistence model
+## Current format
 
-Each save slot can produce two files:
+Primordial Soup currently uses:
 
-```text
-world state       .pkl
-metric export     _metricas.csv
+| Property      | Value             |
+| ------------- | ----------------- |
+| Format        | Python `pickle`   |
+| Save version  | `21`              |
+| Architecture  | `mlp-1x25x12-rec` |
+| Genome layout | `layout-v4`       |
+| Default slot  | `default`         |
+
+Available slots:
+
+```text id="0u7jm5"
+default
+world_a
+world_b
+world_c
 ```
 
-For the graphical slot `world_a`:
+Checkpoint filenames follow:
 
-```text
-genome_pool_world_a.pkl
-genome_pool_world_a_metricas.csv
+```text id="a5d672"
+genome_pool_{slot}.pkl
 ```
 
-The two files have different responsibilities.
+Metrics use a separate companion file:
 
-The `.pkl` file contains the state required to reconstruct the world.
-The `.csv` file is an export of recorded metrics for analysis.
+```text id="jsxddo"
+genome_pool_{slot}_metricas.csv
+```
 
-The CSV is not required to load the world. The pickle does not depend on
-the CSV.
+> ⚠️ Pickle files must be treated as trusted local data.
+>
+> Do not load checkpoints from untrusted sources.
 
 ---
 
-# Save slots
+# 📦 What a checkpoint contains
 
-The graphical interface cycles through `default`, `world_a`, `world_b`,
-`world_c` with **N**.
+A checkpoint preserves the simulation state required for continuation.
 
-Headless mode accepts arbitrary slot names. See [Headless](headless.md).
+## Population
+
+For each lineage:
+
+```text id="1x6iqv"
+lineage ID
+color
+genome pool
+agent state
+stable critter IDs
+```
+
+The three population structures are logically parallel:
+
+```text id="mkfyck"
+pool.shape   == (N, 10245)
+agents.shape == (N, 36)
+ids.shape    == (N,)
+```
+
+The same `N` must apply to all three.
+
+This is a hard invariant.
+
+No truncation, padding, guessing, or “close enough” recovery occurs during load.
 
 ---
 
-# Saving in the graphical application
+## Runtime rules
 
-There is no direct global accelerator to save.
+The complete active evolutionary rule set is persisted, including:
 
-```text
-S
-↓
-Session
-↓
-Save now
-↓
-Enter
+```text id="v8jvp0"
+genetic operators
+mutation parameters
+behavior parameters
+mortality
+ecological pressure
+predation
+overcrowding
+reproduction
+selection
+composite-score weights
 ```
 
-**S** focuses the Session panel; it does not save by itself.
+Loading therefore restores the laws under which the saved population was evolving.
 
-The Session panel exposes:
+A checkpoint does not silently replace them with current defaults.
 
-```text
-Save slot    ENUM
-Save now     ACTION
-Load         ACTION
-New world    ACTION
-```
-
-Global accelerators that remain available independently:
-
-```text
-N → cycle save slot
-L → load active slot
-```
-
-Once triggered, the operation is always the same:
-
-```text
-runtime state
-      ↓
-build canonical payload
-      ↓
-pickle payload to temp file
-      ↓
-atomic rename
-      ↓
-export current metric history
-      ↓
-write companion CSV
-```
-
-The world-state file is the authoritative continuation artifact. The
-CSV is an analytical sidecar.
-
-The `.pkl` write is atomic: the payload is written to a `.tmp` file in
-the same directory and moved into place with `os.replace()`. An
-interrupted write cannot corrupt a previously valid save.
+That would be less “continue experiment” and more “change constitution during unconsciousness.”
 
 ---
 
-# Current persistence versions
+## World clock and counters
 
-```text
-SAVE_VERSION         = 11
-ARCHITECTURE_VERSION = "mlp-1x25x12-rec"
-GENOME_VERSION       = "layout-v4"
+The checkpoint preserves:
+
+```text id="td72zm"
+tick
+birth count
+death count
+next stable critter ID
 ```
 
-These identify different compatibility boundaries.
+`next_critter_id` matters because identity allocation must continue monotonically after loading.
 
-**Save version** describes the save schema and semantic persistence
-contract.
+A new child cannot accidentally reuse the identity of a long-dead ancestor.
 
-**Architecture version** identifies the neural architecture expected by
-the saved world.
-
-**Genome version** identifies the expected internal genome layout.
-
-The version history:
-
-```text
-v2   original save format
-v3   versioning
-v4   internal state became neural input
-v5   recurrence
-v6   second hidden layer
-v7   block crossover
-v8   two-scale mutation
-v9   composite selection
-v10  stable individual identity
-v11  exact continuation state: reproductive scheduler phase
-     and the states of both random-number generators
-```
+Genealogy has enough complications already.
 
 ---
 
-# Compatibility contract
+# 🧬 Reproduction scheduler
 
-The current policy is deliberately strict:
+Reproduction has phase.
 
-```text
-save version < current       → reject
-save version > current       → reject
-save version != current      → reject
-version metadata missing     → reject
-architecture metadata missing → reject
-architecture mismatch        → reject
-genome metadata missing      → reject
-genome mismatch              → reject
-mandatory state field missing → reject
+The checkpoint therefore stores both:
+
+```text id="x61q8d"
+reproduction_cooldown
+reproduction_turn
 ```
 
-The v11 contract is strict: it does not accept partial payloads,
-reconstruct missing state, or apply historical fallbacks.
+Saving only the configured interval would be insufficient.
 
-There is no automatic migration from an older semantic save version.
-Synthesizing missing state would produce a world that never existed.
+Example:
+
+```text id="w0t2mg"
+interval = 150
+cooldown = 17
+next lineage = Blue
+```
+
+After loading, the world must still be 17 ticks away from Blue's turn.
+
+It must not restart the scheduler from Red merely because the process restarted.
 
 ---
 
-# The v11 payload
+# 🎲 Randomness is state
 
-A canonical save contains:
+Primordial Soup uses two global random-number generators:
 
-```text
-versao                      SAVE_VERSION = 11
-arquitetura                 architecture contract
-genoma                      genome layout contract
-mutation                    runtime mutation rate
-mutategen                   runtime mutated-gene count
-escala_local                runtime local-scale value
-tick                        current simulation tick
-proximo_id                  next globally available critter ID
-nascimentos                 cumulative births
-mortes                      cumulative deaths
-reproduction_cooldown       ticks until next reproductive turn
-reproduction_turn           lineage index owning the next turn
-rng_python_state            random.getstate() snapshot
-rng_numpy_state             np.random.get_state() snapshot
-modificadores_ambientais    environmental-model marker
-zonas                       environmental-zone mask
-zonas_ativas                runtime zone toggle
-efeito_hp_zonas             runtime HP effect of zones
-linhagens                   serialized lineage populations
+```text id="j60zrh"
+Python random
+NumPy random
 ```
 
-All of these fields are mandatory. Absence of any of them is a
-rejection, not a fallback.
+Both RNG states are persisted.
+
+This is essential for deterministic continuation.
+
+The checkpoint therefore stores:
+
+```text id="yxa6wk"
+rng_python_state
+rng_numpy_state
+```
+
+Without them:
+
+```text id="43yo7h"
+same population
++ same rules
++ same tick
+≠ same future
+```
+
+Random nest-related behavior, reproduction, crossover, mutation, triad resolution, and other stochastic events would consume a different sequence.
+
+The world might look identical at load time and diverge immediately afterward.
+
+That is not continuation.
+
+That is cloning.
 
 ---
 
-# Lineage records
+# 🌍 Environment
 
-Each entry under `linhagens` contains:
+The environmental zone mask is persisted directly.
 
-```text
-id
-cor
-pools
-agentes
-ids
+The checkpoint also preserves:
+
+```text id="ndgfc9"
+zones active / inactive
+zone HP effect
 ```
 
-Runtime requires:
+Zones are **not regenerated during load**.
 
-```text
-pool.shape   = (N, GENOME_SIZE)
-agents.shape = (N, AGENT_COLUMNS)
-ids.shape    = (N,)
-```
+Regeneration would consume randomness and could create different geography.
 
-All three must contain the same number of individuals.
-
-At the persistence boundary, `pool` and `agents` are converted from
-`float32` matrices to nested lists, and `ids` to an `int64` list.
-
-The spatial density field is not stored. It is reconstructed during
-load from the individual coordinates.
+The environment is part of history.
 
 ---
 
-# Validation
+# 🪺 Nests
 
-Structural:
+Save version 21 makes nest geometry part of the checkpoint contract.
 
-* pool rank must be 2;
-* pool, agents and ids must agree on `N`;
-* pool width must be `GENOME_SIZE`;
-* agents width must be `AGENT_COLUMNS`;
-* ids must be 1-D.
+The checkpoint stores one center for each canonical lineage:
 
-Numeric:
-
-* genome and agent payloads must be numeric;
-* X/Y coordinates must be finite, integral, and inside current world
-  bounds.
-
-Semantic ranges:
-
-```text
-mutation                [0, 100]
-mutategen               [1, 50]
-escala_local            [1, 100]
-efeito_hp_zonas         [-100, +100]
-reproduction_cooldown   [0, REPRODUCTION_INTERVAL]
-reproduction_turn       [0, TOTAL_LINEAGES - 1]
-tick                    >= 0
-nascimentos             >= 0
-mortes                  >= 0
+```text id="l07er4"
+R → [x, y]
+G → [x, y]
+B → [x, y]
 ```
 
-`zonas_ativas` requires strict Python `bool`. Strings, ints and
-`np.bool_` are rejected.
+Only the centers are persisted.
 
-Values outside a range are rejected, not clamped.
+Derived properties such as:
 
-Identity:
-
-```text
-per lineage: ids.dtype == int64, all IDs > 0
-globally:    no duplicated IDs
-             proximo_id > 0
-             proximo_id > max(existing IDs)
+```text id="3t6i72"
+nest radius
+protection masks
+spawn offsets
 ```
+
+come from the current structural model and are not redundantly serialized.
+
+Before saving, nest geometry is validated.
+
+A valid checkpoint requires:
+
+```text id="98jg7f"
+exactly one center per lineage
+valid coordinates
+no nest overlap
+no nest intersection with environmental zones
+```
+
+If nest geometry is invalid, the save is aborted.
+
+Primordial Soup refuses to create a checkpoint that it would later refuse to load.
+
+A surprisingly useful standard.
 
 ---
 
-# Atomic loading
+# 🪪 Stable identity
 
-Loading follows a strong architectural rule:
+Every saved organism carries its stable integer ID.
 
-```text
+On load, identity is validated globally.
+
+The contract requires:
+
+```text id="s7yydv"
+all IDs > 0
+IDs use int64
+no duplicate IDs
+next_critter_id > every existing ID
+```
+
+Population arrays may be rebuilt in memory.
+
+Identity may not be reinvented.
+
+---
+
+# ✍️ Atomic save
+
+The `.pkl` checkpoint is not written directly over the existing file.
+
+The write path is:
+
+```text id="xb75du"
+serialize
+   ↓
+target.pkl.tmp
+   ↓
+successful write?
+   ↓
+os.replace()
+   ↓
+target.pkl
+```
+
+The previous checkpoint remains untouched until serialization completes.
+
+If writing fails, the temporary file is removed when possible and `save()` returns failure.
+
+This protects an already valid checkpoint from common failures such as:
+
+```text id="tqv12t"
+serialization error
+I/O failure
+disk exhaustion during write
+process interruption before replacement
+```
+
+The important invariant is:
+
+> A failed save must not turn the previous good checkpoint into half a checkpoint.
+
+---
+
+# 📥 Transactional load
+
+Loading is stricter.
+
+It uses two conceptual phases:
+
+```text id="s96mso"
 PARSE
+  ↓
 validate everything locally
-do not mutate live state
-
-        ↓
-
+  ↓
 COMMIT
-replace runtime state only after validation succeeds
+  ↓
+replace runtime state
 ```
 
-This gives `persistence.load()` atomic behavior.
+During **PARSE**, the active simulation is not modified.
 
-A malformed save produces:
+Population, rules, environment, scheduler, RNGs, counters, identity state, and geometry are reconstructed into temporary local structures.
 
-```text
-old runtime state
-+
-error
-```
-
-not:
-
-```text
-half old world
-+
-half corrupted save
-```
-
-If parsing fails, the following remain as they were before the load
-attempt: population, runtime scalar values, zones, zone toggle, zone HP
-effect, next stable ID, inspection session, metrics history.
-
-A rejected load also does not consume randomness. The loader defers
-RNG-dependent reconstruction until commit. A failed load cannot consume
-random draws and cause a subsequent seeded run to diverge from an
-identical run that never attempted the failed load.
-
-A headless load failure aborts the process without saving. Failure does
-not silently become initialization.
+Only after every validation succeeds does the loader cross the commit point.
 
 ---
 
-# Exact continuation
+## Failed loads are non-destructive
 
-The v11 save format is a **world checkpoint plus continuation state**.
+If validation fails:
 
-It guarantees that:
-
-```text
-N ticks → save → M ticks
+```text id="xr1a0a"
+load() → False
 ```
 
-and:
+and the existing world remains unchanged.
 
-```text
-N ticks → save → perturb runtime → load → M ticks
-```
+That includes:
 
-produce the same world state, provided configuration, code and
-environment are otherwise identical.
-
-This is verified by `tests/test_continuation.py`.
-
-## RNG state
-
-Both random-number generators used by the simulation are serialized and
-restored:
-
-```text
-random.getstate()          (Python stdlib)
-np.random.get_state()      (NumPy global legacy RNG)
-```
-
-After a load, the next draws from both generators match the draws that
-an uninterrupted run would have produced at the same point.
-
-When `--seed` is passed to `--load`, the restored RNG state is then
-deliberately overwritten with the seed. This is *stochastic branching*:
-same starting world, deliberately different future.
-
-## Reproductive scheduler state
-
-Both `state.reproduction_cooldown` and `state.reproduction_turn` are
-serialized and restored.
-
-## Stable critter identity
-
-`ids` per lineage and the global `proximo_id` are serialized and
-restored.
-
-## Runtime mutation parameters
-
-```text
-mutation         state.mutation_rate
-mutategen        state.mutated_genes
-escala_local     state.local_scale_fraction
-```
-
-These are restored on successful load. The two-scale mutation path
-consumes `state.local_scale_fraction` via the runtime call chain, so the
-restored value is authoritative.
-
-## Environmental zones
-
-```text
-zonas              zone mask
-zonas_ativas       runtime toggle
-efeito_hp_zonas    runtime HP effect per tick
-```
-
-## Birth and death counters
-
-```text
-nascimentos
-mortes
-```
-
-## Tick count
-
-`state.tick_count` and `state.last_print` are set to the saved tick.
-
----
-
-# What is deliberately not persisted
-
-Interface or observation state is not world state. Examples:
-
-```text
+```text id="n9zocg"
+population
+genomes
+stable IDs
+runtime rules
+tick
+birth/death counters
+next critter ID
+zones
+nests
+zone toggle
+reproduction scheduler
+Python RNG
+NumPy RNG
 inspection session
-observed critter
-death snapshot
-inspection trail
-discovery criterion / filter
-chart selection
-language
-simulation speed
-pause state
-recording state
-graphical navigation (ui_state)
+metric history
 ```
 
----
+Even the RNG state is preserved.
 
-# Inspection is cleared after load
+This matters because merely *attempting* to load a bad checkpoint must not change the future of the currently running experiment.
 
-A successful load resets the observation selection. The observed ID,
-death snapshot and trail are cleared.
-
-Even if the newly loaded world contains the same numerical critter ID,
-the loader does not treat that as continuation of the old inspection
-session.
+A corrupted file does not get one free butterfly effect.
 
 ---
 
-# Metric history is not loaded
+# ✅ Strict validation
 
-The `.pkl` payload does not contain `state.metrics_history`. After a
-successful load it is cleared. The graphical charts start a fresh
-in-memory history from the loaded checkpoint.
+Version 21 uses a strict checkpoint contract.
+
+A load is rejected if, among other things:
+
+```text id="y3itnu"
+save version differs
+architecture differs
+genome layout differs
+
+lineage count differs
+lineage identities differ
+
+population shapes disagree
+IDs are invalid or duplicated
+coordinates are invalid
+
+runtime rules are invalid
+scheduler state is invalid
+RNG state is invalid
+
+zone geometry is invalid
+nest geometry is invalid
+required state is missing
+```
+
+The loader does not attempt structural repair.
+
+It does not sample, truncate, regenerate, infer, or migrate an incompatible world.
 
 ---
 
-# The CSV is an export, not restoration state
+# 🔢 Compatibility policy
 
-The companion metrics file has the format:
+Compatibility metadata must match the running model exactly:
 
-```csv
+```text id="03irvf"
+SAVE_VERSION          = 21
+ARCHITECTURE_VERSION  = mlp-1x25x12-rec
+GENOME_VERSION        = layout-v4
+```
+
+A newer save is rejected.
+
+An older save is rejected.
+
+Version 20 is explicitly incompatible with version 21.
+
+There is currently no migration path.
+
+This is deliberate.
+
+A checkpoint is accepted only when the runtime can prove that it understands the stored world.
+
+> “I can probably figure out what this old array meant” is not a persistence strategy.
+
+---
+
+# 🏗️ Load does not regenerate the world
+
+A successful load restores saved state.
+
+It does not call world-generation logic to recreate missing pieces.
+
+In particular:
+
+```text id="9vt4c3"
+zones are restored
+nests are restored
+RNG states are restored
+population is restored
+```
+
+They are not regenerated.
+
+This avoids two problems:
+
+```text id="8mcg63"
+different geometry
++
+unexpected RNG consumption
+```
+
+Both would violate deterministic continuation.
+
+---
+
+# 👁️ What is intentionally not restored
+
+Not everything visible in the application belongs to the simulated universe.
+
+The following are operator or view state rather than checkpoint state:
+
+| State                     | Restored from checkpoint? |
+| ------------------------- | ------------------------- |
+| Observed critter          | No                        |
+| Inspection death snapshot | No                        |
+| Inspection trail          | No                        |
+| Discovery criterion       | No                        |
+| Discovery lineage filter  | No                        |
+| Active panel              | No                        |
+| Language                  | No                        |
+| Active save slot          | No                        |
+| Recording state           | No                        |
+| Simulation speed          | No                        |
+| Metrics chart history     | No                        |
+
+The distinction is intentional:
+
+```text id="by181e"
+simulation state → persisted
+operator/view state → not persisted
+```
+
+After a successful load, the active inspection selection is cleared.
+
+An ID numerically equal to the previously observed ID may exist in the loaded world, but automatically treating it as the same observation session would be misleading.
+
+---
+
+# 📊 Metrics sidecar
+
+Metrics are exported separately as CSV.
+
+Format:
+
+```text id="uaxrmd"
 tick,metrica,valores
-10,populacao,50;50;50
-10,hp_medio,9999;9999;9999
+10,populacao,50;49;50
+10,hp_medio,9980;9972;10004
 10,taxa_de_mutacao,5
 ```
 
-Per-lineage values are separated by `;`. Scalar metrics contain only one
-value.
+Per-lineage values are separated with `;`.
 
-Canonical metric names:
+The metric identifiers and CSV header are canonical format identifiers and are not localized.
 
-```text
-populacao
-hp_medio
-maior_tempo_de_vida
-geracao_maxima
-score_composto_medio
-taxa_de_mutacao
+The CSV is rewritten on save when metric history exists.
+
+If CSV export fails, the checkpoint itself remains valid.
+
+This distinction is important:
+
+```text id="kgicox"
+.pkl → continuation state
+.csv → analytical sidecar
 ```
 
-The header and metric names are intentionally not translated.
+The metrics sidecar can fail without destroying the universe.
+
+A reasonable division of responsibilities.
 
 ---
 
-# Language does not affect saves
+# 🌐 Canonical persistence language
 
-Switching the interface language changes displayed labels. It does not
-alter save keys, metric identifiers, CSV headers, genome data, lineage
-IDs.
+Internal code increasingly uses English identifiers.
 
----
+The save format does not follow UI localization.
 
-# Security note
+Existing checkpoint keys are stable schema identifiers and may include Portuguese and historical English names.
 
-The world-state format is Python pickle.
+Display language is irrelevant.
 
-Pickle is appropriate for a local Python application because it
-conveniently represents structured Python data, but it is not a safe
-interchange format for untrusted files.
+Changing the interface from English to Portuguese does not alter checkpoint semantics.
 
-Treat Primordial Soup saves as trusted local artifacts.
+Persistence speaks schema.
+
+The UI speaks to humans.
 
 ---
 
-# Persistence invariants
+# 🔒 Persistence invariants
 
-```text
-A successful load must produce exactly the configured lineage structure.
-pool, agents and ids must remain aligned.
-Every living stable ID must be unique.
-proximo_id must be greater than every existing ID.
-Coordinates must be valid before density fields are rebuilt.
-The zone mask must match the derived world geometry.
-A failed load must not partially modify the live runtime.
-A failed load must not consume randomness.
+The current persistence contract can be summarized as:
+
+```text id="xcuhh5"
+save writes atomically
+
+load parses before committing
+
+failed save preserves the previous checkpoint
+
+failed load preserves the current runtime
+
+population arrays remain in lockstep
+
+stable IDs remain globally unique
+
+runtime rules are restored
+
+scheduler phase is restored
+
+both RNG states are restored
+
+zone geometry is restored
+
+nest geometry is restored
+
+world geometry is never regenerated during load
+
+inspection is not inherited
+
+metric history is analytical, not continuation state
+
+only the exact current save contract is accepted
 ```
 
 ---
 
-# In one sentence
+## Final note
 
-Primordial Soup v11 persistence stores the population, genomes, stable
-identities, core runtime parameters, environmental state, reproductive
-scheduler phase and both RNG states in a versioned, atomically-written
-pickle; validates the complete candidate world before a single
-transactional commit; and exports metrics separately to CSV.
+Persistence in Primordial Soup is not primarily about keeping data.
 
-Save the world. The universe that comes back is the same universe that
-went in.
+It is about preserving causality.
 
----
+At tick `T`, the world contains a population, rules, geography, identities, scheduler phase, and random sequence.
 
-# Related documentation
+After loading, tick `T + 1` must continue from exactly that state.
 
-→ [Architecture](architecture.md)
-→ [Configuration](configuration.md)
-→ [Headless](headless.md)
-→ [Inspection](inspection.md)
-→ [Experiments](experiments.md)
+Otherwise the checkpoint merely preserved appearances.
+
+> 💾 **Save the world.**
+>
+> **The universe that comes back is the same universe that went in.**

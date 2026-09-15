@@ -23,45 +23,43 @@ from __future__ import annotations
 from . import config as cfg
 from . import state
 from . import i18n
+from . import prefs
 from .panels import DispatchResult
-from .state import agents
 from .world import (
     max_generation,
-    generate_zones,
     longest_lifetime,
     population_per_lineage,
-    place_initially,
-    fill_fields,
     format_zones_txt,
 )
-from .genetics import random_population
+from .bootstrap import bootstrap_new_world
 
 
 def recreate() -> None:
-    # reset_counters() vem PRIMEIRO: e a fronteira de inicio da nova
-    # run. Tudo da execucao anterior (contadores, telemetria, sessao
-    # de inspecao, next_critter_id) e descartado antes da nova
-    # identidade/populacao ser construida.
-    #
-    # A ordem importa por causa de next_critter_id: place_initially()
-    # chama allocate_critter_ids(), que le e avanca o contador. Se o
-    # reset viesse depois, o runtime ficaria com IDs 1..N
-    # recem-alocados mas next_critter_id=1, e save() gravaria um
-    # payload inconsistente (proximo_id <= max(ids)) que o loader
-    # rejeita corretamente. Ver tests/test_identity.py.
-    state.reset_counters()
-
-    for agent in agents:
-        # random_population now returns a single [N, GENOME_SIZE]
-        # float32 matrix (see genetics.random_population).
-        agent["pool"] = random_population(cfg.INITIAL_POPULATION_PER_LINEAGE)
-    place_initially()
-    fill_fields()
-    state.zones = generate_zones()
-    print(i18n.t("log.recreate"))
-    # Sem draw() aqui: o redraw vem do DispatchResult do handler que
+    # Wrapper fino sobre a autoridade unica de bootstrap. Sem
+    # draw() aqui: o redraw vem do DispatchResult do handler que
     # chamou recreate(). O loop grafico e o dono unico da
     # apresentacao.
+    #
+    # Contrato HOT de recreate(): recriar a populacao/mundo NAO pode
+    # destruir a instancia vigente de RuntimeRules nem o tuning
+    # configurado pelo operador. O bootstrap fresh (chamado no boot e
+    # no headless) continua reconstruindo as rules a partir dos
+    # defaults; esta distincao e o ponto do contrato.
+    #
+    # Capturar a instancia ANTES e restaura-la DEPOIS preserva tanto a
+    # identidade quanto todos os campos HOT (lifecycle, two_scales,
+    # reproducao, selecao, pesos). set_runtime_rules valida e apenas
+    # rebinda a referencia global, sem reconstruir.
+    #
+    # simulation_speed tambem e preferencia do operador: bootstrap fresh
+    # reaplica o default 1.0x, e recreate precisa restaurar a escolha
+    # vigente para a nova run comecar na velocidade que o operador ve.
+    preserved_rules = state.runtime_rules
+    preserved_speed = state.simulation_speed
+    bootstrap_new_world()
+    state.set_runtime_rules(preserved_rules)
+    state.simulation_speed = preserved_speed
+    print(i18n.t("log.recreate"))
 
 
 def print_state() -> None:
@@ -73,16 +71,15 @@ def print_state() -> None:
             lt=longest_lifetime(),
             g=max_generation(),
             p=population_per_lineage(),
-            s=state.ticks_per_frame,
-            m=state.mutation_rate,
-            modo=cfg.MUTATION_MODE,
-            l=state.local_scale_fraction,
-            gg=int(cfg.GLOBAL_PROBABILITY * 100),
-            gf=int(cfg.GLOBAL_SCALE_FRACTION * 100),
-            genes=state.mutated_genes,
+            s=f"{state.simulation_speed:g}",
+            m=state.runtime_rules.mutation_rate,
+            modo=state.runtime_rules.mutation_mode,
+            l=state.runtime_rules.local_scale_fraction,
+            gg=state.runtime_rules.global_probability,
+            gf=state.runtime_rules.global_scale_fraction,
+            genes=state.runtime_rules.mutated_genes,
             a=cfg.ENVIRONMENTAL_MODIFIERS,
             z=zones_txt,
-            met=state.selected_metric,
             slot=state.active_save_slot,
         )
     )
@@ -123,25 +120,67 @@ def action_toggle_recording() -> DispatchResult:
 
 
 def action_cycle_save_slot() -> DispatchResult:
+    before = state.active_save_slot
     slots = cfg.SAVE_SLOTS
     try:
         i = slots.index(state.active_save_slot)
     except ValueError:
         i = 0
     state.active_save_slot = slots[(i + 1) % len(slots)]
+    if state.active_save_slot != before:
+        prefs.mark_dirty()
     print(i18n.t("log.save_slot", slot=state.active_save_slot))
     return DispatchResult.continue_(redraw=True)
 
 
 def action_save() -> DispatchResult:
+    """Salva no slot ativo e emite notice de sucesso/falha.
+
+    persistence.save() retorna bool. O retorno e a autoridade do
+    resultado; nao inferimos sucesso pelo simples fato de a funcao
+    ter retornado.
+
+    Em ambos os casos o redraw e True: mesmo no erro a notice precisa
+    aparecer no proximo frame. O log de console continua sendo emitido
+    por persistence.save() com o detalhe tecnico.
+    """
     from . import persistence
-    persistence.save()
+    from . import ui_state
+    slot = state.active_save_slot
+    ok = persistence.save()
+    if ok:
+        ui_state.show_notice(
+            i18n.t("notice.save_ok", slot=slot),
+            kind=ui_state.NOTICE_SUCCESS,
+        )
+    else:
+        ui_state.show_notice(
+            i18n.t("notice.save_fail", slot=slot),
+            kind=ui_state.NOTICE_ERROR,
+        )
     return DispatchResult.continue_(redraw=True)
 
 
 def action_load() -> DispatchResult:
+    """Carrega do slot ativo e emite notice de sucesso/falha.
+
+    Em sucesso, pausa a simulacao (comportamento historico). Em falha,
+    NAO altera paused: o estado atual do operador e preservado, e a
+    notice informa o erro.
+    """
     from . import persistence
-    if persistence.load():
+    from . import ui_state
+    slot = state.active_save_slot
+    ok = persistence.load()
+    if ok:
         state.paused = True
-        return DispatchResult.continue_(redraw=True)
-    return DispatchResult.continue_(redraw=False)
+        ui_state.show_notice(
+            i18n.t("notice.load_ok", slot=slot),
+            kind=ui_state.NOTICE_SUCCESS,
+        )
+    else:
+        ui_state.show_notice(
+            i18n.t("notice.load_fail", slot=slot),
+            kind=ui_state.NOTICE_ERROR,
+        )
+    return DispatchResult.continue_(redraw=True)

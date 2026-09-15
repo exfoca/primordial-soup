@@ -13,6 +13,7 @@ nem persistence.py. Ele existe apenas para a camada de apresentacao.
 """
 
 from __future__ import annotations
+import time
 from dataclasses import dataclass, field
 
 
@@ -89,6 +90,43 @@ panel_before_modal: str = PANEL_WORLD
 pause_before_modal: bool = False
 
 
+# --- Notificacao transitoria ------------------------------------------
+#
+# Feedback curto de acoes do operador (save, load, etc.), exibido no
+# footer da sidebar. NAO e parte da simulacao: usa relogio monotono,
+# nao tick_count. Enquanto a simulacao esta pausada, o loop grafico
+# ainda chama expire_notice_if_needed() a cada iteracao para a notice
+# sumir no prazo; sem isso ela congelaria com a simulacao pausada.
+
+NOTICE_SUCCESS = "success"
+NOTICE_ERROR = "error"
+NOTICE_INFO = "info"
+
+_NOTICE_KINDS = frozenset({NOTICE_SUCCESS, NOTICE_ERROR, NOTICE_INFO})
+
+
+@dataclass(slots=True)
+class TransientNotice:
+    """Notificacao transitória exibida no footer da sidebar.
+
+    message:    texto ja localizado (i18n.t ja foi chamado)
+    kind:       NOTICE_SUCCESS | NOTICE_ERROR | NOTICE_INFO
+    expires_at: time.monotonic() em que a notice deixa de ser exibida
+    """
+    message: str
+    kind: str
+    expires_at: float
+
+
+# Notice ativa ou None.
+notice: TransientNotice | None = None
+
+# Duracao default, em segundos. Valor unico, sem exposicao por config:
+# a granularidade e "curta o bastante para nao poluir, longa o
+# bastante para ser lida".
+NOTICE_DEFAULT_DURATION: float = 2.5
+
+
 def set_active_panel(panel_id: str) -> None:
     """Foca um painel. Atualiza last_panel se for painel real.
 
@@ -121,7 +159,7 @@ def reset() -> None:
     """
     global active_panel, last_panel, active_modal, modal_cursor
     global panel_before_modal, pause_before_modal
-    global floating_hud_visible
+    global floating_hud_visible, notice
     active_panel = PANEL_WORLD
     last_panel = PANEL_INSPECTION
     active_modal = None
@@ -129,7 +167,87 @@ def reset() -> None:
     panel_before_modal = PANEL_WORLD
     pause_before_modal = False
     floating_hud_visible = True
+    notice = None
     for key in panel_cursors:
         panel_cursors[key] = None
     for key in panel_scroll_offsets:
         panel_scroll_offsets[key] = 0
+
+
+# --- Modal helpers ----------------------------------------------------
+
+
+def open_modal(name: str, paused_before: bool) -> None:
+    """Abre um modal, preservando o contexto anterior.
+
+    paused_before: valor de state.paused ANTES de abrir. Quem chama
+    decide pausar; ui_state apenas guarda o valor para restaurar ao
+    cancelar. ui_state NAO importa state.py (essa e a fronteira: o
+    operador de composicao passa o valor).
+    """
+    global active_modal, modal_cursor
+    global panel_before_modal, pause_before_modal
+    active_modal = name
+    modal_cursor = 0
+    panel_before_modal = active_panel
+    pause_before_modal = paused_before
+
+
+def close_modal() -> bool:
+    """Fecha o modal ativo e restaura o contexto anterior.
+
+    Retorna o valor de pause_before_modal para o chamador aplicar em
+    state.paused. ui_state NAO escreve em state.py.
+
+    No-op se nao ha modal; retorna o pause_before_modal atual (que
+    sera o default False, sem efeito pratico).
+    """
+    global active_modal
+    if active_modal is None:
+        return pause_before_modal
+    active_modal = None
+    return pause_before_modal
+
+
+# --- Notice helpers ---------------------------------------------------
+
+
+def show_notice(
+    message: str,
+    kind: str = NOTICE_SUCCESS,
+    duration: float = NOTICE_DEFAULT_DURATION,
+) -> None:
+    """Registra uma notificacao transitoria.
+
+    Substitui qualquer notice anterior. Usa time.monotonic() para a
+    expiracao: a notice vive no tempo da interface, nao no tempo da
+    simulacao (tick_count pode estar congelado em pause).
+    """
+    global notice
+    if kind not in _NOTICE_KINDS:
+        kind = NOTICE_INFO
+    notice = TransientNotice(
+        message=message,
+        kind=kind,
+        expires_at=time.monotonic() + float(duration),
+    )
+
+
+def clear_notice() -> None:
+    global notice
+    notice = None
+
+
+def expire_notice_if_needed() -> bool:
+    """Remove a notice se ja expirou. Retorna True se removeu.
+
+    Chamado pelo loop grafico a cada iteracao (inclusive pausado),
+    para a notice nao ficar congelada quando a simulacao esta parada.
+    """
+    global notice
+    if notice is None:
+        return False
+    if time.monotonic() >= notice.expires_at:
+        notice = None
+        return True
+    return False

@@ -2,6 +2,7 @@
 # Copyright (c) 2026 exfoca
 
 from __future__ import annotations
+import math
 import os
 from dataclasses import dataclass
 
@@ -10,6 +11,7 @@ import pygame
 
 from . import config as cfg
 from . import layout
+from . import nest_geometry
 from . import state
 from . import i18n
 from . import world
@@ -30,6 +32,7 @@ from .world import (
     average_hp_per_lineage,
     longest_lifetime,
     average_composite_score_per_lineage,
+    discovery_criterion_value,
 )
 
 _screen = None
@@ -50,19 +53,39 @@ _hud_icon: pygame.Surface | None = None
 # Estado de tela cheia. F11 alterna via toggle_fullscreen().
 _fullscreen: bool = False
 
-# Escala e offset da imagem do mundo quando a resolucao da janela
-# difere do tamanho base (WORLD_WIDTH * PIXEL_SCALE,
-# WORLD_HEIGHT * PIXEL_SCALE).
+
+@dataclass
+class _Camera:
+    """Camera de apresentacao.
+
+    Estado puramente visual da regiao logica do mundo observada.
+    Nao pertence a state.py, nao vai para checkpoint, nao afeta a
+    simulacao. Unico lugar onde zoom vive.
+
+    Coordenadas sao LOGICAS do mundo (celulas), nao screen-space.
+    """
+    zoom: float = 1.0
+    view_x: float = 0.0
+    view_y: float = 0.0
+
+
+_camera = _Camera()
+
+
+# Retangulo fisico em que o mundo e desenhado na tela. Representa
+# APENAS "onde o mundo cabe" (letterbox ja aplicado), nunca a regiao
+# observada. Este retangulo e recalculado por _recompute_viewport() a
+# cada resize/toggle_fullscreen.
 #
-# Em modo janela: _scale = 1.0, _offset = 0.
-# Em tela cheia: recalculados para esticar o mundo ate preencher a
-# janela, preservando a proporcao (letterbox na dimensao que sobra).
-#
-# Usados para converter clique do mouse em coordenadas do mundo
-# quando o handler de mouse for implementado (Fase 8).
-_scale: float = 1.0
-_offset_x: int = 0
-_offset_y: int = 0
+# Distincao chave:
+#   viewport -> screen-space (onde desenhar)
+#   camera   -> world-space  (qual regiao observar)
+_viewport_rect = pygame.Rect(
+    0,
+    0,
+    layout.LAYOUT.world_width * layout.LAYOUT.pixel_scale,
+    layout.LAYOUT.world_height * layout.LAYOUT.pixel_scale,
+)
 
 
 _MOORE_OFFSETS: tuple[tuple[int, int], ...] = tuple(
@@ -73,6 +96,11 @@ _HIGHLIGHT_COLOR: tuple[int, int, int] = (255, 255, 0)
 # Cor base das zonas ambientais. Tom aditivo suave sob as linhagens,
 # para nao competir com as cores RPS.
 _ZONE_COLOR: tuple[int, int, int] = (24, 20, 8)
+
+# Escala aplicada a cor canonica da linhagem para desenhar o ring do
+# ninho. Detalhe estatico de rendering; nao pertence a RuntimeRules
+# nem a config.
+_NEST_COLOR_SCALE = 0.35
 
 
 _HUD_BG = cfg.HUD_BG_COLOR
@@ -96,8 +124,7 @@ _LINEAGE_COLORS: tuple[tuple[int, int, int], ...] = (
 # snapshot de morte (sem acesso a linha viva do agente). Derivado de
 # _LINEAGE_COLORS para nao duplicar a fonte de cor do rendering.
 _COLOR_BY_ID: dict[str, tuple[int, int, int]] = {
-    lineage["id"]: _LINEAGE_COLORS[i]
-    for i, lineage in enumerate(cfg.LINEAGES)
+    lineage["id"]: _LINEAGE_COLORS[i] for i, lineage in enumerate(cfg.LINEAGES)
 }
 _SCALAR_COLOR: tuple[int, int, int] = (220, 220, 220)
 
@@ -162,7 +189,8 @@ _COMMAND_GROUPS: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
         "command.group.quick",
         (
             ("H", "command.hide_hud"),
-            ("L", "command.load"),
+            ("Ctrl+S", "command.save"),
+            ("Ctrl+L", "command.load"),
             ("N", "command.slot"),
             ("Z", "command.zones"),
             ("G", "command.record"),
@@ -384,6 +412,86 @@ def _resolve_inspection_subject() -> _InspectionSubject | None:
     )
 
 
+def _draw_discovery_candidate_card(x0: int, y0: int, width: int) -> int:
+    """Desenha o card do candidato atual de Discovery.
+
+    Retorna o Y logo abaixo do card (para o caller medir
+    content_height). Se nao ha candidato, retorna y0 + uma linha de
+    aviso; o layout nao colapsa.
+
+    Conteudo:
+        Cabecalho "CANDIDATO"
+        Linha principal: #ID  <lineage_id>
+        Valor relevante ao criterio atual (rotulado)
+        Hint "Enter observar"
+
+    O valor exibido vem de world.discovery_criterion_value(), que
+    retorna o valor HUMANO (sem inversao de sinal). O ranking interno
+    usa a versao negada para youngest/lowest_hp; a UI nao.
+
+    Reutiliza world.discovery_candidate() (autoridade do candidato),
+    garantindo que o card mostra exatamente o bicho que Enter
+    observaria. Recalculo por frame: O(N) por linhagem, aceitavel.
+    """
+    padding = 10
+    border_color = cfg.INSPECTION_HIGHLIGHT_COLOR
+    header_color = cfg.PANEL_SECONDARY_TEXT_COLOR
+    body_color = cfg.PANEL_TEXT_COLOR
+    inner_w = width - 2 * padding
+
+    header = _font_panel_small.render(
+        i18n.t("panel.discovery_title"), True, header_color
+    )
+    _screen.blit(header, (x0 + padding, y0))
+    y = y0 + header.get_height() + 4
+
+    candidate = world.discovery_candidate(
+        state.discovery_criterion,
+        state.discovery_lineage_filter,
+    )
+
+    # Tamanho do card: 4 linhas de texto + hint.
+    card_line_h = _font_panel.get_height()
+    card_h = 4 * card_line_h + 8
+
+    # Fundo + borda.
+    pygame.draw.rect(_screen, cfg.HUD_KEY_BG_COLOR, (x0 + padding, y, inner_w, card_h))
+    pygame.draw.rect(_screen, border_color, (x0 + padding, y, inner_w, card_h), 1)
+
+    cy = y + 4
+
+    if candidate is None:
+        msg = _font_panel.render(i18n.t("panel.no_candidate"), True, body_color)
+        _screen.blit(msg, (x0 + padding + 6, cy))
+        return y + card_h + 6
+
+    li, ai = candidate
+    agent = agents[li]
+    row = agent["agents"][ai]
+    stable_id = int(agent["ids"][ai])
+    lineage_color = agent["color"]
+
+    # Linha 1: #ID + lineage_id.
+    line1 = _font_panel.render(f"#{stable_id}  {agent['id']}", True, lineage_color)
+    _screen.blit(line1, (x0 + padding + 6, cy))
+    cy += card_line_h
+
+    # Linha 2: valor do criterio (rotulo + valor humano).
+    criterion_label = i18n.t(f"criterion.{state.discovery_criterion}")
+    value = discovery_criterion_value(state.discovery_criterion, row)
+    line2 = _font_panel_small.render(
+        f"{criterion_label}: {value:.0f}", True, body_color
+    )
+    _screen.blit(line2, (x0 + padding + 6, cy))
+    cy += card_line_h
+
+    # Linha 3: hint.
+    hint = _font_panel_small.render(i18n.t("panel.enter_hint"), True, header_color)
+    _screen.blit(hint, (x0 + padding + 6, cy))
+
+    return y + card_h + 6
+
+
 def _draw_inspection_details(
     surface: pygame.Surface,
     x0: int,
@@ -513,12 +621,72 @@ _TAB_KEYS: dict[str, str] = {
 }
 
 
+# Geometria canonica das tabs. Unica autoridade: draw e hit-test
+# derivam daqui, entao a regiao clicavel e exatamente a regiao
+# desenhada. Ajustes de padding/gap sao feitos apenas nesta funcao.
+_TAB_PADDING = 8
+_TAB_GAP = 4
+_TAB_TOP = 4
+_TAB_BOTTOM_MARGIN = 8
+
+
+def _tab_rects(x0: int, y0: int, width: int, height: int) -> dict[str, pygame.Rect]:
+    """Retorna os Rects canonicos de cada tab da sidebar.
+
+    x0/y0/width/height descrevem a area da tab bar (nao da sidebar
+    inteira). Ordem e _TAB_ORDER. Chaves sao panel_id.
+    """
+    n = len(_TAB_ORDER)
+    tab_w = (width - 2 * _TAB_PADDING - (n - 1) * _TAB_GAP) // n
+    tab_h = height - _TAB_BOTTOM_MARGIN
+
+    rects: dict[str, pygame.Rect] = {}
+    for i, panel_id in enumerate(_TAB_ORDER):
+        tx = x0 + _TAB_PADDING + i * (tab_w + _TAB_GAP)
+        ty = y0 + _TAB_TOP
+        rects[panel_id] = pygame.Rect(tx, ty, tab_w, tab_h)
+    return rects
+
+
+def panel_tab_at(pos: tuple[int, int]) -> str | None:
+    """Hit-test das tabs da sidebar.
+
+    Retorna o panel_id da tab sob `pos`, ou None se pos nao esta sobre
+    nenhuma tab. Coordenadas em screen-space, correspondendo ao mesmo
+    layout usado por _draw_lateral_panel().
+
+    Usa screen.get_size() da _screen efetiva: em fullscreen/resize o
+    tamanho real da janela e a autoridade, nao o LAYOUT base.
+    """
+    if _screen is None:
+        return None
+    screen_w, screen_h = _screen.get_size()
+    x0 = screen_w - cfg.INSPECTION_PANEL_WIDTH
+    # A tab bar ocupa os primeiros TAB_H pixels da lateral. Repetimos
+    # a constante local de _draw_lateral_panel; se ela mudar, os dois
+    # pontos precisam mudar juntos. Alternativa mais robusta seria
+    # exportar TAB_H como constante do modulo; feito abaixo.
+    rects = _tab_rects(x0, 0, cfg.INSPECTION_PANEL_WIDTH, _TAB_BAR_HEIGHT)
+    for panel_id, rect in rects.items():
+        if rect.collidepoint(pos):
+            return panel_id
+    return None
+
+
+# Altura da tab bar. Compartilhada entre _draw_lateral_panel (layout
+# vertical) e panel_tab_at (hit-test). Unica fonte de verdade.
+_TAB_BAR_HEIGHT = 32
+
+
 def _draw_tab_bar(x0: int, y0: int, width: int, height: int) -> None:
     """Desenha a barra de abas no topo da lateral.
 
     A aba do painel focado tem destaque forte; a aba do last_panel
     (quando active_panel == world) tem destaque suave; as demais sao
     neutras.
+
+    Geometria vem integralmente de _tab_rects(): a regiao clicavel
+    (panel_tab_at) e exatamente a regiao desenhada.
     """
     focused = ui_state.active_panel
     last = ui_state.last_panel
@@ -532,16 +700,7 @@ def _draw_tab_bar(x0: int, y0: int, width: int, height: int) -> None:
         1,
     )
 
-    tab_padding = 8
-    tab_gap = 4
-    n = len(_TAB_ORDER)
-    tab_w = (width - 2 * tab_padding - (n - 1) * tab_gap) // n
-    tab_h = height - 8
-
-    for i, panel_id in enumerate(_TAB_ORDER):
-        tx = x0 + tab_padding + i * (tab_w + tab_gap)
-        ty = y0 + 4
-
+    for panel_id, rect in _tab_rects(x0, y0, width, height).items():
         if panel_id == focused:
             bg = cfg.INSPECTION_HIGHLIGHT_COLOR
             fg = (0, 0, 0)
@@ -558,39 +717,48 @@ def _draw_tab_bar(x0: int, y0: int, width: int, height: int) -> None:
             bold = False
             underline = False
 
-        pygame.draw.rect(_screen, bg, (tx, ty, tab_w, tab_h))
-        pygame.draw.rect(_screen, cfg.PANEL_BORDER_COLOR, (tx, ty, tab_w, tab_h), 1)
+        pygame.draw.rect(_screen, bg, rect)
+        pygame.draw.rect(_screen, cfg.PANEL_BORDER_COLOR, rect, 1)
 
         key = _TAB_KEYS[panel_id]
         font = _font_panel_title if bold else _font_panel
         label = font.render(key, True, fg)
-        lx = tx + (tab_w - label.get_width()) // 2
-        ly = ty + (tab_h - label.get_height()) // 2
+        lx = rect.x + (rect.width - label.get_width()) // 2
+        ly = rect.y + (rect.height - label.get_height()) // 2
         _screen.blit(label, (lx, ly))
 
         if underline:
             pygame.draw.line(
                 _screen,
                 fg,
-                (tx + 2, ty + tab_h - 2),
-                (tx + tab_w - 3, ty + tab_h - 2),
+                (rect.x + 2, rect.bottom - 2),
+                (rect.right - 3, rect.bottom - 2),
                 2,
             )
+
+
+def _notice_text_color(kind: str) -> tuple[int, int, int]:
+    """Cor do texto da notice por kind."""
+    if kind == ui_state.NOTICE_SUCCESS:
+        return (128, 220, 128)
+    if kind == ui_state.NOTICE_ERROR:
+        return (240, 120, 120)
+    return cfg.HUD_TEXT_COLOR
 
 
 def _draw_panel_footer(
     x0: int, y0: int, width: int, height: int, panel_id: str
 ) -> None:
-    """Desenha o rodape contextual do painel ativo.
+    """Desenha o rodape da sidebar.
 
-    Le footer_key do Panel (via registry). Se o painel nao tem footer
-    declarado ou nao esta no registry, desenha o generico.
+    Regra:
+      - notice ativa   -> mostra a notice (com cor por kind);
+      - notice ausente -> mostra o rodape contextual do painel.
+
+    A notice e tempo de interface: quem expira e ui_state via
+    expire_notice_if_needed(), chamado pelo loop grafico. Aqui so
+    renderizamos o estado corrente.
     """
-    panel = panels.PANELS.get(panel_id)
-    footer_key = panel.footer_key if panel is not None else None
-    if footer_key is None:
-        footer_key = "panel.hint_actions"
-
     pygame.draw.rect(_screen, cfg.HUD_BG_COLOR, (x0, y0, width, height))
     pygame.draw.line(
         _screen,
@@ -599,6 +767,18 @@ def _draw_panel_footer(
         (x0 + width, y0),
         1,
     )
+
+    if ui_state.notice is not None:
+        color = _notice_text_color(ui_state.notice.kind)
+        text = _font_panel_small.render(ui_state.notice.message, True, color)
+        _screen.blit(text, (x0 + 8, y0 + (height - text.get_height()) // 2))
+        return
+
+    panel = panels.PANELS.get(panel_id)
+    footer_key = panel.footer_key if panel is not None else None
+    if footer_key is None:
+        footer_key = "panel.hint_actions"
+
     text = _font_panel_small.render(
         i18n.t(footer_key), True, cfg.HUD_TEXT_SECONDARY_COLOR
     )
@@ -749,12 +929,6 @@ def _draw_panel_viewport(
 
             y += label_surface.get_height() + 2
 
-            if panel_id == ui_state.PANEL_METRICS and item.id == "metric":
-                chart_h = cfg.CHART_HEIGHT
-                chart_w = width - 2 * padding
-                _draw_metric_chart(x0 + padding, y + 6, chart_w, chart_h)
-                y += chart_h + 12
-
         return y
 
     # --- Passada 1: medir ---
@@ -766,7 +940,10 @@ def _draw_panel_viewport(
     end_y = _render_items(y0 + padding - scroll_offset)
 
     if panel_id == ui_state.PANEL_INSPECTION:
+        end_y = _draw_discovery_candidate_card(x0, end_y, width)
         end_y = _draw_inspection_details(_screen, x0, end_y, width)
+    elif panel_id == ui_state.PANEL_METRICS:
+        end_y = _draw_metrics_dashboard(x0, end_y, width, height)
 
     content_height = max(0, end_y - y0)
 
@@ -788,7 +965,10 @@ def _draw_panel_viewport(
 
         end_y2 = _render_items(y0 + padding - scroll_offset)
         if panel_id == ui_state.PANEL_INSPECTION:
+            end_y2 = _draw_discovery_candidate_card(x0, end_y2, width)
             _draw_inspection_details(_screen, x0, end_y2, width)
+        elif panel_id == ui_state.PANEL_METRICS:
+            _draw_metrics_dashboard(x0, end_y2, width, height)
 
         _screen.set_clip(old_clip)
 
@@ -825,7 +1005,7 @@ def _draw_lateral_panel() -> None:
     #   viewport     (resto - summary_h - footer_h)
     #   summary      (56 px)
     #   footer       (24 px)
-    TAB_H = 32
+    TAB_H = _TAB_BAR_HEIGHT
     SUMMARY_H = 56
     FOOTER_H = 24
     viewport_y = TAB_H
@@ -895,73 +1075,288 @@ def init() -> None:
     _font_panel_title = pygame.font.SysFont("monospace", 18, True)
     _font_panel_small = pygame.font.SysFont("monospace", 11, False)
 
+    # Sincroniza _viewport_rect com a screen efetiva. Em modo janela
+    # isso coincide com o valor default de _viewport_rect, mas em
+    # ambientes que alteram a resolucao inicial (HiDPI, WMs que
+    # arredondam) a screen real e a autoridade. Tambem dispara o
+    # _clamp_camera() inicial.
+    _recompute_viewport(*_screen.get_size())
 
-def _recompute_scale_and_offset(width: int, height: int) -> None:
-    """Recalcula _scale, _offset_x, _offset_y para a resolucao dada.
+
+def _world_viewport_rect() -> pygame.Rect:
+    """Copia do retangulo fisico do mundo na tela.
+
+    Retorna copia (nao referencia) para impedir que chamadores
+    externos mutem _viewport_rect por acidente. Nao recalcula nada:
+    a geometria e atualizada somente por _recompute_viewport().
+    """
+    return _viewport_rect.copy()
+
+
+def _recompute_viewport(width: int, height: int) -> None:
+    """Recalcula o retangulo fisico onde o mundo e desenhado.
 
     A largura UTIL e (width - INSPECTION_PANEL_WIDTH): o painel tem
-    faixa cativa a direita e o mundo nao pode invadir. Medir o
-    letterbox sobre a largura total empurrava o mundo para a direita
-    em modo janela e o painel caia em cima da metade direita do
-    mundo.
+    faixa cativa a direita e o mundo nao pode invadir. O retangulo e
+    a maior area que preserva a proporcao do mundo dentro do espaco
+    util, centralizada em ambos os eixos.
 
-    Preserva a proporcao original (letterbox na dimensao que sobra
-    dentro do espaco util). Em modo janela, _scale = 1.0 e
-    _offset_x = 0. Em tela cheia num monitor mais largo que
-    SCREEN_*, o mundo e centrado no espaco util (a esquerda do
-    painel), nao na janela inteira.
+    NAO toca a camera: zoom/view_x/view_y sao estado de apresentacao
+    independente do tamanho fisico da janela. Apos recalcular, a
+    camera e revalidada para a nova geometria (clamp defensivo).
+
+    Nao usa MIN_ZOOM/MAX_ZOOM: essas constantes regem a camera, nao o
+    encaixe do mundo na tela.
     """
-    global _scale, _offset_x, _offset_y
+    global _viewport_rect
+
     usable_w = width - cfg.INSPECTION_PANEL_WIDTH
     base_w = layout.LAYOUT.world_width * layout.LAYOUT.pixel_scale
     base_h = layout.LAYOUT.world_height * layout.LAYOUT.pixel_scale
-    _scale = min(usable_w / base_w, height / base_h)
-    _offset_x = (usable_w - int(base_w * _scale)) // 2
-    _offset_y = (height - int(base_h * _scale)) // 2
+
+    fit_scale = min(usable_w / base_w, height / base_h)
+
+    target_w = int(base_w * fit_scale)
+    target_h = int(base_h * fit_scale)
+
+    offset_x = (usable_w - target_w) // 2
+    offset_y = (height - target_h) // 2
+
+    _viewport_rect = pygame.Rect(
+        offset_x,
+        offset_y,
+        target_w,
+        target_h,
+    )
+
+    _clamp_camera()
 
 
 def on_resize(width: int, height: int) -> None:
-    """Recomputa geometria para o novo tamanho de janela.
+    """VIDEORESIZE muda apenas o viewport fisico.
 
-    Nao chama set_mode(): o Pygame ja redimensionou a display Surface
-    quando VIDEORESIZE dispara. So atualiza _scale/_offset_* para o
-    tamanho efetivo atual.
+    O mundo logico e a camera NAO sao rederivados: o zoom vigente e
+    preservado, bem como view_x/view_y (sujeitos a clamp defensivo
+    caso a nova area torne a view anterior impossivel). Nao chama
+    set_mode(): o Pygame ja redimensionou a display Surface quando
+    VIDEORESIZE dispara.
     """
-    _recompute_scale_and_offset(width, height)
+    _recompute_viewport(width, height)
+
+
+def _camera_view_size() -> tuple[float, float]:
+    """Tamanho da view logica visivel, em celulas do mundo.
+
+    Em 1x, e o mundo inteiro. Em 8x, um oitavo em cada eixo. Retorna
+    floats, sem arredondamento.
+    """
+    return (
+        layout.LAYOUT.world_width / _camera.zoom,
+        layout.LAYOUT.world_height / _camera.zoom,
+    )
+
+
+def _clamp_camera() -> None:
+    """Revalida zoom e origem da view contra o mundo logico.
+
+    Ordem canonica:
+      1. clamp do zoom em [MIN_ZOOM, MAX_ZOOM];
+      2. derive view_w/view_h da view;
+      3. derive max_x/max_y de deslocamento;
+      4. clamp de view_x/view_y em [0, max].
+
+    Nao quantiza view_x/view_y: a camera permanece float. A
+    discretizacao e responsabilidade do raster crop.
+    """
+    _camera.zoom = max(
+        cfg.MIN_ZOOM,
+        min(_camera.zoom, cfg.MAX_ZOOM),
+    )
+
+    view_w, view_h = _camera_view_size()
+
+    max_x = max(0.0, layout.LAYOUT.world_width - view_w)
+    max_y = max(0.0, layout.LAYOUT.world_height - view_h)
+
+    _camera.view_x = max(0.0, min(_camera.view_x, max_x))
+    _camera.view_y = max(0.0, min(_camera.view_y, max_y))
+
+
+def _screen_to_world_float(
+    pos: tuple[int, int],
+) -> tuple[float, float] | None:
+    """Transformacao canonica screen -> world (float).
+
+    Retorna None se pos cair fora do viewport fisico do mundo (isto
+    inclui a sidebar, o letterbox e qualquer outro espaco de tela).
+
+    A conversao passa por:
+      screen pixel -> coordenada normalizada do viewport
+                   -> offset na view logica da camera
+                   -> coordenada logica do mundo.
+
+    Nao usa PIXEL_SCALE nem source crop: esses pertencem ao raster,
+    nao a interacao. Nao converte para int.
+    """
+    sx, sy = pos
+    viewport = _viewport_rect
+
+    if viewport.width <= 0 or viewport.height <= 0:
+        return None
+
+    if not viewport.collidepoint(sx, sy):
+        return None
+
+    u = (sx - viewport.left) / viewport.width
+    v = (sy - viewport.top) / viewport.height
+
+    view_w, view_h = _camera_view_size()
+
+    world_x = _camera.view_x + u * view_w
+    world_y = _camera.view_y + v * view_h
+
+    return world_x, world_y
 
 
 def screen_to_world(pos: tuple[int, int]) -> tuple[int, int] | None:
     """Converte posicao de tela para coordenada logica do mundo.
 
-    Retorna None se o clique cai fora da imagem do mundo (letterbox,
-    faixa da lateral, ou qualquer regiao nao coberta pela Surface do
-    mundo apos scale/offset).
+    Delega para _screen_to_world_float() e converte para int. Nao faz
+    clamp silencioso: se a coordenada inteira cair fora do mundo, o
+    resultado e None (o chamador decide o que fazer).
 
-    Usa exatamente a geometria que draw() entrega:
-    target_w = int(base_w * _scale), target_h = int(base_h * _scale).
-    Nao faz clamp final: depois do bounds check ele seria um no-op e
-    esconderia erro geometrico.
+    Mantida como API publica: consumidores existentes (adapter de
+    mouse em simulation.run) continuam usando este nome.
     """
-    sx, sy = pos
-    screen_w, _ = _screen.get_size()
-
-    if sx >= screen_w - cfg.INSPECTION_PANEL_WIDTH:
+    world_pos = _screen_to_world_float(pos)
+    if world_pos is None:
         return None
 
-    base_w = layout.LAYOUT.world_width * layout.LAYOUT.pixel_scale
-    base_h = layout.LAYOUT.world_height * layout.LAYOUT.pixel_scale
-    target_w = int(base_w * _scale)
-    target_h = int(base_h * _scale)
+    world_x = int(world_pos[0])
+    world_y = int(world_pos[1])
 
-    local_x = sx - _offset_x
-    local_y = sy - _offset_y
-
-    if not (0 <= local_x < target_w and 0 <= local_y < target_h):
+    if not (
+        0 <= world_x < layout.LAYOUT.world_width
+        and 0 <= world_y < layout.LAYOUT.world_height
+    ):
         return None
 
-    world_x = int(local_x * layout.LAYOUT.world_width / target_w)
-    world_y = int(local_y * layout.LAYOUT.world_height / target_h)
     return world_x, world_y
+
+
+def apply_zoom_at(
+    screen_pos: tuple[int, int],
+    notches: int,
+) -> bool:
+    """Aplica zoom ancorado em screen_pos. Retorna True se mudou.
+
+    Contrato:
+      - notches == 0: no-op, retorna False.
+      - screen_pos fora do viewport: no-op, retorna False.
+      - novo zoom fora de [MIN_ZOOM, MAX_ZOOM]: clamped.
+      - se o zoom clampado == zoom atual: no-op, retorna False.
+
+    Ancoragem: o ponto logico sob o cursor e preservado. O algoritmo
+    calcula a posicao normalizada do cursor no viewport (u, v) e, com
+    o novo zoom, redefine view_x/view_y para que (u, v) aponte para a
+    mesma coordenada logica.
+
+    Nao chama draw/flip, nao toca state, prefs nem RuntimeRules.
+    """
+    if notches == 0:
+        return False
+
+    world_pos = _screen_to_world_float(screen_pos)
+    if world_pos is None:
+        return False
+
+    sx, sy = screen_pos
+    u = (sx - _viewport_rect.left) / _viewport_rect.width
+    v = (sy - _viewport_rect.top) / _viewport_rect.height
+
+    new_zoom = _camera.zoom * (cfg.ZOOM_STEP ** notches)
+    new_zoom = max(
+        cfg.MIN_ZOOM,
+        min(new_zoom, cfg.MAX_ZOOM),
+    )
+
+    if new_zoom == _camera.zoom:
+        return False
+
+    world_x, world_y = world_pos
+
+    new_view_w = layout.LAYOUT.world_width / new_zoom
+    new_view_h = layout.LAYOUT.world_height / new_zoom
+
+    new_view_x = world_x - u * new_view_w
+    new_view_y = world_y - v * new_view_h
+
+    _camera.zoom = new_zoom
+    _camera.view_x = new_view_x
+    _camera.view_y = new_view_y
+
+    _clamp_camera()
+
+    return True
+
+
+def reset_camera() -> bool:
+    """Retorna a camera ao estado canonico (1x, view no topo-esquerda).
+
+    Retorna True se a camera estava fora do estado canonico (para que
+    o chamador decida sobre redraw). Preserva a identidade da
+    instancia _camera: muta in-place via atribuicao de campos.
+    """
+    changed = (
+        _camera.zoom != 1.0
+        or _camera.view_x != 0.0
+        or _camera.view_y != 0.0
+    )
+
+    _camera.zoom = 1.0
+    _camera.view_x = 0.0
+    _camera.view_y = 0.0
+
+    _clamp_camera()
+
+    return changed
+
+
+def _camera_source_rect() -> pygame.Rect:
+    """Recorte discreto do raster logico correspondente a view.
+
+    Converte view_x/view_y (float) em um rect inteiro [left, top,
+    width, height] sobre o raster [W, H, 3] de _build_image().
+
+    Quantizacao: floor no topo-esquerda, ceil no fundo-direita.
+    Isso garante que a view float esteja sempre contida no recorte
+    discreto (nunca corta pixels que pertencem a view).
+
+    Clamp final aos limites do mundo. Nao muta a camera.
+    """
+    view_w, view_h = _camera_view_size()
+
+    left = math.floor(_camera.view_x)
+    top = math.floor(_camera.view_y)
+
+    right = math.ceil(_camera.view_x + view_w)
+    bottom = math.ceil(_camera.view_y + view_h)
+
+    left = max(0, left)
+    top = max(0, top)
+
+    right = min(layout.LAYOUT.world_width, right)
+    bottom = min(layout.LAYOUT.world_height, bottom)
+
+    right = max(left + 1, right)
+    bottom = max(top + 1, bottom)
+
+    return pygame.Rect(
+        left,
+        top,
+        right - left,
+        bottom - top,
+    )
 
 
 def toggle_fullscreen() -> None:
@@ -971,8 +1366,11 @@ def toggle_fullscreen() -> None:
     resolucao nativa do monitor; current_w/current_h sao hint). Ao
     voltar, usa WORLD_WIDTH x WORLD_HEIGHT x PIXEL_SCALE.
 
-    Recalcula _scale/_offset_* e redesenha imediatamente para o
-    usuario ver a mudanca mesmo pausado.
+    O fullscreen recalcula o viewport fisico SEM resetar a camera:
+    zoom/view_x/view_y sao preservados entre modos (sujeitos a clamp
+    defensivo em _clamp_camera). Nao ha redraw aqui — o adapter de
+    teclado devolve DispatchResult e o loop grafico decide quando
+    desenhar.
 
     NOTA: a janela e criada com pygame.RESIZABLE em init() para a
     troca de modo em runtime ser confiavel em todos os drivers. Sem
@@ -998,6 +1396,53 @@ def toggle_fullscreen() -> None:
     # e o loop grafico decide quando desenhar).
 
 
+def _draw_nests(image: np.ndarray) -> None:
+    """Pinta os rings dos ninhos no buffer da imagem.
+
+    Ordem: chamado depois de zones e antes do loop de agents em
+    _build_image(). Ninhos ficam sob os critters, sob trail,
+    highlights e inspection marker, e sobre background/zones.
+
+    Independe de state.zones_active: ninhos sao geometria permanente
+    do mundo, nao participam do toggle de zona.
+
+    Cor: cor canonica da linhagem multiplicada por _NEST_COLOR_SCALE,
+    composta por np.maximum para nao apagar zonas ja pintadas.
+
+    Nao muta state.nests, fields nem zones; nao consome RNG.
+    """
+    if state.nests is None:
+        return
+    if len(state.nests) != cfg.TOTAL_LINEAGES:
+        raise RuntimeError(
+            f"_draw_nests: state.nests tem {len(state.nests)} "
+            f"centros; esperado {cfg.TOTAL_LINEAGES}."
+        )
+
+    ring_offsets = nest_geometry.nest_ring_offsets(cfg.NEST_RADIUS)
+    if not ring_offsets:
+        return
+
+    for li, lineage in enumerate(cfg.LINEAGES):
+        center = state.nests[li]
+        xs, ys = nest_geometry.wrapped_points(
+            center,
+            ring_offsets,
+            width=layout.LAYOUT.world_width,
+            height=layout.LAYOUT.world_height,
+        )
+        for channel, value in enumerate(lineage["color"]):
+            if value == 0:
+                continue
+            nest_value = int(round(value * _NEST_COLOR_SCALE))
+            if nest_value == 0:
+                continue
+            channel_img = image[..., channel]
+            channel_img[xs, ys] = np.maximum(
+                channel_img[xs, ys], nest_value
+            )
+
+
 def _build_image() -> np.ndarray:
     image = np.zeros(
         (layout.LAYOUT.world_width, layout.LAYOUT.world_height, 3),
@@ -1013,6 +1458,9 @@ def _build_image() -> np.ndarray:
                 continue
             channel_img = image[..., channel]
             channel_img[state.zones] = np.maximum(channel_img[state.zones], value)
+
+    # Ninhos: fora do if de zonas. Geometria permanente do mundo.
+    _draw_nests(image)
 
     for agent in agents:
         mask = agent["field"] > 0
@@ -1271,7 +1719,7 @@ def _zone_summary() -> str:
     Construido direto de state.zones / state.zones_active /
     cfg.NUMBER_OF_ZONES / cfg.ZONE_RADIUS. Nao usa format_zones_txt()
     porque aquele concatena documentacao de atalho, que pertence ao
-    Command Dock (Patch 3), nao a telemetria.
+    Command Dock, nao a telemetria.
     """
     if state.zones is None:
         return i18n.t("hud.zone_summary_none")
@@ -1333,12 +1781,12 @@ def _draw_telemetry_panel(x0: int, y0: int, width: int) -> pygame.Rect:
 
     Unica regiao do Telemetry HUD com fundo e borda. Altura derivada
     do conteudo real:
-        5 linhas de status
+        6 linhas de status
         + 1 separador (HUD_SECTION_GAP)
         + 5 linhas de parametros
         + 2 * HUD_PADDING
     """
-    STATUS_LINES = 5
+    STATUS_LINES = 6
     PARAMETER_LINES = 5
 
     line_h = _font.get_height() + 2
@@ -1366,7 +1814,14 @@ def _draw_telemetry_panel(x0: int, y0: int, width: int) -> pygame.Rect:
     y = _draw_hud_kv(
         _screen,
         i18n.t("hud.label.speed"),
-        f"{state.ticks_per_frame}x",
+        f"{state.simulation_speed:g}x",
+        inner_x,
+        y,
+    )
+    y = _draw_hud_kv(
+        _screen,
+        i18n.t("hud.label.zoom"),
+        f"{_camera.zoom:.2f}x",
         inner_x,
         y,
     )
@@ -1396,11 +1851,17 @@ def _draw_telemetry_panel(x0: int, y0: int, width: int) -> pygame.Rect:
     y = _draw_hud_divider(_screen, inner_x, y, inner_w)
 
     # --- Parametros ---
-    mutation_mode = i18n.t(f"hud.value.mutation_mode.{cfg.MUTATION_MODE}")
+    mutation_mode = i18n.t(
+        "hud.value.mutation_mode."
+        f"{state.runtime_rules.mutation_mode}"
+    )
     y = _draw_hud_kv_inline(
         _screen,
         [
-            (i18n.t("hud.label.mutation"), f"{state.mutation_rate}%"),
+            (
+                i18n.t("hud.label.mutation"),
+                f"{state.runtime_rules.mutation_rate}%",
+            ),
             (i18n.t("hud.label.mode"), mutation_mode),
         ],
         inner_x,
@@ -1409,10 +1870,13 @@ def _draw_telemetry_panel(x0: int, y0: int, width: int) -> pygame.Rect:
     y = _draw_hud_kv_inline(
         _screen,
         [
-            (i18n.t("hud.label.local"), f"{state.local_scale_fraction}%"),
+            (
+                i18n.t("hud.label.local"),
+                f"{state.runtime_rules.local_scale_fraction}%",
+            ),
             (
                 i18n.t("hud.label.global"),
-                f"{int(cfg.GLOBAL_PROBABILITY * 100)}%@{int(cfg.GLOBAL_SCALE_FRACTION * 100)}%",
+                f"{state.runtime_rules.global_probability}%@{state.runtime_rules.global_scale_fraction}%",
             ),
         ],
         inner_x,
@@ -1424,22 +1888,33 @@ def _draw_telemetry_panel(x0: int, y0: int, width: int) -> pygame.Rect:
         [
             (i18n.t("hud.label.environment"), environment),
             (i18n.t("hud.label.zones"), _zone_summary()),
-            (i18n.t("hud.label.zone_hp"), f"{state.zone_hp_effect:+d}"),
+            (
+                i18n.t("hud.label.zone_hp"),
+                f"{state.runtime_rules.zone_hp_effect:+d}",
+            ),
         ],
         inner_x,
         y,
     )
+    rules = state.runtime_rules
+    reproduction_criterion = i18n.t(
+        "hud.value.reproduction_criterion."
+        f"{rules.reproduction_criterion}"
+    )
     reproduction_gates = i18n.t(
         "hud.reproduction_gates",
-        age=cfg.REPRODUCTION_MIN_AGE,
-        hp=cfg.REPRODUCTION_HP_GATE,
-        score=cfg.REPRODUCTION_MIN_SCORE,
-        enc=cfg.REPRODUCTION_MIN_ENCOUNTERS,
+        age=rules.reproduction_min_age,
+        hp=rules.reproduction_hp_gate,
+        score=rules.reproduction_min_score,
+        enc=rules.reproduction_min_encounters,
     )
     y = _draw_hud_kv_inline(
         _screen,
         [
-            (i18n.t("hud.label.reproduction"), reproduction_gates),
+            (
+                i18n.t("hud.label.reproduction"),
+                f"{reproduction_criterion} {reproduction_gates}",
+            ),
         ],
         inner_x,
         y,
@@ -1449,8 +1924,10 @@ def _draw_telemetry_panel(x0: int, y0: int, width: int) -> pygame.Rect:
         [
             (
                 i18n.t("hud.label.weights"),
-                f"L {cfg.LONGEVITY_WEIGHT:.1f}  E {cfg.EXPLORATION_WEIGHT:.1f}  "
-                f"I {cfg.INTERACTION_WEIGHT:.1f}  R {cfg.REPRODUCTION_WEIGHT:.1f}",
+                f"L {rules.longevity_weight:.1f}  "
+                f"E {rules.exploration_weight:.1f}  "
+                f"I {rules.interaction_weight:.1f}  "
+                f"R {rules.reproduction_weight:.1f}",
             ),
         ],
         inner_x,
@@ -1529,6 +2006,7 @@ def _draw_generic_chart(
     title: str,
     labels: list[str],
     colors: list[tuple[int, int, int]],
+    show_legend: bool = True,
 ) -> None:
     """Desenha um line chart com eixos, grade, titulo e legenda.
 
@@ -1536,10 +2014,14 @@ def _draw_generic_chart(
     series precisam ter o mesmo numero de pontos (mesmo eixo X).
     `labels[k]` e `colors[k]` correspondem a serie k.
 
+    show_legend: quando False, omite a legenda embutida. Usado pelo
+    dashboard de small multiples, que desenha uma unica legenda no
+    topo e nao repete R/G/B em cada grafico.
+
     Layout:
         - Faixa de titulo no topo (~18 px).
         - Area de plot com padding esquerda/inferior para eixos.
-        - Legenda no canto superior direito, alinhada a direita.
+        - Legenda no canto superior direito (se show_legend).
         - Rotulos numericos: max/min no eixo Y; primeiro/ultimo tick
           no X.
     """
@@ -1633,13 +2115,14 @@ def _draw_generic_chart(
         if len(points) >= 2:
             pygame.draw.lines(_screen, color, False, points, cfg.CHART_LINE_THICKNESS)
 
-    legend_x = ax1 - 8
-    legend_y = ay0 + 4
-    for k, (label, color) in enumerate(zip(labels, colors)):
-        pygame.draw.rect(_screen, color, (legend_x - 60, legend_y + 4, 10, 3))
-        text = _font_chart.render(label, True, _CHART_LABEL)
-        _screen.blit(text, (legend_x - 60 + 14, legend_y))
-        legend_y += text.get_height() + 2
+    if show_legend:
+        legend_x = ax1 - 8
+        legend_y = ay0 + 4
+        for k, (label, color) in enumerate(zip(labels, colors)):
+            pygame.draw.rect(_screen, color, (legend_x - 60, legend_y + 4, 10, 3))
+            text = _font_chart.render(label, True, _CHART_LABEL)
+            _screen.blit(text, (legend_x - 60 + 14, legend_y))
+            legend_y += text.get_height() + 2
 
 
 def _series_from_history(
@@ -1657,21 +2140,22 @@ def _series_from_history(
 
 
 def _draw_metric_chart(
-    x0: int, y0: int, width: int | None = None, height: int | None = None
+    name: str,
+    x0: int,
+    y0: int,
+    width: int,
+    height: int,
+    show_legend: bool = True,
 ) -> None:
-    """Desenha o chart da metrica selecionada.
+    """Desenha o chart de uma metrica nomeada.
 
-    Largura e altura default sao cfg.CHART_WIDTH / cfg.CHART_HEIGHT
-    (compatibilidade com chamadas antigas). Quando chamada de dentro
-    do viewport de Metrics, recebe width/height ajustados a area
-    disponivel.
+    `name` e argumento explicito (chave canonica em
+    cfg.ADVANCED_METRICS). O rendering NAO le metric selecionada
+    globalmente: cada chamador escolhe o nome.
+
+    show_legend: propagado para _draw_generic_chart. O dashboard usa
+    False e desenha uma legenda unica no topo.
     """
-    if width is None:
-        width = cfg.CHART_WIDTH
-    if height is None:
-        height = cfg.CHART_HEIGHT
-
-    name = state.selected_metric
     data = list(state.metrics_history.get(name, []))
     readable_label = i18n.t(f"metric.{name}")
 
@@ -1681,7 +2165,17 @@ def _draw_metric_chart(
         title = i18n.t("chart.metric_title", label=readable_label)
 
     if len(data) < 2:
-        _draw_generic_chart(x0, y0, width, height, [], title, [], [])
+        _draw_generic_chart(
+            x0,
+            y0,
+            width,
+            height,
+            [],
+            title,
+            [],
+            [],
+            show_legend=show_legend,
+        )
         return
 
     series = _series_from_history(data)
@@ -1693,7 +2187,82 @@ def _draw_metric_chart(
         labels = [ag["id"] for ag in agents]
         colors = [_LINEAGE_COLORS[k % len(_LINEAGE_COLORS)] for k in range(len(series))]
 
-    _draw_generic_chart(x0, y0, width, height, series, title, labels, colors)
+    _draw_generic_chart(
+        x0,
+        y0,
+        width,
+        height,
+        series,
+        title,
+        labels,
+        colors,
+        show_legend=show_legend,
+    )
+
+
+def _draw_metrics_dashboard(x0: int, y0: int, width: int, height: int) -> int:
+    """Small multiples das seis metricas de cfg.ADVANCED_METRICS.
+
+    Retorna o Y logo abaixo do conteudo, para o viewport calcular
+    content_height e o scroll.
+
+    Estrutura:
+        legenda unica (R G B)
+        POPULACAO        [grafico]
+        HP MEDIO         [grafico]
+        MAIOR TEMPO      [grafico]
+        GERACAO MAXIMA   [grafico]
+        SCORE COMPOSTO   [grafico]
+        TAXA DE MUTACAO  [grafico]
+
+    A ordem segue exatamente cfg.ADVANCED_METRICS: config,
+    state.metrics_history, CSV e dashboard compartilham a mesma
+    ordem canonica.
+
+    Altura adaptativa: cada grafico recebe uma fracao do viewport,
+    respeitando min/max legiveis. Se nao couberem todos, o scroll
+    existente cobre.
+    """
+    padding = 10
+    inner_w = max(80, width - 2 * padding)
+
+    # Cabecalho.
+    y = y0 + padding
+    title = _font_panel_title.render(
+        i18n.t("panel.metrics.title"), True, cfg.PANEL_TEXT_COLOR
+    )
+    _screen.blit(title, (x0 + padding, y))
+    y += title.get_height() + 6
+
+    # Legenda unica (R G B), alinhada a esquerda. Uma linha so.
+    legend_y = y
+    legend_x = x0 + padding
+    for i, ag in enumerate(agents):
+        color = _LINEAGE_COLORS[i % len(_LINEAGE_COLORS)]
+        pygame.draw.rect(_screen, color, (legend_x, legend_y + 6, 10, 3))
+        text = _font_chart.render(ag["id"], True, _CHART_LABEL)
+        _screen.blit(text, (legend_x + 14, legend_y))
+        legend_x += 14 + text.get_width() + 14
+    y += _font_chart.get_height() + 10
+
+    # Distribuicao vertical. Reserva cabecalho ja consumido.
+    n_metrics = len(cfg.ADVANCED_METRICS)
+    # Altura restante ate o fim do viewport.
+    remaining = max(0, (y0 + height) - y - 4 * n_metrics)
+    if n_metrics > 0:
+        # Um chart + gap por metrica. Minimo legivel 60, maximo util
+        # 140 (evita esticar demais quando o viewport e grande).
+        per_gap = 8
+        chart_h = remaining // n_metrics - per_gap
+        chart_h = max(60, min(140, chart_h))
+    else:
+        chart_h = 100
+
+    for name in cfg.ADVANCED_METRICS:
+        _draw_metric_chart(name, x0 + padding, y, inner_w, chart_h, show_legend=False)
+        y += chart_h + 8
+
+    return y + padding
 
 
 def _draw_keycap(
@@ -1748,7 +2317,7 @@ def _draw_command_dock() -> pygame.Rect:
     """
     screen_w, screen_h = _screen.get_size()
     usable_w = screen_w - cfg.INSPECTION_PANEL_WIDTH
-    width = int((usable_w - 2 * cfg.HUD_MARGIN) * 0.38)
+    width = int((usable_w - 2 * cfg.HUD_MARGIN) * 0.42)
     x0 = cfg.HUD_MARGIN
 
     line_h = _font.get_height() + 4
@@ -1800,31 +2369,99 @@ def _render_rps_compact() -> list[pygame.Surface]:
     parts: list[tuple[str, tuple[int, int, int]]] = [
         ("R", _LINEAGE_COLORS[0]),
         (" \u2192 ", arrow_color),
-        ("B", _LINEAGE_COLORS[2]),
-        (" \u2192 ", arrow_color),
         ("G", _LINEAGE_COLORS[1]),
+        (" \u2192 ", arrow_color),
+        ("B", _LINEAGE_COLORS[2]),
         (" \u2192 ", arrow_color),
         ("R", _LINEAGE_COLORS[0]),
     ]
     return [_font_hud_title.render(t, True, c) for t, c in parts]
 
 
+def _draw_confirm_exit_modal() -> None:
+    """Desenha o modal de confirmacao de saida.
+
+    Overlay escurecido + caixa central. Nao interage com o mundo:
+    apenas cobre a tela. O input enquanto o modal existe e roteado
+    pelo dispatcher (_handle_modal_event).
+    """
+    screen_w, screen_h = _screen.get_size()
+
+    # Overlay escurecido (alpha 140).
+    overlay = pygame.Surface((screen_w, screen_h), pygame.SRCALPHA)
+    overlay.fill((0, 0, 0, 140))
+    _screen.blit(overlay, (0, 0))
+
+    # Caixa central.
+    box_w = 420
+    box_h = 160
+    box_x = (screen_w - box_w) // 2
+    box_y = (screen_h - box_h) // 2
+
+    pygame.draw.rect(_screen, cfg.HUD_BG_COLOR, (box_x, box_y, box_w, box_h))
+    pygame.draw.rect(
+        _screen,
+        cfg.INSPECTION_HIGHLIGHT_COLOR,
+        (box_x, box_y, box_w, box_h),
+        2,
+    )
+
+    padding = 18
+    title = _font_panel_title.render(
+        i18n.t("modal.exit.title"), True, cfg.HUD_TEXT_COLOR
+    )
+    _screen.blit(title, (box_x + padding, box_y + padding))
+
+    y = box_y + padding + title.get_height() + 16
+
+    confirm = _font_panel.render(i18n.t("modal.exit.confirm"), True, cfg.HUD_TEXT_COLOR)
+    _screen.blit(confirm, (box_x + padding, y))
+    y += confirm.get_height() + 6
+
+    cancel = _font_panel.render(
+        i18n.t("modal.exit.cancel"), True, cfg.HUD_TEXT_SECONDARY_COLOR
+    )
+    _screen.blit(cancel, (box_x + padding, y))
+
+
 def draw() -> None:
     image = _build_image()
-    surface = pygame.surfarray.make_surface(image)
 
-    # Tamanho efetivo do mundo apos a escala corrente. Em modo janela,
-    # _scale = 1.0 e o resultado e WORLD_WIDTH x WORLD_HEIGHT x
-    # PIXEL_SCALE. Em tela cheia, _scale e < 1.0 (letterbox) e o mundo
-    # preenche a tela sem distorcao.
-    target_w = int(layout.LAYOUT.world_width * layout.LAYOUT.pixel_scale * _scale)
-    target_h = int(layout.LAYOUT.world_height * layout.LAYOUT.pixel_scale * _scale)
-    surface = pygame.transform.scale(surface, (target_w, target_h))
+    # Camera: recorta a regiao logica visivel ANTES de escalar.
+    #
+    # O pipeline e sempre:
+    #     raster logico [W, H, 3]
+    #       -> crop em _camera_source_rect()
+    #       -> pygame.transform.scale(crop, viewport.size)
+    #       -> blit em _viewport_rect.topleft
+    #
+    # O destino do scale e SEMPRE viewport.size, independente do
+    # zoom. Isso garante custo de escala constante (O(viewport)) e
+    # evita alocar surface gigante em zoom alto.
+    source_rect = _camera_source_rect()
 
-    # Fundo preto para as faixas de letterbox (visiveis so em tela
-    # cheia quando a proporcao do monitor difere da do mundo).
+    # Ordem dos eixos: image[X, Y, C] (consistente com
+    # state.zones[x, y] e agent["field"][x, y]). Portanto o recorte
+    # e [left:right, top:bottom], nao [rows, cols]. O .copy() e
+    # obrigatorio: slice nao-contiguo nao pode alimentar
+    # surfarray.make_surface() com seguranca.
+    source = image[
+        source_rect.left:source_rect.right,
+        source_rect.top:source_rect.bottom,
+    ].copy()
+
+    surface = pygame.surfarray.make_surface(source)
+
+    viewport = _viewport_rect
+
+    # Fundo preto para o letterbox (visivel so quando a proporcao do
+    # monitor difere da do mundo).
     _screen.fill((0, 0, 0))
-    _screen.blit(surface, (_offset_x, _offset_y))
+
+    if viewport.width > 0 and viewport.height > 0:
+        surface = pygame.transform.scale(surface, viewport.size)
+
+        _screen.blit(surface, viewport.topleft)
 
     # Elementos flutuantes sobre o mundo: gate unico aqui, nao dentro
     # de _draw_hud/_draw_rps_tip. A autoridade de composicao e draw().
@@ -1835,6 +2472,12 @@ def draw() -> None:
         _draw_command_dock()
 
     _draw_lateral_panel()
+
+    # Modal e o ultimo elemento: e visualmente superior a tudo o mais.
+    # Gate unico aqui, nao dentro dos helpers.
+    if ui_state.active_modal == "confirm_exit":
+        _draw_confirm_exit_modal()
+
     pygame.display.flip()
 
     # Gravacao de tela: captura o frame COMPLETO renderizado (mundo +

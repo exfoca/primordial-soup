@@ -66,7 +66,7 @@ def test_dispatcher_processes_all_queued_events(monkeypatch):
     """Dois eventos na fila: ambos sao processados em ordem."""
     calls = []
 
-    def fake_global(key):
+    def fake_global(key, mod):
         calls.append(key)
         # Devolve CONTINUE sem redraw para nao interferir no teste.
         return input_dispatcher.DispatchResult.continue_(redraw=False)
@@ -92,7 +92,7 @@ def test_dispatcher_accumulates_redraw(monkeypatch):
     """
     redraws = iter([False, True, False])
 
-    def fake_global(key):
+    def fake_global(key, mod):
         return input_dispatcher.DispatchResult.continue_(redraw=next(redraws))
 
     monkeypatch.setattr(input_dispatcher, "_handle_global_key", fake_global)
@@ -113,12 +113,21 @@ def test_dispatcher_accumulates_redraw(monkeypatch):
 
 
 def test_exit_has_precedence(monkeypatch):
-    """[SPACE, QUIT, F11]: SPACE produz efeito, QUIT encerra, F11 nao roda.
+    """[SPACE, Enter-no-modal, F11]: modal confirma EXIT, F11 nao roda.
 
-    Nao ha rollback: o efeito de SPACE (paused alternado) permanece.
+    Contrato estrutural do dispatcher: Flow.EXIT interrompe a fila
+    sem rollback; eventos posteriores na fila nao sao processados.
+
+    O gatilho de EXIT hoje e Enter com o modal confirm_exit aberto
+    (Patch 2). QUIT nao encerra direto mais: abre o mesmo modal.
+    Este teste dispara EXIT pelo caminho canonico.
+
+    Nota: com modal ativo, SPACE e engolido por _handle_modal_event
+    (no-op), entao space_calls permanece vazio. O ponto do teste e
+    a precedencia de EXIT sobre eventos posteriores, nao o efeito
+    de SPACE.
     """
-    # SPACE precisa usar o handler global real. Como o global usa
-    # _SPACE_HANDLER injetado, registramos um que toca um contador.
+    # Registramos handlers espioes para detectar execucoes indevidas.
     space_calls = []
 
     def fake_space():
@@ -127,7 +136,6 @@ def test_exit_has_precedence(monkeypatch):
 
     input_dispatcher.register_space_handler(fake_space)
 
-    # Espiao para K_F11: se for chamado, o teste falha.
     f11_calls = []
 
     def fake_f11():
@@ -136,21 +144,28 @@ def test_exit_has_precedence(monkeypatch):
 
     input_dispatcher.register_fullscreen_handler(fake_f11)
 
+    # Abre o modal ANTES de enfileirar eventos, para o Enter ser
+    # roteado pelo _handle_modal_event.
+    ui_state.open_modal("confirm_exit", paused_before=True)
+
     _set_queue(monkeypatch, [
         _event(pygame.KEYDOWN, key=pygame.K_SPACE, mod=0),
-        _event(pygame.QUIT),
+        _event(pygame.KEYDOWN, key=pygame.K_RETURN, mod=0),
         _event(pygame.KEYDOWN, key=pygame.K_F11, mod=0),
     ])
 
     result = input_dispatcher.process_events()
 
     assert result.flow is Flow.EXIT
-    assert space_calls == [True], "SPACE deveria ter produzido efeito antes do QUIT"
-    assert f11_calls == [], "F11 nao deveria rodar apos QUIT"
+    assert f11_calls == [], "F11 nao deveria rodar apos EXIT"
+    # SPACE foi engolido pelo modal; nenhum dos dois handlers deve
+    # ter disparado.
+    assert space_calls == [], "SPACE com modal ativo deve ser no-op"
 
-    # Cleanup: o registrador e global no modulo.
+    # Cleanup: registradores sao globais no modulo.
     input_dispatcher.register_space_handler(lambda: None)
     input_dispatcher.register_fullscreen_handler(lambda: None)
+    ui_state.reset()
 
 
 # ---------------------------------------------------------------------------
@@ -232,10 +247,8 @@ def test_panel_activation_initializes_cursor(monkeypatch):
 
 
 def test_escape_panel_goes_to_world(monkeypatch):
-    """ESC em painel volta para world; sem handler de ESC registrado."""
+    """ESC em painel volta para world."""
     ui_state.set_active_panel(ui_state.PANEL_INSPECTION)
-    # Garante que nenhum handler de ESC ficou registrado de outro teste.
-    input_dispatcher.register_escape_handler(None)
 
     _set_queue(monkeypatch, [
         _event(pygame.KEYDOWN, key=pygame.K_ESCAPE, mod=0),
@@ -320,59 +333,54 @@ def test_resize_without_handler_is_safe_noop(monkeypatch):
     assert result.redraw is False
 
 
-def test_wheel_calls_registered_handler_with_pos(monkeypatch):
-    """MOUSEWHEEL chama o adapter com (notches, pos)."""
+def test_wheel_calls_registered_handler_with_pos_and_modifiers(
+    monkeypatch
+):
+    """MOUSEWHEEL entrega notches + posicao atual + modificadores atuais.
+
+    O dispatcher captura pygame.mouse.get_pos() e pygame.key.get_mods()
+    porque MOUSEWHEEL nao carrega nenhum dos dois no proprio evento. A
+    politica de zoom vs scroll e do adapter do mundo, nao do
+    dispatcher.
+    """
     calls = []
 
-    def handler(notches, pos):
-        calls.append((notches, pos))
+    def handler(notches, pos, modifiers):
+        calls.append((notches, pos, modifiers))
         return input_dispatcher.DispatchResult.continue_(redraw=True)
 
     input_dispatcher.register_wheel_handler(handler)
     try:
-        # MOUSEWHEEL nao carrega pos; o dispatcher consulta
-        # pygame.mouse.get_pos().
         monkeypatch.setattr(pygame.mouse, "get_pos", lambda: (7, 8))
+        monkeypatch.setattr(
+            pygame.key, "get_mods", lambda: pygame.KMOD_CTRL
+        )
         _set_queue(monkeypatch, [
             _event(pygame.MOUSEWHEEL, y=1),
         ])
         result = input_dispatcher.process_events()
-        assert calls == [(1, (7, 8))]
+        assert calls == [(1, (7, 8), pygame.KMOD_CTRL)]
         assert result.redraw is True
     finally:
         input_dispatcher.register_wheel_handler(None)
 
 
-def test_escape_with_adapter_uses_adapter(monkeypatch):
-    """Adapter de ESC substitui o fallback interno."""
-    calls = []
+def test_escape_at_world_opens_modal_not_exit(monkeypatch):
+    """ESC no world abre o modal; NAO encerra o processo diretamente.
 
-    def adapter():
-        calls.append(True)
-        return input_dispatcher.DispatchResult.exit_()
-
-    input_dispatcher.register_escape_handler(adapter)
-    try:
-        _set_queue(monkeypatch, [
-            _event(pygame.KEYDOWN, key=pygame.K_ESCAPE, mod=0),
-        ])
-        result = input_dispatcher.process_events()
-        assert calls == [True]
-        assert result.flow is Flow.EXIT
-    finally:
-        input_dispatcher.register_escape_handler(None)
-
-
-def test_escape_without_adapter_world_is_noop(monkeypatch):
-    """Sem adapter e active_panel == world, ESC nao encerra."""
+    Este teste substitui o antigo test_escape_with_adapter_uses_adapter,
+    que protegia um extension point removido. O contrato atual e que
+    ESC no world sempre abre confirm_exit; o Flow resultante e
+    CONTINUE, nao EXIT.
+    """
     ui_state.set_active_panel(ui_state.PANEL_WORLD)
-    input_dispatcher.register_escape_handler(None)
 
     _set_queue(monkeypatch, [
         _event(pygame.KEYDOWN, key=pygame.K_ESCAPE, mod=0),
     ])
     result = input_dispatcher.process_events()
     assert result.flow is Flow.CONTINUE
+    assert ui_state.active_modal == "confirm_exit"
 
 
 def test_accelerator_executes_once_per_event(monkeypatch):
@@ -391,7 +399,7 @@ def test_accelerator_executes_once_per_event(monkeypatch):
         input_dispatcher.process_events()
         assert calls == [True]
     finally:
-        input_dispatcher._GLOBAL_ACTIONS.pop(pygame.K_q, None)
+        input_dispatcher._GLOBAL_ACTIONS.pop((pygame.K_q, 0), None)
 
 
 def test_h_is_not_structural():
@@ -401,7 +409,13 @@ def test_h_is_not_structural():
 
 
 def test_register_global_action_rejects_structural_keys():
-    """register_global_action rejeita SPACE, =, +, F11, ESC."""
+    """register_global_action rejeita SPACE, =, +, F11, ESC.
+
+    Rejeicao INDEPENDENTE de modifiers: Ctrl+F11 tambem e rejeitado.
+    Estruturais tem significado fixo no dispatcher e sao resolvidas
+    antes dos accelerators; um accelerator nessas teclas seria
+    inalcancavel.
+    """
     for structural in (
         pygame.K_SPACE, pygame.K_EQUALS, pygame.K_PLUS,
         pygame.K_F11, pygame.K_ESCAPE,
@@ -410,6 +424,12 @@ def test_register_global_action_rejects_structural_keys():
             input_dispatcher.register_global_action(
                 structural,
                 lambda: input_dispatcher.DispatchResult.continue_(),
+            )
+        with pytest.raises(ValueError):
+            input_dispatcher.register_global_action(
+                structural,
+                lambda: input_dispatcher.DispatchResult.continue_(),
+                modifiers=pygame.KMOD_CTRL,
             )
 
 

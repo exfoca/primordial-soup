@@ -99,7 +99,11 @@ def _vision_batch(
     return vision.reshape(n, -1)
 
 
-def _internal_state_batch(matrix: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+def _internal_state_batch(
+    matrix: np.ndarray,
+    *,
+    low_hp_threshold: int,
+) -> tuple[np.ndarray, np.ndarray]:
     """Calcula os inputs de estado interno e o flag low-HP.
 
     matrix: [N, AGENT_COLUMNS] float32. Nao muta o array do chamador.
@@ -126,7 +130,7 @@ def _internal_state_batch(matrix: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     # centro).
     action_norm = action / float(cfg.POSSIBLE_MOVES - 1)
 
-    low_hp = (hp < float(cfg.LOW_HP_THRESHOLD)).astype(np.float32)
+    low_hp = (hp < float(low_hp_threshold)).astype(np.float32)
 
     inputs = np.stack([hp_norm, time_norm, action_norm, low_hp], axis=1)
     return inputs, low_hp
@@ -137,6 +141,8 @@ def sense_batch(
     ys: np.ndarray,
     matrix: np.ndarray | None = None,
     index: int | None = None,
+    *,
+    low_hp_threshold: int | None = None,
 ) -> np.ndarray:
     """Vetor float [N, NETWORK_INPUTS].
 
@@ -164,9 +170,20 @@ def sense_batch(
           normal. Mantem `sense(x, y)` (sem index) e qualquer chamada
           fora da invariante corretos.
 
+    Contrato de `low_hp_threshold`:
+        - E obrigatorio quando `matrix` e fornecida, porque o estado
+          interno real inclui o flag low-HP.
+        - E irrelevante quando `matrix` e None; `sense()` permanece
+          independente de RuntimeRules.
+
     O caminho com buffer e o hot path: elimina ~105 MB/s de churn de
     alocacao da implementacao anterior baseada em concatenate.
     """
+    if matrix is not None and low_hp_threshold is None:
+        raise ValueError(
+            "low_hp_threshold e obrigatorio quando matrix e fornecida."
+        )
+
     xs = np.asarray(xs, dtype=np.int64)
     ys = np.asarray(ys, dtype=np.int64)
     n = xs.shape[0]
@@ -185,7 +202,10 @@ def sense_batch(
             out[:, cfg.VISION_INPUTS :] = 0.0
         else:
             matrix = np.asarray(matrix)
-            internal, low_hp = _internal_state_batch(matrix)
+            internal, low_hp = _internal_state_batch(
+                matrix,
+                low_hp_threshold=low_hp_threshold,
+            )
             out[:, cfg.VISION_INPUTS :] = internal
             matrix[:, INDEX_LOW_HP] = low_hp.astype(matrix.dtype, copy=False)
         # `out` ja contem [vision | internal] nas colunas certas.
@@ -200,7 +220,10 @@ def sense_batch(
         internal = np.zeros((n, cfg.INTERNAL_STATE_INPUTS), dtype=np.float32)
     else:
         matrix = np.asarray(matrix)
-        internal, low_hp = _internal_state_batch(matrix)
+        internal, low_hp = _internal_state_batch(
+            matrix,
+            low_hp_threshold=low_hp_threshold,
+        )
         matrix[:, INDEX_LOW_HP] = low_hp.astype(matrix.dtype, copy=False)
     return np.concatenate([vision, internal], axis=1)
 

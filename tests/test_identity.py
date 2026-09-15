@@ -4,6 +4,7 @@ import numpy as np
 import pytest
 
 from primordial_soup import config as cfg
+from primordial_soup import layout
 from primordial_soup import state
 from primordial_soup import world
 from primordial_soup.world import (
@@ -15,9 +16,39 @@ from primordial_soup.world import (
 from primordial_soup.state import agents
 
 
+def _valid_test_nests():
+    """Geometria deterministica de ninhos valida para o contrato v21.
+
+    Tres centros colineares, separados por 2*radius+1, de modo que os
+    discos de radius NEST_RADIUS nao compartilhem celulas.
+    """
+    radius = cfg.NEST_RADIUS
+    y = radius + 1
+    stride = 2 * radius + 1
+    return (
+        (radius + 1, y),
+        (radius + 1 + stride, y),
+        (radius + 1 + 2 * stride, y),
+    )
+
+
+def _install_checkpoint_geometry():
+    """Instala zones e nests deterministicos em state.
+
+    Fixtures que preparam mundo manualmente precisam de geometry
+    valida sob o schema v21 antes de qualquer save. Esta funcao faz
+    isso sem consumir RNG.
+    """
+    state.zones = np.zeros(
+        (layout.LAYOUT.world_width, layout.LAYOUT.world_height),
+        dtype=bool,
+    )
+    state.nests = _valid_test_nests()
+
+
 @pytest.fixture
 def fresh_world():
-    """Populacao limpa com 3 linhagens e IDs alocados.
+    """Populacao limpa com 3 linhagens, IDs alocados e geometry.
 
     O pool precisa ter o mesmo tamanho de agents/ids: deixar (0, G)
     aqui criaria um estado impossivel no runtime (agents=50, ids=50,
@@ -31,8 +62,11 @@ def fresh_world():
             dtype=np.float32,
         )
     place_initially()
+    _install_checkpoint_geometry()
     yield
     state.reset_counters()
+    state.zones = None
+    state.nests = None
     agents.clear()
 
 
@@ -129,10 +163,12 @@ def test_save_load_preserves_ids(fresh_world, tmp_path):
     path = tmp_path / "save.pkl"
     saved_ids = [ag["ids"].copy() for ag in agents]
     saved_next = state.next_critter_id
-    persistence.save(str(path))
+    assert persistence.save(str(path)) is True
 
     # Esvazia o estado e recarrega.
     state.reset_counters()
+    state.zones = None
+    state.nests = None
     agents.clear()
     seed_lineages()
     for ag in agents:
@@ -176,10 +212,12 @@ def test_recreate_save_load_preserves_ids(
     saved_next = state.next_critter_id
 
     path = tmp_path / "save.pkl"
-    persistence.save(str(path))
+    assert persistence.save(str(path)) is True
 
     # Isola o runtime antes do load, seguindo o padrao da suite.
     state.reset_counters()
+    state.zones = None
+    state.nests = None
     agents.clear()
     seed_lineages()
     for ag in agents:

@@ -14,18 +14,37 @@ from . import i18n
 from .state import agents
 from .world import (
     max_generation,
-    generate_zones,
     average_hp_per_lineage,
     longest_lifetime,
     population_per_lineage,
-    fill_fields,
     average_composite_score_per_lineage,
-    seed_lineages,
-    place_initially,
+    fill_fields,
     find_agent_at,
 )
-from .genetics import random_population
-from .evolution import evaluate_and_move, punish_reward_and_reproduce
+from .evolution import evaluate_and_move, reproduce_lineage
+from .ecology import compute_ecology_resolution, apply_ecology_resolution
+from .bootstrap import bootstrap_new_world
+from . import prefs
+
+
+def _advance_tick_credit(
+    tick_credit: float,
+    simulation_speed: float,
+) -> tuple[int, float]:
+    """Converte credito + velocidade em (steps_due, remainder).
+
+    tick_credit acumula velocidade fracionaria entre frames graficos.
+    A parte inteira do credito vira ticks a executar neste frame; a
+    parte fracionaria permanece para o proximo.
+
+    Implementacao deliberadamente simples: 0.25 e 0.5 tem
+    representacao binaria exata, entao nao ha erro de arredondamento
+    a corrigir. Nao adicionar epsilon nem math.floor.
+    """
+    total_credit = tick_credit + simulation_speed
+    steps_due = int(total_credit)
+    remaining_credit = total_credit - steps_due
+    return steps_due, remaining_credit
 
 
 def _collect_metrics() -> dict[str, tuple[float, ...]]:
@@ -49,7 +68,7 @@ def _collect_metrics() -> dict[str, tuple[float, ...]]:
         "maior_tempo_de_vida": tuple(float(t) for t in longest_lifetime()),
         "geracao_maxima": tuple(float(g) for g in max_generation()),
         "score_composto_medio": tuple(average_composite_score_per_lineage()),
-        "taxa_de_mutacao": (float(state.mutation_rate),),
+        "taxa_de_mutacao": (float(state.runtime_rules.mutation_rate),),
     }
 
 
@@ -92,25 +111,51 @@ def _update_trail() -> None:
     state.inspected_trail.append((x, y))
 
 
+def _take_reproduction_turn() -> int | None:
+    """Resolve o turno reprodutivo deste tick.
+
+    Retorna:
+        None   -- nenhuma linhagem reproduz neste tick
+        0/1/2  -- linhagem dona do turno
+
+    Preserva a semantica original: cooldown <= 0 consome o turno
+    atual, avanca o ponteiro R->G->B e recarrega o cooldown com
+    rules.reproduction_interval. Caso contrario, apenas decrementa.
+    """
+    if state.reproduction_cooldown <= 0:
+        lineage = state.reproduction_turn
+        state.reproduction_turn = (
+            state.reproduction_turn + 1
+        ) % cfg.TOTAL_LINEAGES
+        state.reproduction_cooldown = (
+            state.runtime_rules.reproduction_interval
+        )
+        return lineage
+
+    state.reproduction_cooldown -= 1
+    return None
+
+
 def step() -> None:
     """Avanca a simulacao por exatamente 1 tick.
 
-    Nao renderiza: o chamador decide quando desenhar. Isso permite
-    rodar N ticks por frame sem pagar N renders.
+    Lifecycle canonico:
 
-    Ordem sagrada do tick:
-        1. perceber    (campos atuais -> inputs neurais)
-        2. decidir     (rede neural -> escolha de movimento)
-        3. mover       (deslocamento toroidal)
-        4. reavaliar   (reconstroi campos de densidade)
-        5. punir/recompensar/matar
-        6. reproduzir
+        1. perceber / decidir / mover (todas as linhagens)
+        2. fill_fields() -- snapshot espacial pos-movimento
+        3. compute_ecology_resolution()  -- sem mutacao
+        4. apply_ecology_resolution()    -- HP/age/encounter/morte/
+                                            compactacao/score
+        5. scheduler reprodutivo + reproduce_lineage() se houver
+           turno
+        6. fill_fields() -- snapshot espacial final (inclui newborns,
+                            remove mortos)
+        7. metricas
 
-    Por que a ordem importa:
-        - O mundo e percebido ANTES de mover. Senao o bicho reagiria
-          a um mundo que ja mudou.
-        - A punicao acontece DEPOIS que todos moveram. Senao o
-          primeiro a mover teria vantagem injusta.
+    Newborns nao participam da ecologia do proprio birth tick: eles
+    so aparecem apos o fill_fields() final.
+
+    Nao renderiza: o chamador decide quando desenhar.
     """
     state.tick_count += 1
 
@@ -118,76 +163,17 @@ def step() -> None:
         evaluate_and_move(i)
 
     fill_fields()
-
-    # Registra a posicao do bicho observado neste tick. Chamado apos
-    # o fill_fields() pos-movimento para a posicao registrada ser a
-    # que o bicho ocupa agora. O trail e VIEW, nao parte da
-    # simulacao: nao muda a semantica do tick.
     _update_trail()
 
-    # --- Turno de reproducao --------------------------------------
-    #
-    # Reproducao e evento GLOBAL turn-based: a cada
-    # REPRODUCTION_INTERVAL ticks, exatamente UMA linhagem reproduz.
-    # O turno rotaciona R -> G -> B -> R -> ...
-    #
-    # O cooldown conta para baixo todo tick. Ao chegar a 0, a
-    # linhagem em state.reproduction_turn recebe o turno; o turno
-    # avanca (mod TOTAL_LINEAGES) e o cooldown reinicia. O check vem
-    # ANTES do decremento, para o primeiro turno sair ja no tick 0
-    # (cooldown comeca em 0). Se decrementasse antes, o primeiro
-    # turno sairia no tick 1.
-    #
-    # Concretamente:
-    #   tick 0  : cooldown == 0 -> R recebe turno, turn -> 1, cooldown = 10
-    #   tick 1  : cooldown == 10 -> sem turno, cooldown = 9
-    #   ...
-    #   tick 10 : cooldown == 0 -> G recebe turno, turn -> 2, cooldown = 10
-    #   ...
-    #   tick 20 : cooldown == 0 -> B recebe turno, turn -> 0, cooldown = 10
-    #   tick 30 : cooldown == 0 -> R de novo
-    #
-    # Deliberado: uma run nova tem reproducao disponivel ja no tick 0
-    # em vez de depois de um intervalo morto.
-    if state.reproduction_cooldown <= 0:
-        reproduce_lineage = state.reproduction_turn
-        state.reproduction_turn = (
-            state.reproduction_turn + 1
-        ) % cfg.TOTAL_LINEAGES
-        state.reproduction_cooldown = cfg.REPRODUCTION_INTERVAL
-    else:
-        reproduce_lineage = -1
-        state.reproduction_cooldown -= 1
+    resolution = compute_ecology_resolution()
+    apply_ecology_resolution(resolution)
 
-    for i in range(cfg.TOTAL_LINEAGES):
-        # punish_reward_and_reproduce agora adiciona os recem-nascidos
-        # ao campo de densidade via fill_fields_incremental, logo apos
-        # gerar. O segundo fill_fields() inteiro que rodava aqui
-        # reconstruia o campo do zero para pegar uns poucos
-        # recem-nascidos — puro desperdicio. A passada incremental
-        # produz o mesmo campo com um np.add.at por linhagem.
-        #
-        # O flag `reproduce` e True so para a linhagem dona do turno.
-        # As outras ainda sao punidas/recompensadas/mortas
-        # normalmente; so nao tentam reproduzir neste tick.
-        punish_reward_and_reproduce(
-            i,
-            state.mutation_rate,
-            state.mutated_genes,
-            state.local_scale_fraction,
-            reproduce=(i == reproduce_lineage),
-        )
+    reproduction_lineage = _take_reproduction_turn()
+    if reproduction_lineage is not None:
+        reproduce_lineage(reproduction_lineage)
 
-    # Nota: nao ha reselecao aqui. Se o bicho observado morreu neste
-    # tick, seu snapshot de morte foi capturado dentro de
-    # punish_reward_and_reproduce e a observacao agora esta congelada
-    # nesse snapshot. Candidatos de discovery (contornos amarelos)
-    # sao recalculados da populacao atual no draw; o ID observado
-    # nunca e substituido automaticamente.
+    fill_fields()
 
-    # Snapshot de metricas (inclui populacao como "populacao"). Nao
-    # ha historico separado por tick: o painel le tudo de
-    # state.metrics_history.
     if state.tick_count % cfg.METRICS_INTERVAL == 0:
         state.register_metrics(_collect_metrics())
 
@@ -200,57 +186,14 @@ def step() -> None:
                 lt=longest_lifetime(),
                 g=max_generation(),
                 p=population_per_lineage(),
-                m=state.mutation_rate,
-                modo=cfg.MUTATION_MODE,
-                l=state.local_scale_fraction,
-                gg=int(cfg.GLOBAL_PROBABILITY * 100),
-                gf=int(cfg.GLOBAL_SCALE_FRACTION * 100),
-                genes=state.mutated_genes,
+                m=state.runtime_rules.mutation_rate,
+                modo=state.runtime_rules.mutation_mode,
+                l=state.runtime_rules.local_scale_fraction,
+                gg=state.runtime_rules.global_probability,
+                gf=state.runtime_rules.global_scale_fraction,
+                genes=state.runtime_rules.mutated_genes,
             )
         )
-
-
-def bootstrap_new_world() -> None:
-    """Inicializa uma run nova: contadores, linhagens, populacoes,
-    zonas.
-
-    Extraido de run() para o loop grafico e o driver headless
-    compartilharem EXATAMENTE as mesmas condicoes iniciais. Sem isso,
-    os dois modos divergiriam e comparar um sweep headless com uma
-    run grafica seria comparar mundos diferentes.
-
-    NAO toca preferencias do operador que sobrevivem a um recreate:
-    a taxa de mutacao vai para o valor INITIAL_* (e uma run nova, nao
-    um recreate), a velocidade vai para 1 tick/frame e o parametro
-    ativo volta para mutacao. Inspecao, idioma, slot e gravacao NAO
-    sao tocados aqui — sao preferencias tratadas em outro lugar (ver
-    state.reset_counters, que bootstrap_new_world chama).
-    """
-    state.reset_counters()
-
-    seed_lineages()
-    for agent in agents:
-        # random_population retorna uma matriz [N, GENOME_SIZE]
-        # float32 (nao lista de arrays), consistente com o resto do
-        # hot path (ver world.seed_lineages).
-        #
-        # INITIAL_POPULATION_PER_LINEAGE e o tamanho inicial. A
-        # reproducao pode crescer uma linhagem ate
-        # MAX_POPULATION_PER_LINEAGE.
-        agent["pool"] = random_population(cfg.INITIAL_POPULATION_PER_LINEAGE)
-    place_initially()
-    fill_fields()
-
-    # Gera as zonas ambientais no inicio da run.
-    state.zones = generate_zones()
-
-    state.mutation_rate = cfg.INITIAL_MUTATION_RATE
-    state.mutated_genes = cfg.INITIAL_MUTATED_GENES
-    state.local_scale_fraction = int(cfg.LOCAL_SCALE_FRACTION * 100)
-    state.ticks_per_frame = 1
-    # Comeca com mutacao selecionada, para as setas terem um alvo
-    # desde o primeiro frame.
-    state.active_param = cfg.PARAM_MUTATION
 
 
 def run_headless(
@@ -400,6 +343,13 @@ def run() -> None:
     # registra os paineis. Headless nunca chama isto; importar
     # panels_defs nao altera estado global.
     ui_state.reset()
+
+    # Prefs do operador, apos os defaults de UI. Ordem importa:
+    # ui_state.reset() restaura floating_hud_visible=True; se
+    # prefs.load() viesse antes, o reset sobrescreveria o valor
+    # carregado. Headless nao chama prefs.load() (invariante 3).
+    prefs.load()
+
     register_default_panels()
 
     init()
@@ -419,11 +369,11 @@ def run() -> None:
         rendering.toggle_fullscreen()
         return DispatchResult.continue_(redraw=True)
 
-    def _adapter_escape() -> DispatchResult:
-        if ui_state.active_panel != ui_state.PANEL_WORLD:
-            ui_state.set_active_panel(ui_state.PANEL_WORLD)
-            return DispatchResult.continue_(redraw=True)
-        return DispatchResult.exit_()
+    # ESC nao possui adapter: a politica (voltar ao world / abrir
+    # confirm_exit) e estrutural do dispatcher, em
+    # input_dispatcher._handle_escape. Registrar um adapter externo
+    # reabriria a possibilidade de ignorar o modal, que foi
+    # exatamente a regressao corrigida.
 
     def _adapter_mouse(pos: tuple[int, int]) -> DispatchResult:
         world_pos = rendering.screen_to_world(pos)
@@ -443,35 +393,80 @@ def run() -> None:
         return DispatchResult.continue_(redraw=True)
 
     def _adapter_toggle_floating_hud() -> DispatchResult:
+        before = ui_state.floating_hud_visible
         ui_state.toggle_floating_hud()
+        if ui_state.floating_hud_visible != before:
+            prefs.mark_dirty()
         return DispatchResult.continue_(redraw=True)
 
+    def _adapter_reset_camera() -> DispatchResult:
+        """Ctrl+0: retorna a camera ao estado canonico (1x, origem).
+
+        Delega a rendering.reset_camera(), que devolve True somente
+        quando a camera estava fora do estado canonico. Redraw
+        reflete essa mudanca: se ja estava em 1x/origem, e no-op.
+        """
+        changed = rendering.reset_camera()
+        return DispatchResult.continue_(redraw=changed)
+
     def _adapter_wheel(
-        notches: int, pos: tuple[int, int]
+        notches: int,
+        pos: tuple[int, int],
+        modifiers: int,
     ) -> DispatchResult:
+        """Politica de wheel: sidebar vs zoom vs no-op.
+
+        Prioridade (nesta ordem):
+
+          1. Mouse sobre a sidebar -> scroll do painel. Ctrl NAO muda
+             essa prioridade: Ctrl+wheel sobre a sidebar continua
+             rolando o painel. A sidebar e uma regiao fisica de UI e
+             o zoom nao invade esse dominio.
+
+          2. Mouse fora da sidebar + Ctrl pressionado -> zoom ancorado
+             no cursor via rendering.apply_zoom_at. O rendering decide
+             se o ponto e valido (dentro do viewport do mundo) e se o
+             zoom mudou; o adapter apenas converte a resposta em
+             redraw.
+
+          3. Mouse fora da sidebar sem Ctrl -> no-op. Pan nao existe
+             nesta etapa.
+        """
         screen_w, _ = _pg.display.get_surface().get_size()
         mx, _my = pos
-        if mx < screen_w - cfg.INSPECTION_PANEL_WIDTH:
-            return DispatchResult.continue_(redraw=False)
-        panel_id = (
-            ui_state.active_panel
-            if ui_state.active_panel != ui_state.PANEL_WORLD
-            else ui_state.last_panel
-        )
-        current = ui_state.panel_scroll_offsets.get(panel_id, 0)
-        WHEEL_STEP = 30
-        ui_state.panel_scroll_offsets[panel_id] = max(
-            0, current - notches * WHEEL_STEP
-        )
-        return DispatchResult.continue_(redraw=True)
+
+        # Caso A: sidebar tem precedencia absoluta. Ctrl nao muda
+        # isso.
+        if mx >= screen_w - cfg.INSPECTION_PANEL_WIDTH:
+            panel_id = (
+                ui_state.active_panel
+                if ui_state.active_panel != ui_state.PANEL_WORLD
+                else ui_state.last_panel
+            )
+            current = ui_state.panel_scroll_offsets.get(panel_id, 0)
+            WHEEL_STEP = 30
+            ui_state.panel_scroll_offsets[panel_id] = max(
+                0, current - notches * WHEEL_STEP
+            )
+            return DispatchResult.continue_(redraw=True)
+
+        # Caso B: Ctrl+wheel sobre o mundo -> zoom.
+        if modifiers & _pg.KMOD_CTRL:
+            changed = rendering.apply_zoom_at(pos, notches)
+            return DispatchResult.continue_(redraw=changed)
+
+        # Caso C: wheel puro sobre o mundo -> no-op.
+        return DispatchResult.continue_(redraw=False)
 
     input_dispatcher.register_step_handler(_adapter_step)
     input_dispatcher.register_space_handler(_adapter_space)
     input_dispatcher.register_fullscreen_handler(_adapter_fullscreen)
-    input_dispatcher.register_escape_handler(_adapter_escape)
     input_dispatcher.register_mouse_handler(_adapter_mouse)
     input_dispatcher.register_resize_handler(_adapter_resize)
     input_dispatcher.register_wheel_handler(_adapter_wheel)
+    # Autoridade geometrica das tabs e rendering.panel_tab_at(). O
+    # dispatcher so consulta; nao conhece coordenadas.
+    input_dispatcher.register_tab_hit_test_handler(rendering.panel_tab_at)
 
     # Accelerators globais. Registrados aqui para o dispatcher
     # permanecer neutro quanto a dominios de UI. pygame e importado
@@ -480,7 +475,6 @@ def run() -> None:
     from . import controls
 
     input_dispatcher.register_global_action(_pg.K_r, controls.action_recreate)
-    input_dispatcher.register_global_action(_pg.K_l, controls.action_load)
     input_dispatcher.register_global_action(_pg.K_n, controls.action_cycle_save_slot)
     input_dispatcher.register_global_action(_pg.K_p, controls.action_print_state)
     input_dispatcher.register_global_action(_pg.K_z, controls.action_toggle_zones)
@@ -490,24 +484,63 @@ def run() -> None:
     input_dispatcher.register_global_action(
         _pg.K_h, _adapter_toggle_floating_hud
     )
+    # Save / Load com modificador. Ctrl+S substitui o antigo L->load
+    # global. L sem Ctrl nao executa nada (nao ha registro).
+    input_dispatcher.register_global_action(
+        _pg.K_s, controls.action_save, modifiers=_pg.KMOD_CTRL
+    )
+    input_dispatcher.register_global_action(
+        _pg.K_l, controls.action_load, modifiers=_pg.KMOD_CTRL
+    )
+    # Ctrl+0: reset da camera. Tecla nao estrutural: o accelerator
+    # generico cuida do roteamento. Nao ha alias (KP0, HOME, R
+    # continuam com seus significados atuais).
+    input_dispatcher.register_global_action(
+        _pg.K_0, _adapter_reset_camera, modifiers=_pg.KMOD_CTRL
+    )
 
     draw()
+
+    # Acumulador de credito fracionario do scheduler de velocidade.
+    # Estado interno do loop grafico: nao vai para state.py, nao e
+    # checkpoint, nao e RuntimeRules. Persiste entre iteracoes da
+    # mesma execucao; pausa e resume preservam o remainder.
+    tick_credit = 0.0
 
     while True:
         result = input_dispatcher.process_events()
 
         if result.flow is Flow.EXIT:
+            # Flush final: ignora _save_failure_suppressed (retry
+            # unico no shutdown), mas nunca _write_allowed.
+            prefs.save_if_dirty(force=True)
             shutdown()
             return
 
         needs_draw = result.redraw
 
+        # Expira a notice em tempo de interface, nao em tempo de
+        # simulacao: roda incondicionalmente a cada iteracao para a
+        # notice sumir no prazo mesmo com a simulacao pausada.
+        if ui_state.expire_notice_if_needed():
+            needs_draw = True
+
         if not state.paused:
-            for _ in range(state.ticks_per_frame):
+            steps_due, tick_credit = _advance_tick_credit(
+                tick_credit,
+                state.simulation_speed,
+            )
+
+            for _ in range(steps_due):
                 step()
+
             needs_draw = True
 
         if needs_draw:
             draw()
+
+        # Flush por frame. Barato enquanto clean; falha nao dispara
+        # retry em loop (ver _save_failure_suppressed em prefs.py).
+        prefs.save_if_dirty()
 
         tick_fps()

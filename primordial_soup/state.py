@@ -9,6 +9,12 @@ from typing import Any, Mapping, Sequence
 import numpy as np
 
 from . import config as cfg
+from .runtime_rules import (
+    RuntimeRules,
+    default_runtime_rules,
+    updated_runtime_rules,
+    validate_runtime_rules,
+)
 
 # agents[i] = {"id", "color", "pool": ndarray [N, GENOME_SIZE],
 #              "agents": ndarray [N, AGENT_COLUMNS],
@@ -18,24 +24,112 @@ from . import config as cfg
 # em portugues do savegame acontece so em persistence.py.
 agents: list[dict[str, Any]] = []
 
-mutation_rate: int = 0
-mutated_genes: int = 0
-# Fracao de genes afetada pela escala local (em %). So usada em
-# "two_scales"; a escala global usa GLOBAL_SCALE_FRACTION.
-local_scale_fraction: int = int(cfg.LOCAL_SCALE_FRACTION * 100)
+# Fonte unica das regras runtime ajustaveis em execucao. Substitui
+# as antigas variaveis module-level mutation_rate / mutated_genes /
+# local_scale_fraction. Alteracoes passam por set_runtime_rules /
+# update_runtime_rules; o dataclass e frozen, entao nao ha mutacao
+# parcial in-place.
+runtime_rules: RuntimeRules = default_runtime_rules()
 
 # Mascara booleana [WORLD_WIDTH, WORLD_HEIGHT] das zonas ambientais.
 # None significa mundo homogeneo.
 zones: np.ndarray | None = None
 
+# Centros dos ninhos, um por linhagem, na ordem canonica definida por
+# cfg.LINEAGES (0 -> R, 1 -> G, 2 -> B). Tuple imutavel: a geometria
+# dos ninhos e fixa durante a run.
+#
+# None significa "geometria ainda nao inicializada" (estado
+# pre-bootstrap). Apos bootstrap_new_world() ou load() bem-sucedido,
+# ha exatamente TOTAL_LINEAGES centros. NAO usar
+# ((0,0),(0,0),(0,0)) como placeholder: None e o contrato de
+# "ausente", a tupla de 3 centros e o contrato de "presente".
+nests: tuple[tuple[int, int], ...] | None = None
+
 zones_active: bool = True
 
-# Efeito de HP por tick para bichos dentro de zona.
-# Inicializado de cfg.HP_EFFECT_IN_ZONE; ajustado em runtime com E +
-# setas. Positivo = bonus (refugio); negativo = dano (armadilha).
-# Persistido em "efeito_hp_zonas" (opcional; default cfg).
-# Nao resetado por reset_counters(): preferencia do operador.
-zone_hp_effect: int = int(cfg.HP_EFFECT_IN_ZONE)
+# O efeito de HP por tick dentro de zona vive em runtime_rules
+# (runtime_rules.zone_hp_effect). A mascara em si continua em
+# state.zones, e o toggle em state.zones_active.
+
+def set_runtime_rules(new_rules: RuntimeRules) -> None:
+    """Substitui o RuntimeRules ativo. Valida antes de qualquer escrita.
+
+    Contrato:
+        1. validar new_rules;
+        2. somente depois substituir state.runtime_rules.
+
+    Se a validacao falhar, o objeto antigo permanece intacto.
+    """
+    validate_runtime_rules(new_rules)
+
+    global runtime_rules
+    runtime_rules = new_rules
+
+
+def update_runtime_rules(**changes) -> RuntimeRules:
+    """Aplica mudancas sobre o RuntimeRules atual e devolve o novo.
+
+    Porta normal para handlers de UI e para intervencoes em runtime.
+    Le state.runtime_rules, constroi um candidate com as mudancas,
+    valida e substitui atomicamente. Retorna o objeto em vigor (ja
+    com as mudancas).
+
+    Se o candidate for igual ao runtime_rules atual, e no-op de
+    identidade: nada e substituido, e o cooldown nao e tocado.
+
+    Coordenacao com o scheduler reprodutivo:
+
+    reproduction_interval e uma LEI (quantos ticks entre turnos),
+    enquanto reproduction_cooldown e a FASE ATUAL do scheduler. Ao
+    alterar o intervalo em runtime, a fase precisa permanecer
+    coerente com a nova lei:
+
+        new_cooldown = min(cooldown_atual, novo_interval)
+
+    Interpretacao:
+      - Reduzir o intervalo (ex.: 150 -> 30): se o cooldown atual
+        (117) exceder o novo intervalo, ele e derrubado para 30. Isso
+        antecipa o proximo turno, o que e coerente com "turnos
+        ficaram mais frequentes".
+      - Aumentar o intervalo (ex.: 30 -> 300): se o cooldown atual
+        (7) for menor que o novo intervalo, ele permanece em 7. O
+        turno ja proximo nao e postergado apenas porque a lei mudou.
+      - Cooldown zero: permanece zero. O turno disponivel continua
+        disponivel.
+
+    A ordem e importante: candidate validado primeiro, so entao
+    commit. Se a validacao falhar, nem runtime_rules nem
+    reproduction_cooldown sao tocados.
+
+    Esta funcao NAO e usada pelo loader: restauracao de checkpoint
+    chama set_runtime_rules() seguido de atribuicao direta de
+    cooldown/turn, sem reinterpretar a lei salva como intervencao
+    hot. Ver persistence.load().
+    """
+    global reproduction_cooldown
+
+    current = runtime_rules
+    candidate = updated_runtime_rules(current, **changes)
+
+    if candidate is current:
+        # No-op de identidade propagado: nem rules nem cooldown
+        # mudam.
+        return current
+
+    new_cooldown = reproduction_cooldown
+
+    if candidate.reproduction_interval != current.reproduction_interval:
+        new_cooldown = min(
+            reproduction_cooldown,
+            candidate.reproduction_interval,
+        )
+
+    set_runtime_rules(candidate)
+    reproduction_cooldown = new_cooldown
+
+    return runtime_rules
+
 
 # Contador global de identidade. Toda criatura recebe um ID unico,
 # monotonico e persistente, independente da posicao no ndarray.
@@ -63,7 +157,12 @@ tick_count: int = 0
 last_print: int = 0
 paused: bool = True
 
-ticks_per_frame: int = 1
+# Multiplicador de velocidade da simulacao. 1.0 = 1 tick por frame
+# grafico (semantica historica). Valores < 1.0 espacam ticks ao longo
+# de varios frames; valores > 1.0 executam multiplos ticks por frame.
+# Estado operacional do operador, nao pertence a RuntimeRules nem ao
+# checkpoint. A enum de valores selecionaveis vive em panels_defs.
+simulation_speed: float = 1.0
 
 births: int = 0
 deaths: int = 0
@@ -100,11 +199,6 @@ reproduction_turn: int = 0
 metrics_history: dict[str, deque[tuple[int, tuple[float, ...]]]] = {
     name: deque(maxlen=cfg.METRICS_HISTORY_SIZE) for name in cfg.ADVANCED_METRICS
 }
-
-# Metrica exibida no chart. Indice e a posicao em cfg.ADVANCED_METRICS;
-# M cicla.
-selected_metric_index: int = 0
-selected_metric: str = cfg.ADVANCED_METRICS[0]
 
 # --- Sessao de observacao --------------------------------------
 #
@@ -224,14 +318,6 @@ def register_metrics(values: Mapping[str, Sequence[float]]) -> None:
         metrics_history[name].append((tick_count, series))
 
 
-def cycle_metric() -> str:
-    """Avanca para a proxima metrica e retorna o nome selecionado."""
-    global selected_metric_index, selected_metric
-    selected_metric_index = (selected_metric_index + 1) % len(cfg.ADVANCED_METRICS)
-    selected_metric = cfg.ADVANCED_METRICS[selected_metric_index]
-    return selected_metric
-
-
 # ---------------------------------------------------------------------------
 # Reset semantics
 # ---------------------------------------------------------------------------
@@ -244,10 +330,8 @@ def reset_counters() -> None:
 
       - `agents`            (a populacao),
       - `zones`             (o ambiente),
-      - `mutation_rate`     (ajustado pelo operador),
-      - `mutated_genes`     (ajustado pelo operador),
-      - `local_scale_fraction` (ajustado pelo operador),
-      - `ticks_per_frame`   (velocidade),
+      - `runtime_rules`     (configuracao runtime do operador),
+      - `simulation_speed`  (velocidade),
       - `paused`            (controlado pelo operador),
       - `language`          (idioma de exibicao),
       - `recording`         (gravacao em andamento).
@@ -268,14 +352,16 @@ def reset_counters() -> None:
       - inspection_death_snapshot,
       - inspected_trail,
       - metrics_history,
-      - selected_metric_index / selected_metric,
       - zones_active (volta ao default ON, porque R regenera as
         zonas; manter "zonas escondidas" da run antiga seria
         inconsistente).
+
+    Preferencias de visualizacao (discovery_criterion,
+    discovery_lineage_filter) nao sao resetadas: pertencem ao
+    operador, nao a run.
     """
     global tick_count, last_print, births, deaths
     global inspected_critter_id, inspection_death_snapshot
-    global selected_metric_index, selected_metric
     global zones_active
     global reproduction_cooldown, reproduction_turn
     global next_critter_id
@@ -317,10 +403,6 @@ def reset_counters() -> None:
     # --- Trail ---
     # A sessao foi encerrada acima; o trail vai junto.
     inspected_trail.clear()
-
-    # --- Selecao de metrica ---
-    selected_metric_index = 0
-    selected_metric = cfg.ADVANCED_METRICS[0]
 
     # --- Gravacao ---
     # NAO resetada por design: o gravador e ferramenta, nao estado da

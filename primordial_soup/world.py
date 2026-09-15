@@ -7,6 +7,7 @@ import numpy as np
 
 from . import config as cfg
 from . import layout
+from . import nest_geometry
 from .state import agents
 
 
@@ -40,8 +41,8 @@ def format_zones_txt() -> str:
     rendering._draw_hud e controls.print_state, que divergiriam agora
     que o efeito de HP e ajustavel em runtime.
 
-    Le state.zone_hp_effect (nao cfg.HP_EFFECT_IN_ZONE) para o valor
-    exibido sempre bater com a mecanica ativa.
+    Le state.runtime_rules.zone_hp_effect (nao cfg.HP_EFFECT_IN_ZONE)
+    para o valor exibido sempre bater com a mecanica ativa.
     """
     from . import i18n
     from . import state
@@ -49,7 +50,7 @@ def format_zones_txt() -> str:
     if state.zones is None:
         return i18n.t("hud.zones_none")
 
-    effect = int(state.zone_hp_effect)
+    effect = int(state.runtime_rules.zone_hp_effect)
     sign = "+" if effect >= 0 else ""
     txt = i18n.t(
         "hud.zones_fmt",
@@ -116,6 +117,114 @@ def generate_zones() -> np.ndarray | None:
         mask |= dist2 <= r2
 
     return mask
+
+
+def generate_nests(
+    zones: np.ndarray | None,
+) -> tuple[tuple[int, int], ...]:
+    """Sorteia exatamente um centro de ninho por linhagem.
+
+    Retorna tuple na ordem canonica de cfg.LINEAGES (0 -> R, 1 -> G,
+    2 -> B). Cada centro e (x, y) int Python dentro do mundo.
+
+    Usa exclusivamente o RNG global da stdlib (random), exatamente
+    como generate_zones(). O estado desse RNG ja e persistido pelo
+    savegame; usar outra fonte tornaria o bootstrap nao-reproduzivel
+    com --seed.
+
+    `zones`:
+        None       -> nao ha zonas a evitar (regra de zona desativada).
+        ndarray    -> dtype bool e shape
+                      (layout.LAYOUT.world_width,
+                       layout.LAYOUT.world_height).
+                      Shape/estrutura invalida e erro de programacao
+                      do chamador: ValueError.
+
+    Restricoes por candidato:
+
+        1. o DISCO inteiro do ninho nao pode intersectar nenhuma zona;
+        2. o DISCO nao pode compartilhar nenhuma celula com outro
+           ninho ja aceito.
+
+    Zonas avaliadas mesmo quando state.zones_active e False: a mascara
+    define area geometria do mundo; o toggle controla somente efeito
+    e renderizacao.
+
+    Falha ruidosamente (RuntimeError) se uma linhagem esgotar
+    cfg.MAX_NEST_PLACEMENT_ATTEMPTS candidatos. A funcao NAO muta
+    state, NAO escreve nada em disco e NAO usa np.random.
+    """
+    width = layout.LAYOUT.world_width
+    height = layout.LAYOUT.world_height
+
+    if zones is not None:
+        zones_arr = np.asarray(zones)
+        if zones_arr.ndim != 2:
+            raise ValueError(
+                "generate_nests: zones deve ser 2-D, "
+                f"recebido ndim={zones_arr.ndim}."
+            )
+        if zones_arr.dtype != np.bool_:
+            raise ValueError(
+                "generate_nests: zones deve ter dtype=bool, "
+                f"recebido {zones_arr.dtype}."
+            )
+        expected_shape = (width, height)
+        if zones_arr.shape != expected_shape:
+            raise ValueError(
+                "generate_nests: zones.shape deve ser "
+                f"{expected_shape}, recebido {zones_arr.shape}."
+            )
+
+    centers: list[tuple[int, int]] = []
+
+    for lineage in cfg.LINEAGES:
+        placed = False
+        for _attempt in range(cfg.MAX_NEST_PLACEMENT_ATTEMPTS):
+            candidate = (
+                random.randrange(width),
+                random.randrange(height),
+            )
+
+            if zones is not None and nest_geometry.nest_intersects_zone(
+                candidate,
+                zones,
+                radius=cfg.NEST_RADIUS,
+            ):
+                continue
+
+            overlaps = any(
+                nest_geometry.nests_overlap(
+                    candidate,
+                    existing,
+                    width=width,
+                    height=height,
+                    radius=cfg.NEST_RADIUS,
+                )
+                for existing in centers
+            )
+            if overlaps:
+                continue
+
+            centers.append(candidate)
+            placed = True
+            break
+
+        if not placed:
+            raise RuntimeError(
+                f"generate_nests: unable to place nest for lineage "
+                f"{lineage['id']!r} after "
+                f"{cfg.MAX_NEST_PLACEMENT_ATTEMPTS} attempts "
+                f"(NEST_RADIUS={cfg.NEST_RADIUS}, "
+                f"world={width}x{height}, zones={'yes' if zones is not None else 'no'})."
+            )
+
+    assert len(centers) == cfg.TOTAL_LINEAGES, (
+        f"generate_nests: colocou {len(centers)} centros, "
+        f"esperado {cfg.TOTAL_LINEAGES}."
+    )
+
+    return tuple(centers)
 
 
 def _initial_record(
@@ -253,24 +362,6 @@ def fill_fields() -> None:
         np.add.at(agent["field"], (xs, ys), 1)
 
 
-def fill_fields_incremental(agent: dict, matrix_subset: np.ndarray) -> None:
-    """Adiciona um subconjunto (tipicamente os recem-nascidos) ao campo.
-
-    Usado por evolution.punish_reward_and_reproduce para evitar
-    reconstruir o campo inteiro no fim do tick. O chamador DEVE ter
-    chamado fill_fields() antes no mesmo tick (apos movimento, antes
-    da punicao); esta funcao apenas ADICIONA os recem-nascidos.
-
-    `matrix_subset` e ndarray [K, AGENT_COLUMNS] float32. K == 0 e
-    no-op.
-    """
-    if matrix_subset.size == 0:
-        return
-    xs = matrix_subset[:, INDEX_X].astype(np.int64)
-    ys = matrix_subset[:, INDEX_Y].astype(np.int64)
-    np.add.at(agent["field"], (xs, ys), 1)
-
-
 def population_per_lineage() -> list[int]:
     return [len(ag["agents"]) for ag in agents]
 
@@ -318,10 +409,10 @@ def average_composite_score_per_lineage() -> list[float]:
 
     Zero se extinta. Usado apenas para diagnostico no HUD.
 
-    O score de *selecao* e calculado uma vez por tick por linhagem em
-    evolution.punish_reward_and_reproduce, logo apos a compactacao dos
-    sobreviventes, e escrito em INDEX_COMPOSITE_SCORE. _select_parents
-    apenas o le. O valor lido aqui esta sempre atual para o tick.
+    O score de selecao e atualizado uma vez por tick, apos a
+    resolucao ecologica e antes da reproducao, e escrito em
+    INDEX_COMPOSITE_SCORE. O valor lido aqui esta sempre atual para
+    o tick.
     """
     averages: list[float] = []
     for ag in agents:
@@ -574,17 +665,31 @@ def _select_by_criterion(
     return best
 
 
-def _criterion_primary_value(criterion: str, row: np.ndarray) -> float:
-    """Escalar usado para comparar vencedores de linhagens diferentes.
+def discovery_criterion_value(criterion: str, row: np.ndarray) -> float:
+    """Valor HUMANO do criterio para uma linha de agente.
 
-    Maior e sempre melhor. Para "youngest" e "lowest_hp" o valor
-    subjacente e negado para que a mesma comparacao "maior e melhor"
-    funcione uniformemente.
+    Retorna o numero bruto correspondente ao criterio, SEM inversao
+    de sinal. Este e o valor que a UI deve exibir ao usuario ("tempo:
+    1240", "hp: 8700", "geracao: 42"). Nao e o escalar usado para
+    ranking.
+
+    Para criterios cujo extremo desejado e o menor (youngest,
+    lowest_hp), o ranking interno usa _criterion_primary_value, que
+    nega este valor para manter a comparacao "maior e melhor"
+    uniforme. A UI nao: ela mostra o valor real, para o operador ler
+    "tempo: 120" e nao "tempo: -120".
+
+    Contrato:
+      - row: ndarray [AGENT_COLUMNS] da linha do agente
+      - retorno: float nao-negativo (todos os campos sao contadores,
+        tempos, hps ou scores >= 0)
+      - criterio desconhecido cai no score composto (mesmo fallback
+        de _criterion_primary_value)
     """
     if criterion == "oldest":
         return float(row[INDEX_TIME])
     if criterion == "youngest":
-        return -float(row[INDEX_TIME])
+        return float(row[INDEX_TIME])
     if criterion == "most_offspring":
         return float(row[INDEX_OFFSPRING])
     if criterion == "most_encounters":
@@ -594,7 +699,7 @@ def _criterion_primary_value(criterion: str, row: np.ndarray) -> float:
     if criterion == "highest_hp":
         return float(row[INDEX_HP])
     if criterion == "lowest_hp":
-        return -float(row[INDEX_HP])
+        return float(row[INDEX_HP])
     if criterion == "highest_generation":
         return float(row[INDEX_GENERATION])
     if criterion == "best_score":
@@ -602,6 +707,19 @@ def _criterion_primary_value(criterion: str, row: np.ndarray) -> float:
     # "most_evolved" e qualquer criterio desconhecido caem no score
     # composto.
     return float(row[INDEX_COMPOSITE_SCORE])
+
+
+def _criterion_primary_value(criterion: str, row: np.ndarray) -> float:
+    """Escalar usado para comparar vencedores de linhagens diferentes.
+
+    Maior e sempre melhor. Para "youngest" e "lowest_hp" o valor
+    humano (discovery_criterion_value) e negado para que a mesma
+    comparacao "maior e melhor" funcione uniformemente.
+    """
+    human = discovery_criterion_value(criterion, row)
+    if criterion in ("youngest", "lowest_hp"):
+        return -human
+    return human
 
 
 def discovery_candidate(

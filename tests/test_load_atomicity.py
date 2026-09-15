@@ -10,6 +10,7 @@ import numpy as np
 import pytest
 
 from primordial_soup import config as cfg
+from primordial_soup import layout
 from primordial_soup import state
 from primordial_soup import world
 from primordial_soup.world import (
@@ -20,13 +21,42 @@ from primordial_soup.world import (
 from primordial_soup.state import agents
 
 
+def _valid_test_nests():
+    """Geometria deterministica de ninhos valida para o contrato v21."""
+    radius = cfg.NEST_RADIUS
+    y = radius + 1
+    stride = 2 * radius + 1
+    return (
+        (radius + 1, y),
+        (radius + 1 + stride, y),
+        (radius + 1 + 2 * stride, y),
+    )
+
+
+def _install_checkpoint_geometry():
+    """Instala zones vazias e nests determinísticos.
+
+    Nao consome RNG: fixtures de persistence nao devem alterar a
+    sequencia aleatoria global so por preparar um checkpoint.
+    """
+    state.zones = np.zeros(
+        (layout.LAYOUT.world_width, layout.LAYOUT.world_height),
+        dtype=bool,
+    )
+    state.nests = _valid_test_nests()
+
+
 @pytest.fixture
 def fresh_world():
-    """Populacao limpa com 3 linhagens e IDs alocados.
+    """Populacao limpa com 3 linhagens, IDs alocados e geometry.
 
     O pool precisa ter o mesmo tamanho de agents/ids: deixar (0, G)
     aqui criaria um estado impossivel no runtime (agents=50, ids=50,
     pool=0) e quebraria os testes de compactacao e de save/load.
+
+    Geometry e instalada explicitamente: o checkpoint v21 exige zones
+    e nests validos. Fixtures que salvam mundo manual precisam de um
+    runtime checkpointavel deterministico.
     """
     state.reset_counters()
     seed_lineages()
@@ -36,8 +66,11 @@ def fresh_world():
             dtype=np.float32,
         )
     place_initially()
+    _install_checkpoint_geometry()
     yield
     state.reset_counters()
+    state.zones = None
+    state.nests = None
     agents.clear()
 
 
@@ -46,6 +79,8 @@ def _isolate_state():
     estado residual. Usado depois de salvar um save valido, para que o
     proprio load de teste parta de um runtime limpo."""
     state.reset_counters()
+    state.zones = None
+    state.nests = None
     agents.clear()
     seed_lineages()
     for ag in agents:
@@ -63,7 +98,7 @@ def test_load_rejects_missing_ids(fresh_world, tmp_path):
     from primordial_soup import persistence
 
     path = tmp_path / "save.pkl"
-    persistence.save(str(path))
+    assert persistence.save(str(path)) is True
 
     with open(path, "rb") as f:
         data = pickle.load(f)
@@ -80,7 +115,7 @@ def test_load_rejects_missing_proximo_id(fresh_world, tmp_path):
     from primordial_soup import persistence
 
     path = tmp_path / "save.pkl"
-    persistence.save(str(path))
+    assert persistence.save(str(path)) is True
 
     with open(path, "rb") as f:
         data = pickle.load(f)
@@ -96,7 +131,7 @@ def test_load_rejects_duplicate_ids(fresh_world, tmp_path):
     from primordial_soup import persistence
 
     path = tmp_path / "save.pkl"
-    persistence.save(str(path))
+    assert persistence.save(str(path)) is True
 
     with open(path, "rb") as f:
         data = pickle.load(f)
@@ -113,7 +148,7 @@ def test_load_rejects_proximo_id_too_small(fresh_world, tmp_path):
     from primordial_soup import persistence
 
     path = tmp_path / "save.pkl"
-    persistence.save(str(path))
+    assert persistence.save(str(path)) is True
 
     with open(path, "rb") as f:
         data = pickle.load(f)
@@ -129,7 +164,7 @@ def test_load_rejects_id_length_mismatch(fresh_world, tmp_path):
     from primordial_soup import persistence
 
     path = tmp_path / "save.pkl"
-    persistence.save(str(path))
+    assert persistence.save(str(path)) is True
 
     with open(path, "rb") as f:
         data = pickle.load(f)
@@ -146,7 +181,7 @@ def test_load_rejects_wrong_lineage_count(fresh_world, tmp_path):
     from primordial_soup import persistence
 
     path = tmp_path / "save.pkl"
-    persistence.save(str(path))
+    assert persistence.save(str(path)) is True
 
     with open(path, "rb") as f:
         data = pickle.load(f)
@@ -163,7 +198,7 @@ def test_load_rejects_pool_width_mismatch(fresh_world, tmp_path):
     from primordial_soup import persistence
 
     path = tmp_path / "save.pkl"
-    persistence.save(str(path))
+    assert persistence.save(str(path)) is True
 
     with open(path, "rb") as f:
         data = pickle.load(f)
@@ -183,7 +218,7 @@ def test_load_rejects_agents_width_mismatch(fresh_world, tmp_path):
     from primordial_soup import persistence
 
     path = tmp_path / "save.pkl"
-    persistence.save(str(path))
+    assert persistence.save(str(path)) is True
 
     with open(path, "rb") as f:
         data = pickle.load(f)
@@ -203,7 +238,7 @@ def test_load_rejects_ids_rank_mismatch(fresh_world, tmp_path):
     from primordial_soup import persistence
 
     path = tmp_path / "save.pkl"
-    persistence.save(str(path))
+    assert persistence.save(str(path)) is True
 
     with open(path, "rb") as f:
         data = pickle.load(f)
@@ -223,7 +258,7 @@ def test_load_rejects_non_numeric_ids(fresh_world, tmp_path):
     from primordial_soup import persistence
 
     path = tmp_path / "save.pkl"
-    persistence.save(str(path))
+    assert persistence.save(str(path)) is True
 
     with open(path, "rb") as f:
         data = pickle.load(f)
@@ -241,7 +276,7 @@ def test_load_rejects_non_numeric_proximo_id(fresh_world, tmp_path):
     from primordial_soup import persistence
 
     path = tmp_path / "save.pkl"
-    persistence.save(str(path))
+    assert persistence.save(str(path)) is True
 
     with open(path, "rb") as f:
         data = pickle.load(f)
@@ -268,7 +303,7 @@ def test_load_rejects_non_integral_float_ids(fresh_world, tmp_path):
     from primordial_soup import persistence
 
     path = tmp_path / "save.pkl"
-    persistence.save(str(path))
+    assert persistence.save(str(path)) is True
 
     with open(path, "rb") as f:
         data = pickle.load(f)
@@ -286,7 +321,7 @@ def test_load_rejects_bool_ids(fresh_world, tmp_path):
     from primordial_soup import persistence
 
     path = tmp_path / "save.pkl"
-    persistence.save(str(path))
+    assert persistence.save(str(path)) is True
 
     with open(path, "rb") as f:
         data = pickle.load(f)
@@ -303,7 +338,7 @@ def test_load_rejects_zero_ids(fresh_world, tmp_path):
     from primordial_soup import persistence
 
     path = tmp_path / "save.pkl"
-    persistence.save(str(path))
+    assert persistence.save(str(path)) is True
 
     with open(path, "rb") as f:
         data = pickle.load(f)
@@ -320,7 +355,7 @@ def test_load_rejects_invalid_version_string(fresh_world, tmp_path):
     from primordial_soup import persistence
 
     path = tmp_path / "save.pkl"
-    persistence.save(str(path))
+    assert persistence.save(str(path)) is True
 
     with open(path, "rb") as f:
         data = pickle.load(f)
@@ -338,7 +373,7 @@ def test_load_rejects_explicit_none_mutation(fresh_world, tmp_path):
     from primordial_soup import persistence
 
     path = tmp_path / "save.pkl"
-    persistence.save(str(path))
+    assert persistence.save(str(path)) is True
 
     with open(path, "rb") as f:
         data = pickle.load(f)
@@ -355,7 +390,7 @@ def test_load_rejects_non_integral_tick(fresh_world, tmp_path):
     from primordial_soup import persistence
 
     path = tmp_path / "save.pkl"
-    persistence.save(str(path))
+    assert persistence.save(str(path)) is True
 
     with open(path, "rb") as f:
         data = pickle.load(f)
@@ -377,7 +412,7 @@ def test_load_rejects_out_of_bounds_xy(fresh_world, tmp_path):
     from primordial_soup import persistence
 
     path = tmp_path / "save.pkl"
-    persistence.save(str(path))
+    assert persistence.save(str(path)) is True
 
     with open(path, "rb") as f:
         data = pickle.load(f)
@@ -397,7 +432,7 @@ def test_load_rejects_non_integral_xy(fresh_world, tmp_path):
     from primordial_soup import persistence
 
     path = tmp_path / "save.pkl"
-    persistence.save(str(path))
+    assert persistence.save(str(path)) is True
 
     with open(path, "rb") as f:
         data = pickle.load(f)
@@ -447,16 +482,18 @@ def test_failed_load_does_not_mutate_runtime_state(fresh_world, tmp_path):
     from primordial_soup import persistence
 
     # --- 1. Runtime conhecido, deliberadamente diferente do save ---
-    state.mutation_rate = 7
-    state.mutated_genes = 3
-    state.local_scale_fraction = 42
+    state.update_runtime_rules(
+        mutation_rate=7,
+        mutated_genes=3,
+        local_scale_fraction=42,
+        zone_hp_effect=5,
+    )
     state.tick_count = 123
     state.last_print = 123
     state.births = 9
     state.deaths = 4
     state.next_critter_id = 4242
     state.zones_active = True
-    state.zone_hp_effect = 5
 
     # Sessao de inspecao ativa, com trail e tudo.
     cid = int(agents[0]["ids"][0])
@@ -469,18 +506,21 @@ def test_failed_load_does_not_mutate_runtime_state(fresh_world, tmp_path):
     state.metrics_history["populacao"].append((0, (1.0, 1.0, 1.0)))
 
     # Snapshot de conteudo (para comparacao por valor).
+    rules_before = state.runtime_rules
     before = {
-        "mutation_rate": state.mutation_rate,
-        "mutated_genes": state.mutated_genes,
-        "local_scale_fraction": state.local_scale_fraction,
+        "mutation_rate": state.runtime_rules.mutation_rate,
+        "mutated_genes": state.runtime_rules.mutated_genes,
+        "local_scale_fraction": state.runtime_rules.local_scale_fraction,
+        "zone_hp_effect": state.runtime_rules.zone_hp_effect,
         "tick_count": state.tick_count,
         "last_print": state.last_print,
         "births": state.births,
         "deaths": state.deaths,
         "next_critter_id": state.next_critter_id,
         "zones_active": state.zones_active,
-        "zone_hp_effect": state.zone_hp_effect,
         "zones_id": id(state.zones),
+        "nests": state.nests,
+        "nests_id": id(state.nests),
         "inspected_critter_id": state.inspected_critter_id,
         "discovery_criterion": state.discovery_criterion,
         "discovery_lineage_filter": state.discovery_lineage_filter,
@@ -516,17 +556,26 @@ def test_failed_load_does_not_mutate_runtime_state(fresh_world, tmp_path):
     assert persistence.load(str(path)) is False
 
     # --- 4. Tudo intacto: conteudo ---
-    assert state.mutation_rate == before["mutation_rate"]
-    assert state.mutated_genes == before["mutated_genes"]
-    assert state.local_scale_fraction == before["local_scale_fraction"]
+    #
+    # Prova mais forte: load rejeitado nao substituiu nem sequer a
+    # INSTANCIA de runtime_rules. Igualdade de valores nao basta.
+    assert state.runtime_rules is rules_before
+    assert state.runtime_rules.mutation_rate == before["mutation_rate"]
+    assert state.runtime_rules.mutated_genes == before["mutated_genes"]
+    assert (
+        state.runtime_rules.local_scale_fraction
+        == before["local_scale_fraction"]
+    )
+    assert state.runtime_rules.zone_hp_effect == before["zone_hp_effect"]
     assert state.tick_count == before["tick_count"]
     assert state.last_print == before["last_print"]
     assert state.births == before["births"]
     assert state.deaths == before["deaths"]
     assert state.next_critter_id == before["next_critter_id"]
     assert state.zones_active == before["zones_active"]
-    assert state.zone_hp_effect == before["zone_hp_effect"]
     assert id(state.zones) == before["zones_id"]
+    assert state.nests == before["nests"]
+    assert id(state.nests) == before["nests_id"]
     assert state.inspected_critter_id == before["inspected_critter_id"]
     assert state.discovery_criterion == before["discovery_criterion"]
     assert state.discovery_lineage_filter == before["discovery_lineage_filter"]
@@ -567,7 +616,7 @@ def test_failed_load_does_not_consume_rng(fresh_world, tmp_path):
     from primordial_soup import persistence
 
     path = tmp_path / "invalido.pkl"
-    persistence.save(str(path))
+    assert persistence.save(str(path)) is True
     with open(path, "rb") as f:
         data = pickle.load(f)
     data["linhagens"] = data["linhagens"][:2]
@@ -591,3 +640,111 @@ def test_failed_load_does_not_consume_rng(fresh_world, tmp_path):
         "load() rejeitado consumiu draws do RNG global "
         "(generate_zones chamado no parse phase)."
     )
+# ---------------------------------------------------------------------------
+# Patch final: v20 behavior/lifecycle runtime persistence
+# ---------------------------------------------------------------------------
+
+
+def test_v21_runtime_rules_and_nests_round_trip(fresh_world, tmp_path):
+    """Roundtrip v21: RuntimeRules + nests.
+
+    Roundtrip do contrato atual: nao apenas os campos behavior, mas
+    tambem a geometria persistente (nests) precisa ser restaurada
+    identica ao que foi salvo.
+    """
+    from primordial_soup import persistence
+
+    _install_checkpoint_geometry()
+    expected_nests = state.nests
+    state.update_runtime_rules(
+        local_scale_sigma=0.25,
+        global_probability=75,
+        global_scale_fraction=40,
+        global_scale_sigma=2.0,
+        low_hp_threshold=3500,
+        stay_still_impulse=-0.5,
+        death_hp_threshold=500,
+    )
+    saved_rules = state.runtime_rules
+    path = tmp_path / "save.pkl"
+    assert persistence.save(str(path)) is True
+
+    with open(path, "rb") as f:
+        data = pickle.load(f)
+    assert data["versao"] == cfg.SAVE_VERSION
+    assert data["versao"] == 21
+    assert data["low_hp_threshold"] == 3500
+    assert data["stay_still_impulse"] == -0.5
+    assert data["death_hp_threshold"] == 500
+
+    # O save canonico externaliza nests como dict de lists.
+    r_nest, g_nest, b_nest = expected_nests
+    assert data["nests"] == {
+        "R": [r_nest[0], r_nest[1]],
+        "G": [g_nest[0], g_nest[1]],
+        "B": [b_nest[0], b_nest[1]],
+    }
+
+    state.update_runtime_rules(
+        local_scale_sigma=0.50,
+        global_probability=10,
+        global_scale_fraction=20,
+        global_scale_sigma=1.0,
+        low_hp_threshold=100,
+        stay_still_impulse=3.0,
+        death_hp_threshold=0,
+    )
+    state.nests = None
+
+    assert state.runtime_rules != saved_rules
+    assert persistence.load(str(path)) is True
+    assert state.runtime_rules == saved_rules
+    assert state.nests == expected_nests
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "low_hp_threshold",
+        "stay_still_impulse",
+        "death_hp_threshold",
+    ],
+)
+def test_v21_rejects_missing_lifecycle_runtime_field_atomically(
+    fresh_world, tmp_path, field
+):
+    from primordial_soup import persistence
+
+    path = tmp_path / "save.pkl"
+    assert persistence.save(str(path)) is True
+    with open(path, "rb") as f:
+        data = pickle.load(f)
+    del data[field]
+    with open(path, "wb") as f:
+        pickle.dump(data, f)
+
+    before = state.runtime_rules
+    assert persistence.load(str(path)) is False
+    assert state.runtime_rules is before
+
+
+def test_v20_is_rejected_without_migration(fresh_world, tmp_path):
+    """v20 e predecessor direto do schema atual; sem migration.
+
+    A politica do projeto e rejeitar tudo abaixo de SAVE_VERSION. Um
+    v20 encontrado em disco deve ser recusado de forma limpa, sem
+    tocar no runtime.
+    """
+    from primordial_soup import persistence
+
+    path = tmp_path / "save.pkl"
+    assert persistence.save(str(path)) is True
+    with open(path, "rb") as f:
+        data = pickle.load(f)
+    data["versao"] = 20
+    with open(path, "wb") as f:
+        pickle.dump(data, f)
+
+    before = state.runtime_rules
+    assert persistence.load(str(path)) is False
+    assert state.runtime_rules is before

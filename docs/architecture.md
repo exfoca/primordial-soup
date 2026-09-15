@@ -1,1252 +1,1621 @@
 # 🏗️ Architecture
 
-Primordial Soup is deliberately small.
-
-It does not use an application framework, dependency-injection
-container, entity hierarchy or object graph.
-
-The architecture is primarily:
+Primordial Soup is a small simulation, but it has one architectural problem common to much larger systems:
 
 ```text
-Python modules
-+
-NumPy arrays
-+
-one centralized mutable simulation state
-+
-a separate transient graphical navigation state
-+
-explicit simulation functions
+everything affects everything
 ```
 
-The design goal is not abstraction for its own sake. It is to keep the
-simulation understandable, fast, deterministic enough for controlled
-experiments, usable both graphically and headlessly, inspectable at the
-level of individual critters, and safe to save and restore.
+Critters move.
 
-For the simulation model itself, start with [Simulation](simulation.md).
+Movement changes spatial density.
+
+Spatial density changes ecology.
+
+Ecology changes survival.
+
+Survival changes reproduction.
+
+Reproduction changes populations.
+
+Populations change perception.
+
+And then the next tick starts.
+
+The architecture exists to keep those relationships explicit without turning the codebase into one enormous `simulation.py` with opinions about Pygame, genetics, persistence, theology, and CSV files.
 
 ---
 
-# The architecture at a glance
+## Architectural model
+
+At a high level, Primordial Soup is divided into four concerns:
 
 ```text
-                    ┌─────────────────┐
-                    │    config.py    │
-                    │ static laws     │
-                    └────────┬────────┘
-                             │
-                             ▼
-                    ┌─────────────────┐
-                    │    layout.py    │
-                    │ derived geometry│
-                    └────────┬────────┘
-                             │
-              ┌──────────────┴───────────────┐
-              │                              │
-              ▼                              ▼
-      ┌───────────────┐              ┌───────────────┐
-      │   state.py    │              │    world.py   │
-      │ mutable       │◀────────────▶│ spatial data  │
-      │ simulation    │              └───────┬───────┘
-      │ state         │                      │
-      └───────┬───────┘                      │
-              │                 ┌────────────┼────────────┐
-              │                 ▼            ▼            ▼
-              │             senses.py     movement.py   genetics.py
-              │                 │                         │
-              │                 ▼                         │
-              │              brain.py                     │
-              │                 │                         │
-              └─────────────────┴──────────┬──────────────┘
-                                           ▼
-                                   ┌───────────────┐
-                                   │ evolution.py  │
-                                   │ life cycle    │
-                                   └───────┬───────┘
-                                           │
-                                           ▼
-                                   ┌───────────────┐
-                                   │ simulation.py │
-                                   │ orchestration │
-                                   └───────┬───────┘
-                                           │
-                      ┌────────────────────┴────────────────────┐
-                      │                                         │
-                      ▼                                         ▼
-              graphical driver                           headless driver
-                      │                                         │
-            ┌─────────┴──────────┐                            cli.py
-            │                    │                              │
-      bootstrap +          input_dispatcher                     │
-      GUI state            (event routing)                     │
-            │                    │                              │
-      ui_state.py         ┌──────┴──────┐                       │
-      panels_defs.py      │             │                       │
-            │          panels.py    controls.py                 │
-            │             │             │                       │
-            └─────────────┴──────┬──────┘                       │
-                                 │                              │
-                          DispatchResult                        │
-                                 │                              │
-                                 ▼                              │
-                          rendering.py                          │
-                          recording.py                          │
-                                 │                              │
-                                 └──────────────┬───────────────┘
-                                                │
-                                                ▼
-                                        persistence.py
+┌─────────────────────────────────────┐
+│           Presentation              │
+│ UI · input · rendering · tools      │
+└─────────────────┬───────────────────┘
+                  │
+                  ▼
+┌─────────────────────────────────────┐
+│           Orchestration             │
+│ simulation · bootstrap · controls   │
+└─────────────────┬───────────────────┘
+                  │
+                  ▼
+┌─────────────────────────────────────┐
+│          Simulation model           │
+│ world · ecology · evolution         │
+│ senses · brain · movement · genetics│
+└─────────────────┬───────────────────┘
+                  │
+                  ▼
+┌─────────────────────────────────────┐
+│             State                   │
+│ state · runtime rules · geometry    │
+└─────────────────────────────────────┘
 ```
 
-`i18n.py` sits beside these layers and translates presentation
-strings. It does not redefine the simulation's canonical data
-identifiers.
+Persistence crosses these layers deliberately because a checkpoint must serialize the complete continuation state of the world.
 
-`ui_state.py` holds the transient navigation state of the graphical
-application. It is neither simulation state nor persistence state:
-nothing in it goes to a savegame, and nothing in it influences the
-evolutionary rules.
+The important rule is not strict theoretical layering.
+
+It is **clear ownership**.
 
 ---
 
-# Project map
+# 🧭 Entry points
+
+Execution begins with:
 
 ```text
-primordial_soup/
-├── __init__.py
-├── __main__.py
-├── cli.py
-├── config.py
-├── layout.py
-├── state.py
-├── ui_state.py
-├── brain.py
-├── genetics.py
-├── senses.py
-├── movement.py
-├── world.py
-├── evolution.py
-├── simulation.py
-├── rendering.py
-├── panels.py
-├── panels_defs.py
-├── input_dispatcher.py
-├── controls.py
-├── persistence.py
-├── i18n.py
-└── recording.py
+python -m primordial_soup
+```
+
+The path is:
+
+```text
+__main__.py
+    ↓
+cli.main()
+```
+
+The CLI chooses between two execution modes:
+
+```text
+graphical
+headless
+```
+
+Both eventually use the same:
+
+```text
+simulation.step()
+```
+
+This is a central architectural invariant.
+
+There is one simulation.
+
+There are two ways to operate it.
+
+---
+
+## Graphical mode
+
+The graphical composition path is approximately:
+
+```text
+cli.main()
+    ↓
+simulation.run()
+    ↓
+bootstrap_new_world()
+    ↓
+initialize UI
+    ↓
+register panels
+    ↓
+initialize rendering
+    ↓
+register input adapters
+    ↓
+event loop
+```
+
+The graphical loop then repeats:
+
+```text
+process input
+    ↓
+advance simulation if running
+    ↓
+redraw if necessary
+    ↓
+flush operator preferences
+    ↓
+limit frame rate
+```
+
+`simulation.run()` is the graphical **composition root**.
+
+It is where otherwise independent pieces are connected.
+
+That is why dispatcher callbacks and concrete panels are registered there instead of appearing through import-time side effects.
+
+---
+
+## Headless mode
+
+Headless execution uses:
+
+```text
+simulation.run_headless()
+```
+
+Its lifecycle is simpler:
+
+```text
+create or load world
+    ↓
+optionally seed RNGs
+    ↓
+run N × step()
+    ↓
+optionally save
+    ↓
+return status
+```
+
+Headless mode does not initialize the graphical interface or operator preferences.
+
+Pygame-dependent modules are imported lazily only by the graphical path.
+
+This boundary is intentional:
+
+```text
+simulation core
+≠
+graphical application
+```
+
+A batch experiment should not require a display server merely because somewhere in the repository a rectangle needs drawing.
+
+---
+
+# ⏱️ `simulation.step()` is the clock
+
+`simulation.step()` is the canonical owner of tick ordering.
+
+One call means exactly one simulation tick.
+
+Current lifecycle:
+
+```text
+1. perceive → decide → move
+        │
+        ▼
+2. rebuild spatial fields
+        │
+        ▼
+3. compute ecology
+        │
+        ▼
+4. apply ecology + mortality
+        │
+        ▼
+5. reproductive scheduler
+        │
+        ▼
+6. reproduce eligible lineage
+        │
+        ▼
+7. rebuild spatial fields
+        │
+        ▼
+8. collect metrics when due
+```
+
+In code terms:
+
+```text
+evaluate_and_move()
+fill_fields()
+
+compute_ecology_resolution()
+apply_ecology_resolution()
+
+take reproduction turn
+reproduce_lineage()
+
+fill_fields()
+
+metrics
+```
+
+`step()` does not render.
+
+The simulation decides **what happens**.
+
+The caller decides **when humans get to see it**.
+
+---
+
+## Why the order matters
+
+The sequence above is part of the model.
+
+Moving reproduction before ecology, for example, would allow newborns to participate in ecological resolution during their own birth tick.
+
+Moving mortality before all ecological deltas were known could make lineage iteration order influence survival.
+
+Changing tick ordering is therefore not a refactor unless behavior remains identical.
+
+Sometimes moving three lines of code is architecture.
+
+Sometimes it is creating a different universe.
+
+---
+
+# 🌍 World representation
+
+`world.py` owns the concrete representation of populations and spatial state.
+
+Each lineage is represented by a structure conceptually equivalent to:
+
+```text
+lineage
+├── id
+├── color
+├── pool
+├── agents
+├── ids
+└── field
+```
+
+Where:
+
+```text
+pool    → [N, GENOME_SIZE] float32
+agents  → [N, AGENT_COLUMNS] float32
+ids     → [N] int64
+field   → [WORLD_WIDTH, WORLD_HEIGHT]
+```
+
+The critical population invariant is:
+
+```text
+len(pool)
+==
+len(agents)
+==
+len(ids)
+```
+
+The three arrays describe the same organisms by row.
+
+If row `17` is removed because that critter dies, row `17` must disappear from all three structures.
+
+Ecology performs this compaction in lockstep.
+
+---
+
+## Stable identity
+
+Array position is not organism identity.
+
+`world.py` owns:
+
+```text
+allocate_critter_ids()
+resolve_critter_id()
+```
+
+Stable IDs survive population compaction.
+
+This allows Observation, persistence, and death snapshots to refer to an organism without depending on its current row inside an ndarray.
+
+```text
+stable ID → identity
+array index → current storage location
+```
+
+Confusing the two eventually results in observing the wrong corpse.
+
+---
+
+## Spatial fields
+
+Each lineage maintains a density field.
+
+`fill_fields()` rebuilds these fields from current positions.
+
+The fields are snapshots of:
+
+```text
+how many critters of this lineage
+occupy each world cell
+```
+
+They are consumed by perception and ecology.
+
+`fill_fields()` is deliberately called twice during a tick:
+
+```text
+after movement
+```
+
+to establish the ecology snapshot, and:
+
+```text
+after mortality + reproduction
+```
+
+to establish the final spatial state for the next tick.
+
+---
+
+# 👁️ Perception → brain → movement
+
+Individual behavior is orchestrated by:
+
+```text
+evolution.evaluate_and_move()
+```
+
+Despite the module name, this function currently owns the per-lineage cognitive pipeline:
+
+```text
+senses
+   ↓
+brain
+   ↓
+action selection
+   ↓
+movement
+```
+
+Ecology no longer belongs here.
+
+That responsibility has its own module.
+
+---
+
+## `senses.py`
+
+`senses.py` transforms world state into neural input.
+
+Conceptually:
+
+```text
+spatial fields
++
+critter internal state
+        ↓
+367-value input vector
+```
+
+The module performs perception in batches and uses reusable scratch buffers to avoid allocating large temporary arrays every tick.
+
+It does not decide behavior.
+
+It describes what the brain receives.
+
+One deliberate mutation exists: when sensing a real agent matrix, the calculated low-HP flag is written back into the corresponding lifetime-state column so stored state matches what the network actually consumed.
+
+---
+
+## `brain.py`
+
+`brain.py` owns neural evaluation.
+
+Input:
+
+```text
+neural inputs
+genomes
+previous recurrent hidden state
+```
+
+Output:
+
+```text
+9 action scores
+new recurrent hidden state
+```
+
+The brain does not know about:
+
+```text
+predators
+nests
+reproduction
+Pygame
+save files
+panels
+```
+
+It performs numerical evaluation of the neural architecture encoded by the genome.
+
+That ignorance is useful.
+
+---
+
+## `movement.py`
+
+`movement.py` converts the selected action into toroidal position changes.
+
+It owns:
+
+```text
+action index
+→
+(dx, dy)
+→
+wrapped position
+```
+
+It does not decide which action is best.
+
+It does not calculate ecological consequences.
+
+Moving into a predator is somebody else's department.
+
+---
+
+# 🩸 Ecology
+
+`ecology.py` is the authority for ecological semantics.
+
+It owns:
+
+```text
+base metabolism
+environmental zone effects
+same-lineage overcrowding
+predation
+nest protection
+encounters
+triad resolution
+mortality
+population compaction
+post-ecology composite score
+```
+
+The design deliberately separates ecology into two phases:
+
+```text
+compute
+↓
+apply
 ```
 
 ---
 
-# Configuration and geometry
+## Compute phase
 
-## `config.py`
+```text
+compute_ecology_resolution()
+```
 
-The source of truth for static simulation constants.
+reads a frozen post-movement world snapshot and produces an `EcologyResolution`.
 
-Contains screen configuration, lineage definitions, population limits,
-perception dimensions, neural architecture, HP rules, environmental
-rules, selection pressure, reproduction gates, crossover configuration,
-mutation configuration, inspection settings, rendering settings,
-persistence versions, metrics configuration, recording configuration.
+It does not mutate:
 
-It also contains assertions that reject internally inconsistent
-configurations.
+```text
+HP
+age
+encounters
+population arrays
+birth/death counters
+density fields
+```
 
-The intent is: `config.py` is declared laws, not miscellaneous global
-variables.
+The one deliberate side effect is NumPy RNG consumption when triad cells require random relation selection.
 
-See [Configuration](configuration.md).
+That RNG is part of persisted simulation history.
+
+So the function is deterministic relative to complete simulation state, but it is not mathematically pure.
+
+---
+
+## Apply phase
+
+```text
+apply_ecology_resolution()
+```
+
+applies the resolution globally:
+
+```text
+A. apply HP / encounter deltas and age
+B. determine all alive masks
+C. capture death snapshots and count deaths
+D. compact ids / pool / agents in lockstep
+E. recompute composite scores
+```
+
+Mortality is therefore determined only after all ecological effects for the snapshot are known.
+
+This is what prevents iteration order from becoming an undocumented law of nature.
+
+> If Red survives because its array happened to be processed first, natural selection has been replaced by Python iteration semantics.
+
+---
+
+# 🧬 Evolution and reproduction
+
+`evolution.py` owns reproductive orchestration.
+
+The reproductive scheduler itself lives in simulation/state:
+
+```text
+reproduction_cooldown
+reproduction_turn
+```
+
+When `simulation.step()` grants a lineage its turn:
+
+```text
+reproduce_lineage(lineage)
+```
+
+handles:
+
+```text
+eligibility
+ranking
+parent-pool construction
+parent selection
+genetic recombination
+mutation
+child construction
+nest spawning
+stable-ID allocation
+parent HP reward
+population append
+```
+
+Reproduction does **not** rebuild density fields.
+
+New organisms are appended to:
+
+```text
+pool
+agents
+ids
+```
+
+and become spatially visible when `simulation.step()` performs its final:
+
+```text
+fill_fields()
+```
+
+That keeps the tick boundary explicit.
+
+---
+
+# 🧬 Genetics
+
+`genetics.py` owns transformations of genomes.
+
+Its responsibilities include:
+
+```text
+random genome generation
+random population generation
+crossover
+mutation
+```
+
+It knows genetic layout through structural configuration.
+
+It does not know:
+
+```text
+HP
+age
+fitness gates
+nests
+population scheduling
+UI
+persistence
+```
+
+Those decisions belong to higher-level orchestration.
+
+The distinction is:
+
+```text
+genetics.py
+    How do two genomes produce descendants?
+
+evolution.py
+    Which organisms reproduce, when, and where?
+```
+
+---
+
+# 🪺 Geometry
+
+World geometry is deliberately split.
 
 ## `layout.py`
 
-Derives geometry from configuration.
+`layout.py` derives physical dimensions from display/world configuration:
 
-The user declares `SCREEN_WIDTH`, `SCREEN_HEIGHT`,
-`INSPECTION_PANEL_WIDTH`, `TARGET_PIXEL_SCALE`, and the module derives
-`pixel_scale`, `world_width`, `world_height`, `window_width`,
-`window_height` once at import time.
+```text
+screen size
+sidebar width
+pixel scale
+world width
+world height
+```
 
-The resulting values live in `layout.LAYOUT`.
+The world and sidebar occupy separate regions.
 
-Fullscreen does not rebuild this geometry. Rendering scales the
-existing world instead.
+Rendering should consume this geometry rather than independently inventing dimensions.
 
 ---
 
-# Runtime state
+## `nest_geometry.py`
 
-The center of the runtime architecture is `state.py`.
+`nest_geometry.py` is a low-level geometry module.
 
-Primordial Soup does not distribute mutable **simulation** state across
-dozens of objects. Instead, simulation-wide mutable state is
-centralized.
+It has:
+
+```text
+no global state
+no config dependency
+no world dependency
+no Pygame dependency
+```
+
+Dimensions and radii are passed explicitly.
+
+It is the canonical authority for:
+
+```text
+toroidal distance
+nest disks
+nest rings
+coordinate wrapping
+nest membership
+nest overlap
+nest ↔ zone intersection
+```
+
+This allows the same geometry functions to operate on:
+
+```text
+the active world
+```
+
+and on:
+
+```text
+an uncommitted checkpoint being validated
+```
+
+without temporarily corrupting global state.
+
+Geometry should be boring.
+
+Boring geometry prevents exciting persistence bugs.
+
+---
+
+# ⚙️ Configuration architecture
+
+Configuration has three distinct levels:
+
+```text
+config.py
+    ↓
+runtime_rules.py
+    ↓
+state.runtime_rules
+```
+
+---
+
+## `config.py`
+
+`config.py` owns structural constants, defaults, and validation limits.
 
 Examples:
 
 ```text
-population data
-mutation settings
-environmental-zone state
+neural dimensions
+genome size
+population ceilings
+nest radius
+world structure
+default runtime values
+min/max limits
+save format versions
+```
+
+Changing a structural constant may change the model itself.
+
+---
+
+## `runtime_rules.py`
+
+`runtime_rules.py` defines the immutable `RuntimeRules` contract.
+
+It:
+
+```text
+does not import state
+does not know the UI
+does not know Pygame
+does not own global state
+```
+
+A rule update follows:
+
+```text
+current rules
+    ↓
+create candidate
+    ↓
+validate candidate
+    ↓
+return candidate
+```
+
+Invalid candidates never mutate the original object.
+
+---
+
+## `state.runtime_rules`
+
+`state.py` owns the currently active `RuntimeRules` reference.
+
+Replacing active laws follows:
+
+```text
+validate
+↓
+commit reference
+```
+
+Consumers read the current object.
+
+They do not maintain shadow copies of runtime configuration.
+
+This gives one authoritative answer to:
+
+> What are the laws of this universe right now?
+
+---
+
+# 🧠 Shared state
+
+`state.py` contains shared runtime state required across simulation modules.
+
+Major categories include:
+
+```text
+population
+runtime rules
+zones
+nests
 tick counters
-births/deaths counters
-stable identity counter
+birth/death counters
+stable-ID allocator
 reproduction scheduler
-inspection session
-metric history
-pause state
-simulation speed
+metrics history
+observation state
+runtime execution controls
+selected operator preferences
+```
+
+Not all of these have the same persistence semantics.
+
+That distinction is intentional.
+
+For example:
+
+```text
+population            → checkpoint state
+RNG scheduler phase   → checkpoint state
+runtime rules         → checkpoint state
+
+language              → operator preference
+active save slot      → operator preference
+inspection trail      → view state
+recording             → tool state
+```
+
+The persistence boundary decides what belongs to the universe.
+
+---
+
+# 👁️ Observation as a bridge
+
+Observation is slightly special.
+
+The graphical navigation state lives in:
+
+```text
+ui_state.py
+```
+
+but the identity of the observed critter and its death snapshot live in:
+
+```text
+state.py
+```
+
+This is deliberate.
+
+Observation must survive:
+
+```text
+array compaction
+panel changes
+organism death
+simulation ticks
+```
+
+Ecology must also know whether the organism being removed is currently observed so it can capture its final state.
+
+Therefore Observation crosses the simulation/presentation boundary through a very narrow contract:
+
+```text
+stable critter ID
+death snapshot
+trail
+```
+
+It does not affect ecological outcomes.
+
+---
+
+# 💾 Persistence
+
+`persistence.py` is the checkpoint boundary.
+
+It serializes the state required for exact continuation and validates it on load.
+
+The important architectural pattern is:
+
+```text
+SAVE
+runtime state
+    ↓
+validate
+    ↓
+serialize temp file
+    ↓
+atomic replace
+```
+
+and:
+
+```text
+LOAD
+file
+    ↓
+parse locally
+    ↓
+validate everything
+    ↓
+single commit boundary
+    ↓
+runtime state
+```
+
+A rejected load must not partially modify the running universe.
+
+Persistence also does not regenerate missing world geometry.
+
+Zones and nests are restored from the checkpoint.
+
+For the full contract, see:
+
+```text
+docs/persistence.md
+```
+
+---
+
+# 👤 Operator preferences
+
+`prefs.py` is deliberately separate from world persistence.
+
+There are two different forms of persistence:
+
+```text
+checkpoint (.pkl)
+→ the universe
+
+prefs.json
+→ the operator
+```
+
+Preferences include interface choices such as:
+
+```text
 language
-save slot
-recording mirror
+active save slot
+discovery settings
+floating HUD visibility
 ```
 
-A deliberate exception exists for the graphical navigation layer:
-`ui_state.py` holds transient state such as the focused panel, panel
-cursors, panel scroll offsets, modal navigation state and floating-HUD
-visibility.
+Architectural invariants:
 
-`ui_state.py` is not part of the simulation and never reaches a
-savegame.
+```text
+preferences do not change simulation physics
+savegame load does not overwrite preferences
+headless execution does not read or write preferences
+```
+
+A universe should not change language because somebody loaded a dinosaur-era checkpoint.
 
 ---
 
-# The population representation
+# 🖥️ Presentation architecture
 
-There is no Python `Critter` object instantiated once per individual.
-
-Each lineage owns several parallel NumPy structures:
+The graphical interface is split into several smaller responsibilities.
 
 ```text
-lineage
-│
-├── pool      [N, GENOME_SIZE] float32
-├── agents    [N, AGENT_COLUMNS] float32
-├── ids       [N] int64
-└── field     [WORLD_WIDTH, WORLD_HEIGHT] int16
+Pygame events
+     ↓
+input_dispatcher
+     ↓
+panels / controls
+     ↓
+domain state
+
+domain state + ui_state
+     ↓
+rendering
+     ↓
+screen
 ```
-
-The invariant is:
-
-```text
-len(pool) == len(agents) == len(ids)
-```
-
-Row `i` in all three individual structures refers to the same critter.
 
 ---
 
-# Why parallel arrays?
+## `ui_state.py`
 
-When critters die, arrays are compacted:
+`ui_state.py` owns transient graphical-navigation state:
 
-```python
-agents = agents[alive]
-pool = pool[alive]
-ids = ids[alive]
+```text
+active panel
+last panel
+panel cursors
+scroll positions
+modal state
+transient notices
+floating HUD visibility
 ```
 
-The arrays remain aligned. That alignment is a fundamental runtime
-invariant.
+It is presentation state.
+
+Simulation modules must not depend on it.
+
+Nothing in `ui_state.py` belongs in a world checkpoint.
 
 ---
-
-# The agent matrix
-
-Each living individual occupies one row of a `float32 [N, 36]` matrix.
-
-|  Column | Meaning                      |
-| ------: | ---------------------------- |
-|     `0` | HP                           |
-|     `1` | X position                   |
-|     `2` | Y position                   |
-|     `3` | Age / lifetime               |
-|     `4` | Generation                   |
-|     `5` | Last action                  |
-|     `6` | Low-HP flag                  |
-| `7..31` | Recurrent hidden state       |
-|    `32` | Cells explored               |
-|    `33` | Encounters                   |
-|    `34` | Reproductive-success counter |
-|    `35` | Composite score              |
-
-This one matrix contains body, location, life history, short-term
-neural memory and selection metrics.
-
-The neural hot path also uses `float32`. A silent promotion to
-`float64` would still produce mathematically valid output. It would
-just make the hottest part of the simulation considerably more
-expensive.
-
-`brain.evaluate_batch()` explicitly asserts the `float32` contract for
-important inputs and weight matrices.
-
----
-
-# Stable identity
-
-Array position is not identity.
-
-When critters die, arrays are compacted. If `ID 101` dies:
-
-```text
-before compaction:  index 0 → 100, index 1 → 101, index 2 → 102
-after compaction:   index 0 → 100, index 1 → 102
-```
-
-Therefore `(lineage index, array index)` is a temporary locator, not a
-persistent identity.
-
-Each lineage maintains `ids: int64 [N]` parallel to `agents` and
-`pool`.
-
-Every new critter receives a global stable integer ID, allocated from
-`state.next_critter_id`, which increases monotonically during a run.
-
-Death does not reuse an ID.
-
-## Resolving identity
-
-When code needs the current array position of `critter #1847`, it calls
-the identity-resolution path in `world.py`:
-
-```text
-stable ID
-   ↓
-search lineage ID arrays
-   ↓
-(lineage index, current row)
-```
-
-## Discovery uses positions; observation uses identity
-
-This is an intentional boundary.
-
-Discovery functions search the current arrays and naturally return
-`(lineage_index, agent_index)`. Observation converts that temporary
-result into a stable critter ID before storing the selection.
-
-So changing discovery criteria cannot accidentally cause an observation
-to drift after array compaction.
-
----
-
-# World representation
-
-`world.py` owns the spatial representation.
-
-Every lineage contains a density field:
-
-```text
-field[world_width, world_height] int16
-```
-
-The field answers: how many individuals from this lineage currently
-occupy this cell?
-
-It is not the population itself. It is a spatial projection of the
-population.
-
-## Rebuilding fields
-
-After movement:
-
-```text
-move everyone → fill_fields() → new spatial state
-```
-
-Newborns created later in the tick are inserted incrementally rather
-than forcing another complete field rebuild.
-
-## Environmental zones
-
-Zones are represented separately as a boolean mask
-`zones[world_width, world_height]`. Zone generation uses toroidal
-distance.
-
----
-
-# Perception
-
-Perception lives in `senses.py`.
-
-For each lineage, the module builds a batch of neural inputs:
-
-```text
-density fields + agent positions + agent internal state
-        ↓
-[N, NETWORK_INPUTS]
-```
-
-With the current configuration: `[N, 367]`.
-
-## Toroidal vision
-
-For each critter, perception samples the `11 × 11` neighborhood around
-its current position. Array indices wrap around the world.
-
-The result is three lineage-density channels plus four internal-state
-inputs.
-
-## Scratch buffers
-
-Perception is called every tick. Allocating large temporary arrays every
-time would create avoidable memory churn.
-
-`senses.py` maintains reusable per-lineage input buffers sized up to
-`MAX_POPULATION_PER_LINEAGE × NETWORK_INPUTS`.
-
-Only the active prefix is used for the current population.
-
----
-
-# Neural evaluation
-
-Neural computation lives in `brain.py`.
-
-The genome is a flat vector. `split_weights()` interprets it as `W1,
-W2, W3, b1, b2, R`.
-
-Current architecture:
-
-```text
-367 inputs
-   ↓
-25 hidden
-   ↓
-12 hidden
-   ↓
-9 outputs
-```
-
-Genome components:
-
-```text
-W1  = 25 × 367 = 9,175
-W2  = 12 × 25  =   300
-W3  =  9 × 12  =   108
-b1  =                25
-b2  =                12
-R   = 25 × 25  =   625
-                  ─────
-total             10,245
-```
-
-## Batched evaluation
-
-The main entry point is `evaluate_batch(...)`.
-
-```text
-inputs              [N, 367]
-weights             [N, 10245]
-previous hidden     [N, 25]
-        ↓
-movement outputs    [N, 9]
-new hidden state    [N, 25]
-```
-
-The new hidden state is stored back in the agent matrix for the next
-tick.
-
-## Why batch instead of one critter at a time?
-
-The simulation does not normally execute:
-
-```python
-for critter in critters:
-    evaluate_network(critter)
-```
-
-Instead, each lineage is evaluated as an array batch. That allows NumPy
-to perform the heavy matrix operations in compiled code.
-
-The main neural operations use matrix multiplication through `@` rather
-than `np.einsum` for the current batched matrix-vector shapes because it
-measured better throughput in the tested NumPy builds.
-
----
-
-# Genetics
-
-Genetic operators live in `genetics.py`.
-
-A population genome pool is stored as `float32 [N, GENOME_SIZE]`, not
-`list[np.ndarray]`.
-
-This matters because neural evaluation can consume the matrix directly.
-There is no need to stack all genomes on every tick.
-
-## Crossover
-
-Supports `uniform`, `blocks`, `two_points`.
-
-```text
-parent A ─┐
-          ├─ crossover mask ─→ offspring batch
-parent B ─┘
-```
-
-Parental genomes are broadcast as read-only views. Only the offspring
-matrices need to be materialized.
-
-## Mutation
-
-Mutation operates in-place on offspring batches.
-
-The dispatcher selects between `surgical` and `two_scales` based on
-static configuration.
-
-For `two_scales`:
-
-```text
-mutant offspring
-       ↓
-local or global mutation
-       ↓
-sample distinct gene positions
-       ↓
-add Gaussian noise
-       ↓
-clip legal gene range
-```
-
-Gene sampling uses `argpartition` rather than looping over each mutant
-with repeated `np.random.choice()` calls.
-
----
-
-# Movement
-
-Movement lives in `movement.py`.
-
-The neural output is reduced to one of nine actions. The position update
-is toroidal:
-
-```text
-new_x = (x + dx) mod width
-new_y = (y + dy) mod height
-```
-
-No wall collision handling. No edges. Only modulo arithmetic.
-
----
-
-# Evolution
-
-The life-cycle mechanics live primarily in `evolution.py`.
-
-Two important high-level responsibilities:
-
-```text
-evaluate_and_move()
-punish_reward_and_reproduce()
-```
-
-The first handles perception, neural evaluation, hidden-state update,
-movement choice, movement, exploration accounting.
-
-The second handles interactions, HP changes, age, encounters, death,
-score computation, parent selection, reproduction.
-
-`simulation.py` does not implement every biological rule itself. It
-defines **when** the major subsystems run.
-
-`step()` is the central semantic boundary of the simulation. If you need
-to understand one function before modifying the runtime: understand
-`step()`.
-
----
-
-# One tick
-
-```text
-state.tick_count += 1
-
-        ↓
-
-for each lineage
-    perceive
-    evaluate neural network
-    choose action
-    move
-
-        ↓
-
-rebuild density fields
-
-        ↓
-
-update observed trail
-
-        ↓
-
-determine reproductive turn
-
-        ↓
-
-for each lineage
-    punish
-    reward
-    count encounters
-    age
-    kill
-    compute score
-    reproduce if this lineage owns the turn
-
-        ↓
-
-record metrics if due
-
-        ↓
-
-print diagnostics if due
-```
-
-This ordering is part of simulation semantics.
-
-## Why movement happens before ecological consequences
-
-All lineages first make their movement decision from the current spatial
-state. Then all movements happen. Then density fields are rebuilt. Only
-afterward are ecological consequences evaluated.
-
-This avoids processing order creating an artificial ecological
-advantage.
-
----
-
-# Rendering is not part of a tick
-
-`step()` explicitly does **not** render.
-
-This allows:
-
-```text
-for _ in range(256):
-    step()
-
-draw()
-```
-
-instead of `step / draw / step / draw / ...` when accelerated simulation
-is requested.
-
-The simulation clock and rendering clock are separate concepts.
-
-This is also what makes the same core step usable headlessly.
-
----
-
-# Graphical driver
-
-The graphical loop in `simulation.py`:
-
-```text
-bootstrap world
-      ↓
-reset UI state
-      ↓
-register default panels
-      ↓
-initialize renderer
-      ↓
-register adapters and global accelerators
-      ↓
-draw first frame
-      ↓
-┌────────────────────────────┐
-│ process_events()           │
-│   → DispatchResult         │
-│                            │
-│ if result.flow == EXIT:    │
-│   shutdown and return      │
-│                            │
-│ if not paused:             │
-│   step N times             │
-│                            │
-│ if redraw needed:          │
-│   draw once                │
-│                            │
-│ limit display FPS          │
-└───────────↺────────────────┘
-```
-
-Event translation lives in `input_dispatcher.py`.
-
-Panel grammar lives in `panels.py`.
-
-Concrete panels and their items live in `panels_defs.py`.
-
-Reusable domain actions live in `controls.py`.
-
-Pygame drawing lives in `rendering.py`.
-
-A consequence of this split is that **handlers do not call `draw()`**.
-They return a `DispatchResult` with `redraw=True` when the display should
-be refreshed, and the graphical loop keeps the authority over when a
-frame is actually rendered.
-
----
-
-# Input routing is translation, not simulation
-
-The input boundary is split into three layers.
-
-## `input_dispatcher.py`
-
-The single point that turns raw pygame events into either a global
-command, a panel focus change, or a contextual navigation action.
-
-Its contract is to return `DispatchResult` values and never to call
-`rendering.draw()`.
 
 ## `panels.py`
 
-The generic grammar of the interface: `Panel`, `Item`, `ItemKind`,
-`DispatchResult`, `Flow`, and the registry of panels.
+`panels.py` defines the UI grammar:
 
-It does not know what a concrete panel does.
+```text
+Panel
+Item
+ItemKind
+DispatchResult
+Flow
+panel registry
+```
+
+It does not implement domain-specific panel behavior.
+
+Think of it as the vocabulary from which the interface is constructed.
+
+---
 
 ## `panels_defs.py`
 
-Concrete composition of `Inspection`, `Configuration`, `Metrics`,
-`Session`, `Tools`, binding each item to a real operation.
+`panels_defs.py` composes the concrete panels:
+
+```text
+Inspection
+Configuration
+Metrics
+Session
+Tools
+```
+
+This is intentionally where panel definitions meet domain operations.
+
+Unlike `panels.py`, this module is allowed to know about:
+
+```text
+state
+world
+persistence
+recording
+preferences
+i18n
+```
+
+Importing it does not automatically register panels.
+
+Registration is explicit during graphical bootstrap.
+
+---
+
+## `input_dispatcher.py`
+
+`input_dispatcher.py` owns input-routing policy.
+
+It translates Pygame events into actions but does not render.
+
+Its routing order is broadly:
+
+```text
+exit request
+↓
+modal
+↓
+global command
+↓
+panel activation
+↓
+panel-local input
+↓
+world interaction
+```
+
+The dispatcher is intentionally ignorant of graphical geometry.
+
+For example, tab hit-testing is injected from rendering.
+
+This prevents input routing from becoming a second, slightly wrong copy of layout logic.
+
+---
 
 ## `controls.py`
 
-Reusable domain/UI actions (`action_recreate`, `action_save`,
-`action_load`, `action_toggle_zones`, `action_toggle_recording`,
-`action_cycle_save_slot`, `action_print_state`, `action_heal_all`) shared
-by panel handlers and by global accelerators.
+`controls.py` contains reusable operator actions.
 
-`controls.py` is not the only input boundary anymore: it provides
-operations, while `input_dispatcher.py` decides how events reach them.
-
----
-
-# Headless driver
-
-The headless path uses `run_headless(...)`.
-
-It shares `bootstrap_new_world()`, `step()`, `persistence.save()`,
-`persistence.load()` with the rest of the application.
-
-There is no separate "headless simulation" with different physics.
-
-A graphical experiment and a headless experiment differ by observation
-and execution interface, not by evolutionary rules.
-
-## Headless tick contract
-
-`run_headless()` normalizes `ticks=None` to `0` before entering the
-stepping loop:
-
-```python
-ticks_to_run = 0 if ticks is None else ticks
-if ticks_to_run > 0:
-    ...
-```
-
-So:
+Examples:
 
 ```text
-ticks=None → 0 ticks
-ticks=0    → 0 ticks
-ticks=N>0  → exactly N ticks
+new world
+save
+load
+heal all
+toggle zones
+toggle recording
+cycle save slot
+print state
 ```
 
-The CLI normally never passes `None`: `-d/--duration` requires an
-explicit non-negative integer, and `cli.main()` rejects `-d` without
-`-l/--load` or `--new`.
-
-Coverage: `tests/test_headless_ticks.py`.
-
----
-
-# CLI boundary
-
-`cli.py` decides whether execution should be graphical or headless.
-
-Pygame is imported only on the graphical branch.
-
-See [Headless](headless.md).
-
----
-
-# Recreate boundary
-
-The graphical **R** path deliberately begins with:
-
-```python
-state.reset_counters()
-```
-
-before allocating the new population.
-
-This ordering is important because stable IDs are allocated during
-placement. If reset happened afterward, runtime identity would become
-inconsistent.
-
-This lifecycle is covered by tests.
-
----
-
-# Rendering
-
-`rendering.py` owns Pygame visualization.
-
-Its responsibilities include window initialization, world
-rasterization, floating HUD, charts, panel rendering, discovery marker,
-observation marker, death marker, trail, brain heatmaps, fullscreen
-scaling and frame presentation.
-
-Rendering reads simulation state. It does not define evolutionary rules.
-
-## Discovery is recomputed as a view
-
-The current discovery candidate is not stored as an authoritative
-individual identity. It is derived from the current population,
-discovery criterion and lineage filter when needed.
-
-## Observation is persistent UI state
-
-Observation stores `inspected_critter_id` as a stable ID.
-
-The state helper `set_inspection_selection(...)` is the single
-transition point responsible for maintaining selection, trail and death
-snapshot coherently.
-
-## Death snapshot boundary
-
-When the observed critter is about to disappear during population
-compaction, `evolution.py` captures its final agent row, genome,
-identity, lineage and death tick before removal.
-
-## Trail ownership
-
-The trail is not part of the critter. It is part of the observation
-session.
-
-`simulation._update_trail()` resolves the stable observed ID after
-movement and appends the current position.
-
----
-
-# Persistence boundary
-
-`persistence.py` is the boundary between the optimized in-memory
-representation and the stable serialized representation.
-
-Internally: `pool = float32 ndarray`. In the save format: `list[list[float]]`.
-
-That allows hot-path optimization to evolve independently from file
-representation where possible.
-
-## Canonical persistence language
-
-Internal English-code dictionary keys do not dictate the save schema.
-The persistence layer writes the canonical Portuguese save keys.
-
-Translation is explicit at the persistence boundary. The UI language
-has no authority over persistence identifiers.
-
-## Transactional loading
-
-Loading follows a strong architectural rule:
+These actions are shared by:
 
 ```text
-PARSE
-validate everything locally
-do not mutate live state
-
-        ↓
-
-COMMIT
-replace runtime state only after validation succeeds
+panel handlers
++
+global accelerators
 ```
 
-A malformed save should produce `old runtime state + error`, not a half
-old world plus half corrupted save.
+so orchestration is not duplicated in two UI paths.
 
-## Failed loads and randomness
+`controls.py` does not own rendering.
 
-A rejected load must also avoid consuming random draws.
-
-Reproducibility includes failure paths.
+Actions return `DispatchResult`; the graphical loop decides when to redraw.
 
 ---
 
-# Internationalization
+## `rendering.py`
 
-`i18n.py` translates presentation strings.
+`rendering.py` owns pixels.
 
-The architecture distinguishes canonical identifiers from display
-labels. Metric identifiers such as `populacao`, `hp_medio`,
-`geracao_maxima` remain stable. English and Portuguese interfaces render
-different labels for them.
-
-Important for saves, CSVs, tests and cross-language compatibility.
-
----
-
-# Recording
-
-`recording.py` owns GIF recording.
-
-The authoritative recording lifecycle is held there.
-`state.recording` is a lightweight mirror.
-
-Pillow is imported lazily. Users who never record GIFs do not need the
-recording path active during normal simulation.
-
-Rendering captures complete frames after the frame has been assembled.
-
----
-
-# Performance architecture
-
-At maximum current population:
+It reads simulation and UI state and renders:
 
 ```text
-333 critters / lineage × 3 lineages = 999 critters
+world
+zones
+nests
+critters
+inspection overlays
+HUD
+command dock
+sidebar
+charts
+modals
 ```
 
-Each genome contains `10,245 float32` values. So a full population near
-the configured ceiling can represent more than 10 million genome values
-before considering agent state, fields and temporary arrays.
+It also owns screen-space geometry such as clickable panel-tab rectangles.
 
-## Rules
+Rendering does not own simulation progression.
 
-**Arrays over Python objects.** Hot-path data lives primarily in NumPy
-arrays.
+### Camera and world viewport
 
-**Keep genomes stacked.** The genome pool is already `[N, 10245]` in
-memory. The save boundary performs conversion only when serialization
-is actually needed.
-
-**Reuse scratch memory.** `senses.py` reuses per-lineage neural-input
-buffers.
-
-**Vectorize where N is large.** Vision sampling, neural evaluation,
-field construction, HP changes, alive/dead filtering, composite-score
-calculation, mutation sampling operate over population-sized arrays.
-
-**Do not vectorize tiny work blindly.** Two-point crossover keeps a
-small Python loop for dependent cut generation. The relevant `n` there
-is approximately the number of offspring in one reproductive event, not
-the whole population.
-
-**Do not render every simulation tick.** Simulation acceleration is
-implemented by executing several `step()` calls before one `draw()`.
-
----
-
-# Core invariants
+The renderer owns two distinct concepts.
 
 ```text
-pool.shape[0] == agents.shape[0] == ids.shape[0]
-pool.shape[1] == GENOME_SIZE
-agents.shape[1] == AGENT_COLUMNS
-all stable IDs are unique
-next_critter_id > every living ID
-fields match derived world geometry
+world viewport
+    screen-space rectangle where the world is displayed
+
+camera
+    world-space description of which logical region is observed
 ```
 
-Violating these should be treated as a bug, not as a condition to
-silently repair.
+The viewport answers **where to draw**. The camera answers **what
+region to draw**. They change independently: a resize alters the
+viewport and leaves the camera alone.
 
-Why strict invariants? Suppose `agents = 50 rows`, `pool = 49 rows`,
-`ids = 50 rows`. Which critter owns the missing genome? There is no
-principled answer. Trying to truncate, pad, guess or reconstruct would
-fabricate simulation history.
-
-The architecture therefore prefers **fail loudly** over **repair
-creatively**.
-
-Persistence follows the same philosophy.
-
----
-
-# Tests
-
-The suite is organized by responsibility rather than by file count.
-
-Broad areas currently covered:
+The camera has three fields:
 
 ```text
-CLI / headless
-    argument parsing contract, mutual exclusion of --new and --load,
-    tick semantics of run_headless
-
-identity / inspection
-    stable IDs, compaction, save/load of IDs, discovery vs observation,
-    click selection, death snapshots, trail lifecycle
-
-input dispatcher
-    full-queue processing, redraw accumulation, Shift+Tab using
-    event.mod, panel cursor initialization, ESC hierarchy, adapter
-    registration, structural-key protection
-
-rendering / UI
-    Telemetry HUD composition, Command Dock anchoring, floating HUD
-    gate, vision heatmaps per subject state, panel viewport clip and
-    scroll, language-reactive labels
-
-persistence
-    atomicity of load rejection (no mutation, no RNG consumption),
-    semantic ranges of scalar fields, bool strictness, malformed
-    payloads
-
-runtime configuration
-    local mutation scale reaching the effective mutation path,
-    reproduction HP bonus applied once per event
-
-i18n
-    presence and content of HUD keys across all languages, dynamic
-    lineage header localization
-
-continuation
-    checkpoint == exact continuation of the simulation, including the
-    reproductive scheduler and both RNG states
+zoom
+view_x
+view_y
 ```
 
-The suite evolves with the codebase. This document intentionally does
-not enumerate test modules by filename.
+`zoom` is a magnification factor in `[MIN_ZOOM, MAX_ZOOM]`. `view_x`
+and `view_y` are the top-left corner of the visible region, expressed
+in logical world cells. All three are floats.
+
+Fitting the world into the window is not the same as zooming. Window
+fit is recomputed on every resize and derives purely from the window
+size and the logical world dimensions. Zoom is a separate operator
+choice that survives resize and fullscreen changes.
+
+The rendering pipeline is:
+
+```text
+logical world
+    ↓
+_build_image()
+    ↓
+logical raster
+    ↓
+camera source rectangle
+    ↓
+crop
+    ↓
+scale to fixed viewport
+    ↓
+screen
+```
+
+The scale step always targets the physical viewport, regardless of
+zoom. Zoom reduces the logical source region rather than enlarging
+the destination Surface. This keeps the cost of the scale step
+constant.
+
+Camera state is presentation state. It is not:
+
+* simulation state;
+* `RuntimeRules`;
+* checkpoint state;
+* preference persistence.
+
+`draw()` and `screen_to_world()` derive their transforms from the
+same camera/viewport model, so the pixel the operator clicks always
+matches the cell the simulation reads.
+
+Zoom never changes logical world dimensions, `PIXEL_SCALE`, or
+`layout.LAYOUT`. Rendering the camera must never advance the
+simulation.
+
+### Camera precision and raster discretization
+
+Camera coordinates remain floating-point.
+
+Raster extraction is necessarily discrete. The source rectangle uses
+`floor`/`ceil` so the continuous camera view is completely contained
+by the sampled logical raster. Cell interaction quantizes only at the
+`screen_to_world()` boundary.
+
+This means the source rectangle is not expected to equal the
+continuous view exactly. Containment is the contract; sub-cell
+differences introduced by rasterization are not bugs.
+
+Calling:
+
+```text
+draw()
+```
+
+must not advance the universe.
 
 ---
 
-# Dependency philosophy
+# 🌐 Internationalization
 
-The project is not organized into formal architectural layers enforced
-by package boundaries. Instead, it uses disciplined module
-responsibilities.
+`i18n.py` translates display strings.
 
-A practical dependency model is:
+Canonical internal values remain stable.
+
+Examples:
 
 ```text
-config
-  ↓
-layout
-  ↓
-state / world
-  ↓
-senses / brain / movement / genetics
-  ↓
-evolution
-  ↓
+mutation mode → canonical identifier
+panel label   → localized display value
+
+metric key    → canonical identifier
+chart label   → localized display value
+```
+
+Persistence formats and internal semantics are not rewritten when the UI language changes.
+
+Localization happens at the presentation boundary.
+
+---
+
+# 🎥 Recording
+
+Recording is a tool, not simulation state.
+
+Frames are captured only after the complete graphical frame has been rendered.
+
+The resulting GIF therefore contains what the operator saw:
+
+```text
+world
++
+HUD
++
+sidebar
++
+charts
++
+other visible overlays
+```
+
+Recording does not participate in headless simulation.
+
+---
+
+# 🆕 New-world construction
+
+`bootstrap.py` is the sole authority for building a fresh run.
+
+Graphical startup, headless startup, and UI recreate operations ultimately delegate to:
+
+```text
+bootstrap_new_world()
+```
+
+Its responsibilities include:
+
+```text
+reset run counters
+create lineage structures
+generate initial genomes
+place founders
+build density fields
+generate zones
+generate nests
+install runtime rules
+reset execution speed
+```
+
+A fresh bootstrap initializes `simulation_speed` to `1.0x`.
+
+UI recreate is different: `controls.recreate()` captures the
+operator-selected `simulation_speed`, delegates world
+reconstruction to `bootstrap_new_world()`, and restores the selected
+speed afterward.
+
+This keeps bootstrap deterministic while preserving operator
+execution state across `R`/recreate.
+
+This construction sequence must not be duplicated elsewhere.
+
+`bootstrap.py` deliberately does not depend on:
+
+```text
 simulation
-  ↓
-controls / rendering / CLI
+controls
+rendering
+panels
+Pygame
 ```
 
-with `persistence`, `i18n`, `recording`, `ui_state`, `panels`,
-`panels_defs`, `input_dispatcher` serving cross-cutting boundaries.
-
-Because the system uses centralized state, some dependencies are
-necessarily less linear than this diagram. The important rule is
-semantic ownership.
+Dependency in the opposite direction would make world construction depend on one of its operators.
 
 ---
 
-# Semantic ownership
+# 🔄 Important data flows
+
+## One organism decision
 
 ```text
-"What are the constants?"             → config.py
-"What are the derived dimensions?"    → layout.py
-"What changes during a run?"          → state.py
-"What is graphical navigation?"       → ui_state.py
-"What does a critter row mean?"       → world.py
-"What does a critter perceive?"       → senses.py
-"How does the neural network eval?"   → brain.py
-"How does position change?"           → movement.py
-"How are genomes created/recombined?" → genetics.py
-"How are life, death and reproduction applied?" → evolution.py
-"In what order does a tick happen?"   → simulation.py
-"What does a key or click mean?"      → input_dispatcher.py
-"What does a panel contain?"          → panels_defs.py
-"What is the generic UI grammar?"     → panels.py
-"What reusable action exists?"        → controls.py
-"How is state drawn?"                 → rendering.py
-"How does automation start the simulation?" → cli.py
-"How is state serialized?"            → persistence.py
-"How is text translated?"             → i18n.py
-"How are rendered frames recorded?"   → recording.py
+state.agents
+     │
+     ├──── density fields ───→ senses
+     │                           │
+     └──── lifetime state ───────┘
+                                 ↓
+                            neural inputs
+                                 ↓
+genome pool ─────────────────→ brain
+                                 ↓
+                         recurrent outputs
+                                 ↓
+                            action argmax
+                                 ↓
+                              movement
+                                 ↓
+                         updated position
 ```
-
-If a change seems to belong to three of these simultaneously, that is a
-useful signal to reconsider the boundary.
 
 ---
 
-# Keep simulation and presentation separate
-
-One of the strongest current architectural properties is:
+## One ecological resolution
 
 ```text
-step() does not render
+post-movement positions
+        ↓
+fill_fields()
+        ↓
+frozen density snapshot
+        ↓
+compute_ecology_resolution()
+        ↓
+EcologyResolution
+        ↓
+apply_ecology_resolution()
+        ↓
+HP / age / encounters
+        ↓
+death masks
+        ↓
+lockstep compaction
+        ↓
+updated scores
 ```
 
-Likewise:
+---
+
+## One reproductive event
 
 ```text
-rendering should not determine evolutionary outcomes
-inspection discovery should not mutate simulation state
+scheduler
+   ↓
+lineage turn
+   ↓
+eligibility gates
+   ↓
+ranking
+   ↓
+parent pool
+   ↓
+two parents
+   ↓
+genetics
+   ↓
+two children
+   ↓
+nest spawn
+   ↓
+new stable IDs
+   ↓
+append pool / agents / ids
+   ↓
+final fill_fields()
 ```
 
-This separation allows headless runs, accelerated simulation,
-reproducible testing, independent visualization changes, clearer
-experimental semantics.
-
-Preserve it.
-
 ---
 
-# Keep persistence at the edge
+# 🚧 Architectural boundaries
 
-In-memory representation is optimized for execution. Save representation
-is optimized for compatibility.
+Several boundaries should be treated as contracts.
 
-Do not redesign the hot path merely because pickle currently stores
-lists. Do not silently alter persistence merely because NumPy
-representation changed.
-
-The conversion belongs at the boundary.
-
----
-
-# Keep identity separate from position
+### Simulation must remain render-independent
 
 ```text
-array index = temporary location
-stable ID   = identity
+step()
 ```
 
-Anything long-lived should use the second.
-
-Do not store positional indices across operations that can compact
-population arrays.
-
----
-
-# Keep views out of domain state
-
-Discovery is a query over the current population. The simulation does
-not store "the oldest critter" as authoritative state.
-
-Analytical tooling does not become hidden evolutionary input.
-
----
-
-# Avoid silent repair
-
-Invalid stable IDs, incompatible array shapes, failed loads, missing
-discovery candidates should all fail loudly rather than silently
-accommodate.
-
-In a simulation used for experiments, silently changing the data can be
-worse than crashing.
-
----
-
-# How to add a new simulation mechanic
+must not call:
 
 ```text
-1. Define the static law in config.py.
-2. Determine whether it requires new runtime state.
-3. If it changes the agent record,
-   update world.py and persistence compatibility deliberately.
-4. Apply the mechanic in evolution.py
-   at the correct point in the tick.
-5. Do not implement the rule in rendering.py.
-6. Add metrics only if the effect needs measurement.
-7. Add tests for the new invariant.
-8. Decide explicitly whether SAVE_VERSION,
-   ARCHITECTURE_VERSION or GENOME_VERSION must change.
-9. Update simulation/evolution/configuration documentation.
+draw()
+pygame.display.*
+panel rendering
 ```
 
-The important question is not "where is it easiest to insert this line?".
-It is "which module owns this concept?".
+Headless execution depends on this.
 
----
+### Ecology owns ecology
 
-# How to change the neural architecture
-
-Changing vision dimensions, hidden-layer sizes, recurrent size or output
-count changes the genome layout.
-
-That means several contracts move together:
+Predation, overcrowding, metabolism, zones, nest protection, encounters, and mortality belong in:
 
 ```text
-config → GENOME_SIZE → brain.split_weights
-       → population genome matrices → persistence compatibility
+ecology.py
 ```
 
-Treat it as a versioned architecture change.
+Do not distribute parts of the same ecological law across movement, rendering, or reproduction.
 
----
+### Bootstrap owns fresh-world construction
 
-# How to change the agent record
-
-Adding a new per-critter state column affects `world.py` agent layout,
-possibly `senses.py`, `evolution.py`, `rendering.py`, `persistence.py`,
-tests, version contracts.
-
-The 36-column matrix is an internal compatibility boundary.
-
----
-
-# How to change save behavior
-
-Do not make persistence changes only in `save()` or only in `load()`.
-
-A persistence change involves serialization, validation, compatibility,
-commit semantics, tests, versioning, metrics sidecar.
-
-See [Persistence](persistence.md).
-
----
-
-# How to change inspection
-
-Preserve the separation:
+Do not create parallel world initialization sequences in:
 
 ```text
-Discovery = query over current population
-Observation = stable selected identity
+controls
+CLI
+tests
+GUI
+headless runner
 ```
 
-New discovery criteria belong in the population-query side. New
-observation behavior should operate through `set_inspection_selection()`.
+### Nest geometry has one mathematical authority
 
-Do not bypass that helper and assign `state.inspected_critter_id`
-directly.
+Toroidal nest geometry belongs in:
+
+```text
+nest_geometry.py
+```
+
+Do not reimplement distance or membership formulas elsewhere.
+
+### Runtime rules are replaced, not mutated
+
+Never partially edit fields inside the active `RuntimeRules`.
+
+Use the validated replacement path.
+
+### Population arrays move together
+
+Whenever population membership changes:
+
+```text
+pool
+agents
+ids
+```
+
+must change in lockstep.
+
+### Rendering is observational
+
+Rendering may inspect the world.
+
+It may not advance it.
+
+### UI navigation does not alter physics
+
+Changing panel, cursor, scroll position, language, or HUD visibility must not alter simulation outcomes.
 
 ---
 
-# In one sentence
+# 🧪 Testability as architecture
 
-Primordial Soup is a NumPy-first, module-oriented simulation in which
-static laws live in configuration, mutable experiment state is
-centralized in `state.py`, transient graphical navigation state is
-separated in `ui_state.py`, critters are represented as aligned
-numerical matrices with stable external identity, `simulation.step()`
-defines the authoritative tick order, and graphical, headless,
-inspection and persistence features all operate around that same
-simulation core.
+Several boundaries exist specifically because they make behavior independently testable.
 
-The architecture is small enough to understand. That is an architectural
-feature worth protecting.
+Examples:
+
+```text
+nest_geometry
+→ pure geometry without active-world state
+
+RuntimeRules
+→ validate candidate without mutating runtime
+
+ecology compute
+→ inspect ecological result before applying it
+
+input_dispatcher
+→ route input without rendering
+
+bootstrap
+→ construct worlds without graphical dependencies
+
+headless mode
+→ execute full simulation without Pygame window
+```
+
+These are not incidental conveniences.
+
+They are architectural seams.
 
 ---
 
-# Related documentation
+# 📁 Responsibility map
 
-→ [Simulation](simulation.md)
-→ [Evolution](evolution.md)
-→ [Inspection](inspection.md)
-→ [Configuration](configuration.md)
-→ [Headless](headless.md)
-→ [Persistence](persistence.md)
+| Module                | Primary responsibility                                           |
+| --------------------- | ---------------------------------------------------------------- |
+| `config.py`           | Structural constants, defaults and limits                        |
+| `layout.py`           | Derived world/display geometry                                   |
+| `runtime_rules.py`    | Immutable HOT-rule contract and validation                       |
+| `state.py`            | Shared runtime state                                             |
+| `bootstrap.py`        | Fresh-world construction                                         |
+| `world.py`            | Population representation, IDs, density fields, world generation |
+| `nest_geometry.py`    | Pure toroidal nest geometry                                      |
+| `senses.py`           | Neural perception                                                |
+| `brain.py`            | Neural evaluation                                                |
+| `movement.py`         | Toroidal movement                                                |
+| `genetics.py`         | Genome creation, crossover and mutation                          |
+| `evolution.py`        | Behavior pipeline and reproduction                               |
+| `ecology.py`          | Ecological resolution and mortality                              |
+| `simulation.py`       | Tick orchestration and execution loops                           |
+| `persistence.py`      | World checkpoints                                                |
+| `prefs.py`            | Operator preferences                                             |
+| `ui_state.py`         | Transient graphical navigation                                   |
+| `panels.py`           | Generic panel grammar                                            |
+| `panels_defs.py`      | Concrete panel/domain composition                                |
+| `input_dispatcher.py` | Input routing                                                    |
+| `controls.py`         | Reusable operator actions                                        |
+| `rendering.py`        | Graphical presentation                                           |
+| `i18n.py`             | Display localization                                             |
+| `recording.py`        | GIF capture                                                      |
+| `cli.py`              | Graphical/headless command-line entry                            |
+
+---
+
+# 🔒 Architectural invariants
+
+The current architecture depends on these rules:
+
+```text
+simulation.step is the canonical tick
+
+graphical and headless execution use the same step()
+
+simulation progression does not depend on rendering
+
+Pygame is not required by headless simulation
+
+bootstrap_new_world is the single fresh-world constructor
+
+ecological effects are computed from one frozen spatial snapshot
+
+ecology is applied globally before mortality compaction
+
+newborns do not participate in their birth-tick ecology
+
+pool / agents / ids remain in lockstep
+
+critter identity is stable and independent of array position
+
+RuntimeRules is immutable and validated before replacement
+
+state.runtime_rules is the active authority for HOT laws
+
+nest_geometry is the single authority for nest mathematics
+
+failed checkpoint loads do not partially mutate runtime
+
+operator preferences are separate from world checkpoints
+
+ui_state does not influence simulation physics
+
+rendering does not advance simulation
+```
+
+Violating one of these should be treated as an architectural change, not a local implementation detail.
+
+---
+
+## Final note
+
+Primordial Soup intentionally contains global state.
+
+This is a simulation with one active universe, not a request/response service pretending every tick is an isolated transaction.
+
+The goal is therefore not to eliminate state.
+
+The goal is to make ownership and mutation boundaries obvious.
+
+```text
+state is allowed
+
+mysterious state is not
+```
+
+The critters already provide enough emergent behavior.
+
+The architecture does not need to join them.

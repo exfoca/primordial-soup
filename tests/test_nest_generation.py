@@ -11,9 +11,10 @@ Cobre:
   - exhaustion do orcamento de tentativas -> RuntimeError.
   - nao muta o array de zones.
 
-E tambem cobre a orquestracao de bootstrap: bootstrap_new_world
-chama generate_zones e DEPOIS generate_nests(state.zones) e instala
-o resultado em state.nests.
+E tambem cobre a orquestracao de bootstrap: sob o schema v22,
+generate_zones retorna (zones, zone_centers); bootstrap instala
+AMBOS e DEPOIS chama generate_nests(zones), instalando o resultado
+em state.nests.
 
 Todos os docstrings deste arquivo sao intencionalmente ASCII puro.
 """
@@ -221,10 +222,19 @@ def test_generate_nests_exhaustion_raises(monkeypatch):
 def test_bootstrap_new_world_installs_sentinel_nests(monkeypatch):
     """bootstrap_new_world chama generate_zones e generate_nests(zones).
 
-    Sentinels identificam a ordem e o encadeamento: zones e produzido
-    primeiro, nests recebe exatamente esse objeto.
+    Sob v22, generate_zones() retorna (zones, zone_centers); o
+    bootstrap instala AMBOS, e passa exatamente a mask recebida para
+    generate_nests(). Sentinels identificam ordem e encadeamento.
     """
-    sentinel_zones = _empty_zones()
+    center = (
+        layout.LAYOUT.world_width - cfg.ZONE_RADIUS - 1,
+        layout.LAYOUT.world_height - cfg.ZONE_RADIUS - 1,
+    )
+    sentinel_zone_centers = tuple(
+        center
+        for _ in range(cfg.NUMBER_OF_ZONES)
+    )
+    sentinel_zones = world.build_zone_mask(sentinel_zone_centers)
     sentinel_nests = (
         (cfg.NEST_RADIUS + 1, cfg.NEST_RADIUS + 1),
         (cfg.NEST_RADIUS + 1 + 2 * cfg.NEST_RADIUS + 1, cfg.NEST_RADIUS + 1),
@@ -234,7 +244,10 @@ def test_bootstrap_new_world_installs_sentinel_nests(monkeypatch):
 
     def fake_generate_zones():
         calls.append("zones")
-        return sentinel_zones
+        return (
+            sentinel_zones,
+            sentinel_zone_centers,
+        )
 
     def fake_generate_nests(zones):
         assert zones is sentinel_zones, (
@@ -245,6 +258,7 @@ def test_bootstrap_new_world_installs_sentinel_nests(monkeypatch):
 
     original_rules = state.runtime_rules
     original_zones = state.zones
+    original_zone_centers = state.zone_centers
     original_nests = state.nests
     try:
         monkeypatch.setattr(bootstrap, "seed_lineages", lambda: None)
@@ -263,8 +277,10 @@ def test_bootstrap_new_world_installs_sentinel_nests(monkeypatch):
 
         assert calls == ["zones", "nests"]
         assert state.zones is sentinel_zones
+        assert state.zone_centers == sentinel_zone_centers
         assert state.nests == sentinel_nests
     finally:
         state.set_runtime_rules(original_rules)
         state.zones = original_zones
+        state.zone_centers = original_zone_centers
         state.nests = original_nests

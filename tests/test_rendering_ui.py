@@ -113,6 +113,19 @@ def _set_screen(screen, monkeypatch):
     monkeypatch.setattr(rendering, "_screen", screen)
 
 
+def _death_snapshot_from_live(lineage_index: int = 0, agent_index: int = 0):
+    """Cria DeathSnapshot completo sem acoplar rendering a Ecology."""
+    lineage = agents[lineage_index]
+    return state.DeathSnapshot(
+        critter_id=int(lineage["ids"][agent_index]),
+        lineage_index=lineage_index,
+        lineage_id=str(lineage["id"]),
+        tick=max(1, int(state.tick_count)),
+        agent=lineage["agents"][agent_index].copy(),
+        genome=lineage["pool"][agent_index].copy(),
+    )
+
+
 # ---------------------------------------------------------------------------
 # _resolve_inspection_subject
 # ---------------------------------------------------------------------------
@@ -136,20 +149,13 @@ def test_resolve_returns_alive_subject(fresh_world):
 
 
 def test_resolve_returns_dead_subject_from_snapshot(fresh_world):
-    from primordial_soup.evolution import _capture_death_snapshot_if_needed
-
-    cid = int(agents[0]["ids"][0])
-    state.set_inspection_selection(cid)
-    agent = agents[0]
-    matrix = agent["agents"]
-    matrix[0, INDEX_HP] = 0.0
-    alive = np.nonzero(matrix[:, INDEX_HP] > 0)[0]
-    _capture_death_snapshot_if_needed(0, agent, alive, matrix)
+    snapshot = _death_snapshot_from_live()
+    state.set_inspection_death_selection(snapshot)
 
     subject = rendering._resolve_inspection_subject()
     assert subject is not None
     assert subject.alive is False
-    assert subject.critter_id == cid
+    assert subject.critter_id == snapshot.critter_id
     assert subject.death_tick is not None
 
 
@@ -200,15 +206,8 @@ def test_details_morto_nao_chama_draw_vision(
     fresh_world, screen, render_fonts, monkeypatch
 ):
     """Morto: split_weights 1x, 6 heatmaps, ZERO _draw_vision."""
-    from primordial_soup.evolution import _capture_death_snapshot_if_needed
-
-    cid = int(agents[0]["ids"][0])
-    state.set_inspection_selection(cid)
-    agent = agents[0]
-    matrix = agent["agents"]
-    matrix[0, INDEX_HP] = 0.0
-    alive = np.nonzero(matrix[:, INDEX_HP] > 0)[0]
-    _capture_death_snapshot_if_needed(0, agent, alive, matrix)
+    snapshot = _death_snapshot_from_live()
+    state.set_inspection_death_selection(snapshot)
 
     calls = {"vision": 0, "split": 0, "heatmap": 0}
 
@@ -554,39 +553,49 @@ def test_telemetry_hud_stays_inside_world_area(
 def test_telemetry_hud_renders_under_all_states(
     fresh_world, screen, render_fonts, monkeypatch
 ):
-    """Nao quebra com recording ON, zonas OFF, efeito negativo, PT."""
+    """Nao quebra com recording ON, zonas OFF, efeito negativo, PT.
+
+    O efeito de HP das zonas e uma RuntimeRule: instalar via
+    state.update_runtime_rules e restaurar via
+    state.set_runtime_rules no finally, mantendo o smoke test
+    hermetico.
+    """
     _set_screen(screen, monkeypatch)
 
-    from primordial_soup import i18n
+    original_rules = state.runtime_rules
+    original_recording = state.recording
+    original_zones_active = state.zones_active
+    original_language = state.language
 
-    # recording OFF
-    state.recording = False
-    state.zones_active = True
-    state.zone_hp_effect = 5
-    rendering._draw_telemetry_hud()
-
-    # recording ON
-    state.recording = True
-    rendering._draw_telemetry_hud()
-    state.recording = False
-
-    # zonas OFF
-    state.zones_active = False
-    rendering._draw_telemetry_hud()
-    state.zones_active = True
-
-    # efeito negativo
-    state.zone_hp_effect = -50
-    rendering._draw_telemetry_hud()
-    state.zone_hp_effect = 5
-
-    # PT
-    old_lang = state.language
     try:
+        # recording OFF
+        state.recording = False
+        state.zones_active = True
+        state.update_runtime_rules(zone_hp_effect=5)
+        rendering._draw_telemetry_hud()
+
+        # recording ON
+        state.recording = True
+        rendering._draw_telemetry_hud()
+
+        # zonas OFF
+        state.recording = False
+        state.zones_active = False
+        rendering._draw_telemetry_hud()
+
+        # efeito negativo
+        state.zones_active = True
+        state.update_runtime_rules(zone_hp_effect=-50)
+        rendering._draw_telemetry_hud()
+
+        # PT
         state.language = "pt"
         rendering._draw_telemetry_hud()
     finally:
-        state.language = old_lang
+        state.set_runtime_rules(original_rules)
+        state.recording = original_recording
+        state.zones_active = original_zones_active
+        state.language = original_language
 
 
 def test_telemetry_hud_does_not_check_floating_hud_visible(
@@ -636,3 +645,195 @@ def test_trail_e_markers_gated_por_painel_focado(fresh_world, screen, monkeypatc
     assert not np.array_equal(img_insp, img_conf), (
         "overlay deveria diferenciar paineis; imagens identicas"
     )
+
+
+# ---------------------------------------------------------------------------
+# Death markers gerais
+# ---------------------------------------------------------------------------
+
+
+def _marker_snapshot(critter_id, lineage_index, x, y, tick=1):
+    row = np.zeros((world.AGENT_COLUMNS,), dtype=np.float32)
+    row[INDEX_X] = float(x)
+    row[INDEX_Y] = float(y)
+    return state.DeathSnapshot(
+        critter_id=critter_id,
+        lineage_index=lineage_index,
+        lineage_id=cfg.LINEAGES[lineage_index]["id"],
+        tick=tick,
+        agent=row,
+        genome=np.zeros((cfg.GENOME_SIZE,), dtype=np.float32),
+    )
+
+
+def test_death_markers_draw_diagonal_x_in_lineage_colors(fresh_world):
+    positions = ((20, 20), (40, 40), (60, 60))
+    for li, (x, y) in enumerate(positions):
+        state.record_death_snapshot(_marker_snapshot(100 + li, li, x, y))
+
+    image = np.zeros(
+        (world.layout.LAYOUT.world_width, world.layout.LAYOUT.world_height, 3),
+        dtype=np.uint8,
+    )
+    rendering._draw_death_markers(image)
+
+    offsets = ((0, 0), (-1, -1), (1, 1), (-1, 1), (1, -1))
+    for li, (x, y) in enumerate(positions):
+        color = np.asarray(cfg.LINEAGES[li]["color"], dtype=np.uint8)
+        for dx, dy in offsets:
+            assert np.array_equal(image[x + dx, y + dy, :], color)
+
+
+def test_death_marker_wraps_toroidally(fresh_world):
+    from primordial_soup import layout
+
+    state.record_death_snapshot(_marker_snapshot(100, 0, 0, 0))
+    image = np.zeros(
+        (layout.LAYOUT.world_width, layout.LAYOUT.world_height, 3),
+        dtype=np.uint8,
+    )
+    rendering._draw_death_markers(image)
+    color = np.asarray(cfg.LINEAGES[0]["color"], dtype=np.uint8)
+
+    assert np.array_equal(image[layout.LAYOUT.world_width - 1, layout.LAYOUT.world_height - 1], color)
+    assert np.array_equal(image[layout.LAYOUT.world_width - 1, 1], color)
+    assert np.array_equal(image[1, layout.LAYOUT.world_height - 1], color)
+
+
+def test_death_marker_is_independent_of_active_panel(fresh_world):
+    from primordial_soup import layout
+
+    snapshot = _marker_snapshot(100, 1, 30, 30)
+    state.record_death_snapshot(snapshot)
+    ui_state.set_active_panel(ui_state.PANEL_CONFIGURATION)
+    image = np.zeros(
+        (layout.LAYOUT.world_width, layout.LAYOUT.world_height, 3),
+        dtype=np.uint8,
+    )
+
+    rendering._draw_death_markers(image)
+
+    assert tuple(image[30, 30, :]) == tuple(cfg.LINEAGES[1]["color"])
+
+
+def test_build_image_death_marker_overwrites_critter_and_selected_cyan_wins(
+    fresh_world,
+):
+    x, y = 70, 70
+    agents[0]["agents"][0, INDEX_X] = float(x)
+    agents[0]["agents"][0, INDEX_Y] = float(y)
+    world.fill_fields()
+
+    snapshot = _marker_snapshot(10000, 1, x, y)
+    state.record_death_snapshot(snapshot)
+    ui_state.set_active_panel(ui_state.PANEL_CONFIGURATION)
+    image = rendering._build_image()
+    assert tuple(image[x, y, :]) == tuple(cfg.LINEAGES[1]["color"])
+
+    state.set_inspection_death_selection(snapshot)
+    ui_state.set_active_panel(ui_state.PANEL_INSPECTION)
+    image = rendering._build_image()
+    assert tuple(image[x, y, :]) == (0, 255, 255)
+
+
+def test_expired_death_marker_is_not_drawn(fresh_world):
+    from primordial_soup import layout
+
+    snapshot = _marker_snapshot(100, 2, 80, 80, tick=1)
+    state.record_death_snapshot(snapshot)
+    state.expire_recent_deaths(current_tick=1 + cfg.DEATH_MARKER_TTL_TICKS)
+    image = np.zeros(
+        (layout.LAYOUT.world_width, layout.LAYOUT.world_height, 3),
+        dtype=np.uint8,
+    )
+
+    rendering._draw_death_markers(image)
+
+    assert tuple(image[80, 80, :]) == (0, 0, 0)
+
+
+def test_death_marker_rejects_inconsistent_lineage(fresh_world):
+    from primordial_soup import layout
+
+    valid = _marker_snapshot(100, 0, 90, 90)
+    bad = state.DeathSnapshot(
+        critter_id=valid.critter_id,
+        lineage_index=valid.lineage_index,
+        lineage_id="G",
+        tick=valid.tick,
+        agent=valid.agent,
+        genome=valid.genome,
+    )
+    state.record_death_snapshot(bad)
+    image = np.zeros(
+        (layout.LAYOUT.world_width, layout.LAYOUT.world_height, 3),
+        dtype=np.uint8,
+    )
+
+    with pytest.raises(RuntimeError):
+        rendering._draw_death_markers(image)
+
+
+# ---------------------------------------------------------------------------
+# Metrics: titulo unico
+# ---------------------------------------------------------------------------
+
+
+def test_metrics_panel_renders_title_only_once_in_both_languages(
+    fresh_world, screen, render_fonts, monkeypatch
+):
+    """_draw_panel_viewport para Metrics emite o titulo exatamente 1x.
+
+    Antes da correcao, _draw_metrics_dashboard redesenhava o titulo,
+    produzindo "METRICS" / "METRICAS" duplicado no topo do painel.
+
+    O spy conta apenas i18n.t("panel.metrics.title"); demais chaves
+    passam inalteradas, para nao capturar os titulos dos charts.
+
+    Renderiza com scroll_offset = 0: o teste cobre a renderizacao
+    normal, nao a passada de redraw que _draw_panel_viewport executa
+    quando ha scroll.
+    """
+    _set_screen(screen, monkeypatch)
+
+    from primordial_soup import config as cfg_module
+    from primordial_soup import i18n, panels, panels_defs
+
+    panels.PANELS.clear()
+    panels_defs.register_default_panels()
+
+    ui_state.set_active_panel(ui_state.PANEL_METRICS)
+    ui_state.panel_scroll_offsets[ui_state.PANEL_METRICS] = 0
+
+    real_t = i18n.t
+    calls = {"metrics_title": 0}
+
+    def spy_t(key, *args, **kwargs):
+        if key == "panel.metrics.title":
+            calls["metrics_title"] += 1
+        return real_t(key, *args, **kwargs)
+
+    monkeypatch.setattr(i18n, "t", spy_t)
+
+    old_lang = state.language
+    try:
+        for lang in i18n.AVAILABLE_LANGUAGES:
+            state.language = lang
+            calls["metrics_title"] = 0
+            ui_state.panel_scroll_offsets[ui_state.PANEL_METRICS] = 0
+
+            rendering._draw_panel_viewport(
+                0,
+                0,
+                cfg_module.INSPECTION_PANEL_WIDTH,
+                screen.get_height(),
+                ui_state.PANEL_METRICS,
+            )
+
+            assert calls["metrics_title"] == 1, (
+                f"idioma={lang!r}: titulo do painel Metrics "
+                f"renderizado {calls['metrics_title']} vezes, "
+                f"esperado exatamente 1."
+            )
+    finally:
+        state.language = old_lang

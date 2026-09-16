@@ -7,7 +7,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "primordial_soup"
-version = "0.6.0"
+dynamic = ["version"]
 requires-python = ">=3.12"
 license = "MIT"
 dependencies = ["numpy", "pygame", "Pillow"]
@@ -19,12 +19,14 @@ dependencies = ["numpy", "pygame", "Pillow"]
 # with `pip install .[recording]` pulls it in.
 recording = ["Pillow"]
 
+[tool.setuptools.dynamic]
+version = {attr = "primordial_soup._version.__version__"}
+
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["primordial_soup*"]
 
 [tool.setuptools.package-data]
-# O icone da janela e carregado por rendering.init() via
-# os.path.dirname(__file__). Sem esta declaracao, `pip install .`
-# nao empacota o PNG e o jogo roda sem icone (com aviso no console).
-primordial_soup = ["icon.png"]
+# Recursos graficos/sonoros sao carregados por caminho relativo ao
+# pacote. Sem esta declaracao, `pip install .` nao os inclui no wheel.
+primordial_soup = ["icon.png", "sounds/*.wav"]

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import random
 import sys
+from dataclasses import dataclass
 
 import numpy as np
 
@@ -20,11 +21,30 @@ from .world import (
     average_composite_score_per_lineage,
     fill_fields,
     find_agent_at,
+    find_recent_death_at,
 )
 from .evolution import evaluate_and_move, reproduce_lineage
 from .ecology import compute_ecology_resolution, apply_ecology_resolution
 from .bootstrap import bootstrap_new_world
 from . import prefs
+
+
+@dataclass(frozen=True, slots=True)
+class StepResult:
+    """Fatos observaveis de UM tick.
+
+    Retorno sincrono de simulation.step(). Nao e evento, nao e
+    fila, nao e persistido. O unico consumidor hoje e o composition
+    root grafico (simulation.run), que transforma birth_lineage em
+    BirthWave e mantem o contrato de BIRTH_ACTIVITY agregado por
+    batch.
+
+    Contrato estrito:
+        nenhum nascimento -> birth_lineage is None, birth_count == 0
+        nascimento        -> birth_lineage is int, birth_count > 0
+    """
+    birth_lineage: int | None
+    birth_count: int
 
 
 def _advance_tick_credit(
@@ -136,11 +156,12 @@ def _take_reproduction_turn() -> int | None:
     return None
 
 
-def step() -> None:
+def step() -> StepResult:
     """Avanca a simulacao por exatamente 1 tick.
 
     Lifecycle canonico:
 
+        0. incrementar tick e expirar recent_deaths vencidos
         1. perceber / decidir / mover (todas as linhagens)
         2. fill_fields() -- snapshot espacial pos-movimento
         3. compute_ecology_resolution()  -- sem mutacao
@@ -155,9 +176,13 @@ def step() -> None:
     Newborns nao participam da ecologia do proprio birth tick: eles
     so aparecem apos o fill_fields() final.
 
-    Nao renderiza: o chamador decide quando desenhar.
+    Retorna StepResult com os fatos observaveis do tick. StepResult
+    nao controla apresentacao: nao renderiza, nao emite audio, nao
+    importa UI. O composition root grafico decide o que fazer com
+    o fato.
     """
     state.tick_count += 1
+    state.expire_recent_deaths()
 
     for i in range(cfg.TOTAL_LINEAGES):
         evaluate_and_move(i)
@@ -168,9 +193,15 @@ def step() -> None:
     resolution = compute_ecology_resolution()
     apply_ecology_resolution(resolution)
 
+    birth_lineage: int | None = None
+    birth_count = 0
+
     reproduction_lineage = _take_reproduction_turn()
     if reproduction_lineage is not None:
-        reproduce_lineage(reproduction_lineage)
+        newborn_count = reproduce_lineage(reproduction_lineage)
+        if newborn_count > 0:
+            birth_lineage = reproduction_lineage
+            birth_count = newborn_count
 
     fill_fields()
 
@@ -194,6 +225,11 @@ def step() -> None:
                 genes=state.runtime_rules.mutated_genes,
             )
         )
+
+    return StepResult(
+        birth_lineage=birth_lineage,
+        birth_count=birth_count,
+    )
 
 
 def run_headless(
@@ -336,6 +372,8 @@ def run() -> None:
     from .panels import DispatchResult, Flow
     from .panels_defs import register_default_panels
     from . import ui_state
+    from . import audio
+    from . import feedback
 
     bootstrap_new_world()
 
@@ -354,11 +392,42 @@ def run() -> None:
 
     init()
 
+    audio.init()
+    audio.set_music_enabled(prefs.music_enabled)
+    audio.set_sfx_enabled(prefs.sfx_enabled)
+    feedback.register_sink(audio.handle_feedback)
+    feedback.emit(feedback.FeedbackEvent.WORLD_GENERATED)
+
     # Adapters globais do dispatcher. Registrados aqui, nao no
     # input_dispatcher, para o dispatcher nao importar rendering nem
     # simulation (evita import cycle e mantem o dispatcher neutro).
+    def _run_steps_with_feedback(count: int) -> None:
+        births_before = state.births
+        birth_lineages: set[int] = set()
+
+        for _ in range(count):
+            result = step()
+            if result.birth_count > 0:
+                # Contrato StepResult: birth_count > 0 implica
+                # birth_lineage != None. Falhar alto se violado,
+                # em vez de registrar wave com linhagem None.
+                assert result.birth_lineage is not None, (
+                    "StepResult.birth_count > 0 sem birth_lineage"
+                )
+                birth_lineages.add(result.birth_lineage)
+
+        # Coalescing por batch grafico: 20 nascimentos de Red em
+        # ticks que rodam no mesmo frame sao apresentados como UMA
+        # onda Red neste frame. Ordem determinista para leitura e
+        # para testes futuros.
+        for lineage_index in sorted(birth_lineages):
+            ui_state.add_birth_wave(lineage_index)
+
+        if state.births > births_before:
+            feedback.emit(feedback.FeedbackEvent.BIRTH_ACTIVITY)
+
     def _adapter_step() -> DispatchResult:
-        step()
+        _run_steps_with_feedback(1)
         return DispatchResult.continue_(redraw=True)
 
     def _adapter_space() -> DispatchResult:
@@ -379,6 +448,12 @@ def run() -> None:
         world_pos = rendering.screen_to_world(pos)
         if world_pos is None:
             return DispatchResult.continue_(redraw=False)
+        death = find_recent_death_at(*world_pos)
+        if death is not None:
+            state.set_inspection_death_selection(death)
+            ui_state.set_active_panel(ui_state.PANEL_INSPECTION)
+            return DispatchResult.continue_(redraw=True)
+
         hit = find_agent_at(*world_pos)
         if hit is None:
             return DispatchResult.continue_(redraw=False)
@@ -514,8 +589,13 @@ def run() -> None:
             # Flush final: ignora _save_failure_suppressed (retry
             # unico no shutdown), mas nunca _write_allowed.
             prefs.save_if_dirty(force=True)
+            feedback.clear_sink()
+            audio.play_shutdown_sound()
+            audio.shutdown()
             shutdown()
             return
+
+        audio.sync_music(running=not state.paused)
 
         needs_draw = result.redraw
 
@@ -525,14 +605,25 @@ def run() -> None:
         if ui_state.expire_notice_if_needed():
             needs_draw = True
 
+        # Expira waves pelo mesmo motivo. Remocao da ultima wave
+        # precisa de um redraw final para limpar o ultimo frame que
+        # ainda a continha.
+        if ui_state.expire_birth_waves_if_needed():
+            needs_draw = True
+
+        # Enquanto houver wave, cada frame grafico avanca a animacao.
+        # FORA do gate de pausa: waves animam mesmo com a simulacao
+        # parada, porque medem wall-clock, nao ticks.
+        if ui_state.has_birth_waves():
+            needs_draw = True
+
         if not state.paused:
             steps_due, tick_credit = _advance_tick_credit(
                 tick_credit,
                 state.simulation_speed,
             )
 
-            for _ in range(steps_due):
-                step()
+            _run_steps_with_feedback(steps_due)
 
             needs_draw = True
 

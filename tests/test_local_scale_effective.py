@@ -1,17 +1,21 @@
 """Testes do controle runtime de escala local de mutacao.
 
-Cobrem a propriedade que define a correcao do Patch 1:
+Contrato atual:
 
-    state.local_scale_fraction
-        -> atravessa evolution
-        -> chega a genetics
-        -> altera a fracao de genes afetados pela mutacao local
+    state.runtime_rules.local_scale_fraction
+        -> orquestracao/evolution captura o valor ativo de RuntimeRules
+        -> genetics recebe o valor como argumento explicito
+        -> a fracao de genes afetados pela mutacao local muda
 
-O teste e propositalmente unitario em relacao a mutacao:
+Este arquivo e propositalmente unitario em relacao a mutacao:
 crossover_and_mutate e chamado direto, com pais e seed fixos, para
 isolar a mutacao de parent selection, posicionamento de nascimento,
-alocacao de ID e ordem de tick. Se a passagem de valor quebrar, este
-teste denuncia sem ruido de outras partes da simulacao.
+alocacao de ID e ordem de tick. Se o valor entregue a genetics por
+evolution regredir, este teste continua sendo o ponto de denuncia
+para a fronteira genetica.
+
+A propagacao efetiva de RuntimeRules atraves de evolution.py e
+coberta separadamente em tests/test_runtime_rules.py.
 
 Todos os docstrings e comentarios deste arquivo sao intencionalmente
 ASCII puro, seguindo o estilo de nomenclatura interna do projeto.
@@ -61,6 +65,18 @@ def _count_changed_genes(
         mutation_rate=100,  # todo filho muta, para o efeito ser claro
         mutated_genes=1,
         local_scale_fraction=local_scale_fraction,
+        # Os 8 kwargs abaixo fecharam o contrato de crossover_and_mutate
+        # (Patch 7/9). O teste mede a escala LOCAL, entao
+        # global_probability=0 forca o ramo local puro e impede que
+        # mutacoes globais contaminem a contagem.
+        crossover_mode=cfg.CROSSOVER_MODE,
+        crossover_probability=float(cfg.CROSSOVER_PROBABILITY),
+        block_size=int(cfg.BLOCK_SIZE),
+        mutation_mode="two_scales",
+        local_scale_sigma=float(cfg.LOCAL_SCALE_SIGMA),
+        global_probability=0,
+        global_scale_fraction=int(cfg.GLOBAL_SCALE_FRACTION * 100),
+        global_scale_sigma=float(cfg.GLOBAL_SCALE_SIGMA),
     )
 
     changed = 0
@@ -92,36 +108,62 @@ def test_local_scale_is_monotonic_in_gene_count():
     )
 
 
-def test_state_local_scale_fraction_drives_mutation():
-    """Mudar state.local_scale_fraction muda o resultado efetivo.
+def test_runtime_rules_local_scale_fraction_drives_mutation():
+    """Alterar a RuntimeRule muda o valor entregue a fronteira genetica.
 
-    Chama crossover_and_mutate com o valor lido de state, que e o
-    mesmo caminho que evolution._reproduce_one_pair faz em producao.
-    O ponto do teste e provar que o valor de state chega ate a
-    mutacao, e nao que state tem um tipo especifico.
+    Altera o valor ativo em RuntimeRules via a API oficial
+    (state.update_runtime_rules) e le de volta de
+    state.runtime_rules.local_scale_fraction. O valor resultante e o
+    mesmo que evolution._reproduce_one_pair repassa a genetics em
+    producao; provar aqui que ele altera a quantidade efetiva de
+    genes afetados pela mutacao local prova o contrato da fronteira
+    genetica.
+
+    A propagacao atraves de evolution.py e coberta separadamente em
+    tests/test_runtime_rules.py.
     """
     a, b = _fixed_parents(seed=3)
 
-    state.local_scale_fraction = cfg.MIN_LOCAL_SCALE_FRACTION
-    small = _count_changed_genes(a, b, state.local_scale_fraction, seed=99)
+    original_rules = state.runtime_rules
+    try:
+        state.update_runtime_rules(
+            local_scale_fraction=cfg.MIN_LOCAL_SCALE_FRACTION
+        )
+        small = _count_changed_genes(
+            a,
+            b,
+            state.runtime_rules.local_scale_fraction,
+            seed=99,
+        )
 
-    state.local_scale_fraction = cfg.MAX_LOCAL_SCALE_FRACTION
-    large = _count_changed_genes(a, b, state.local_scale_fraction, seed=99)
+        state.update_runtime_rules(
+            local_scale_fraction=cfg.MAX_LOCAL_SCALE_FRACTION
+        )
+        large = _count_changed_genes(
+            a,
+            b,
+            state.runtime_rules.local_scale_fraction,
+            seed=99,
+        )
+    finally:
+        state.set_runtime_rules(original_rules)
 
     assert small < large, (
-        "alterar state.local_scale_fraction nao mudou a quantidade "
-        "efetiva de genes afetados pela mutacao local."
+        "alterar state.runtime_rules.local_scale_fraction nao mudou "
+        "a quantidade efetiva de genes afetados pela mutacao local."
     )
 
 
 def test_default_bootstrap_matches_config_default():
-    """Com state.local_scale_fraction = int(cfg.LOCAL_SCALE_FRACTION*100),
-    o resultado deve ser o mesmo que o default historico de config.
+    """O default estrutural continua sendo um valor valido para a
+    fronteira genetica.
 
-    Nao ha assert de valor absoluto: o teste apenas confirma que o
-    caminho de bootstrap atual (state inicializado a partir de
-    cfg.LOCAL_SCALE_FRACTION) continua sendo um caso valido do novo
-    caminho runtime, e nao um caso especial que bypassa o parametro.
+    O default estrutural cfg.LOCAL_SCALE_FRACTION e convertido para a
+    unidade inteira usada por RuntimeRules e constitui um valor
+    valido para a fronteira genetica. Nao ha assert de valor
+    absoluto: o teste apenas confirma que o caminho de bootstrap
+    atual permanece um caso valido do caminho runtime, e nao um caso
+    especial que bypassa o parametro.
     """
     a, b = _fixed_parents(seed=4)
     bootstrap_value = int(cfg.LOCAL_SCALE_FRACTION * 100)

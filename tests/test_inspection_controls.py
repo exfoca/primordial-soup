@@ -11,7 +11,6 @@ disparados via input_dispatcher com o painel Inspection focado e o
 cursor no item certo.
 """
 
-from types import SimpleNamespace
 
 import numpy as np
 import pygame
@@ -68,6 +67,22 @@ def _reset_ui_and_panels():
 
 def _first_id(li: int = 0) -> int:
     return int(agents[li]["ids"][0])
+
+
+def _install_dead_observation(li: int = 0, ai: int = 0) -> state.DeathSnapshot:
+    lineage = agents[li]
+    cid = int(lineage["ids"][ai])
+    state.set_inspection_selection(cid)
+    snapshot = state.DeathSnapshot(
+        critter_id=cid,
+        lineage_index=li,
+        lineage_id=str(lineage["id"]),
+        tick=max(1, int(state.tick_count)),
+        agent=lineage["agents"][ai].copy(),
+        genome=lineage["pool"][ai].copy(),
+    )
+    state.record_death_snapshot(snapshot)
+    return snapshot
 
 
 def _focus_inspection_with_cursor(item_id: str) -> None:
@@ -230,15 +245,7 @@ def test_enter_without_candidate_keeps_observation(fresh_world, monkeypatch):
 
 def test_observe_clears_death_snapshot(fresh_world, monkeypatch):
     """Observar novo candidato limpa snapshot e trail."""
-    from primordial_soup.ecology import _capture_death_snapshot_if_needed
-
-    cid = int(agents[0]["ids"][0])
-    state.set_inspection_selection(cid)
-    agent = agents[0]
-    matrix = agent["agents"]
-    matrix[0, INDEX_HP] = 0.0
-    alive = np.nonzero(matrix[:, INDEX_HP] > 0)[0]
-    _capture_death_snapshot_if_needed(0, agent, alive, matrix)
+    _install_dead_observation()
     assert state.inspection_death_snapshot is not None
 
     state.discovery_lineage_filter = "G"
@@ -280,16 +287,8 @@ def test_candidate_not_interactive(fresh_world):
 
 
 def test_navigation_does_not_disturb_death_snapshot(fresh_world, monkeypatch):
-    from primordial_soup.ecology import _capture_death_snapshot_if_needed
-
     cid = int(agents[0]["ids"][0])
-    state.set_inspection_selection(cid)
-    agent = agents[0]
-    matrix = agent["agents"]
-    matrix[0, INDEX_HP] = 0.0
-    alive = np.nonzero(matrix[:, INDEX_HP] > 0)[0]
-    _capture_death_snapshot_if_needed(0, agent, alive, matrix)
-    snap = state.inspection_death_snapshot
+    snap = _install_dead_observation()
     assert snap is not None
     trail_before = list(state.inspected_trail)
 
@@ -442,104 +441,3 @@ def test_click_on_other_critter_changes_observation(fresh_world):
         "trocar de bicho via clique deve limpar trail"
     )
 
-def test_telemetry_global_mutation_uses_runtime_rules(monkeypatch):
-    from primordial_soup import rendering
-
-    original = state.runtime_rules
-    captured = []
-    try:
-        state.update_runtime_rules(
-            global_probability=75,
-            global_scale_fraction=40,
-        )
-        monkeypatch.setattr(cfg, "GLOBAL_PROBABILITY", 0.10)
-        monkeypatch.setattr(cfg, "GLOBAL_SCALE_FRACTION", 0.20)
-        monkeypatch.setattr(rendering, "_screen", pygame.Surface((800, 600)))
-        monkeypatch.setattr(
-            rendering,
-            "_font",
-            SimpleNamespace(get_height=lambda: 14),
-        )
-        monkeypatch.setattr(
-            rendering,
-            "_draw_hud_kv",
-            lambda screen, label, value, x, y: y + 1,
-        )
-        monkeypatch.setattr(
-            rendering,
-            "_draw_hud_divider",
-            lambda screen, x, y, width: y + 1,
-        )
-
-        def fake_inline(screen, entries, x, y):
-            captured.append(entries)
-            return y + 1
-
-        monkeypatch.setattr(rendering, "_draw_hud_kv_inline", fake_inline)
-        monkeypatch.setattr(rendering, "_zone_summary", lambda: "zones")
-        rendering._draw_telemetry_panel(0, 0, 400)
-
-        values = [value for entries in captured for _label, value in entries]
-        assert "75%@40%" in values
-        assert "10%@20%" not in values
-    finally:
-        state.set_runtime_rules(original)
-
-
-def test_telemetry_displays_camera_zoom(monkeypatch):
-    """O painel de telemetria mostra o fator de zoom atual da camera.
-
-    Este teste valida apenas a FORMATACAO do HUD (label + valor),
-    nao a matematica da camera. Por isso manipula `_camera.zoom`
-    diretamente em vez de simular wheel. A matematica da camera e
-    coberta por tests/test_rendering_camera.py.
-    """
-    from primordial_soup import i18n
-    from primordial_soup import rendering
-
-    monkeypatch.setattr(rendering, "_screen", pygame.Surface((800, 600)))
-    monkeypatch.setattr(
-        rendering,
-        "_font",
-        SimpleNamespace(get_height=lambda: 14),
-    )
-    monkeypatch.setattr(
-        rendering,
-        "_draw_hud_divider",
-        lambda screen, x, y, width: y + 1,
-    )
-
-    captured_zoom = []
-
-    def fake_kv(screen, label, value, x, y):
-        captured_zoom.append((label, value))
-        return y + 1
-
-    monkeypatch.setattr(rendering, "_draw_hud_kv", fake_kv)
-
-    def capture_inline(screen, entries, x, y):
-        for label, value in entries:
-            captured_zoom.append((label, value))
-        return y + 1
-
-    monkeypatch.setattr(rendering, "_draw_hud_kv_inline", capture_inline)
-    monkeypatch.setattr(rendering, "_zone_summary", lambda: "zones")
-
-    try:
-        rendering.reset_camera()
-        captured_zoom.clear()
-        rendering._draw_telemetry_panel(0, 0, 400)
-        assert (
-            i18n.t("hud.label.zoom"),
-            "1.00x",
-        ) in captured_zoom
-
-        captured_zoom.clear()
-        rendering._camera.zoom = 1.20
-        rendering._draw_telemetry_panel(0, 0, 400)
-        assert (
-            i18n.t("hud.label.zoom"),
-            "1.20x",
-        ) in captured_zoom
-    finally:
-        rendering.reset_camera()

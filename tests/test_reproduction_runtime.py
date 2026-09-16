@@ -35,7 +35,7 @@ from primordial_soup.world import (
 
 
 def _valid_test_nests():
-    """Geometria deterministica de ninhos valida para o contrato v21."""
+    """Geometria deterministica de ninhos valida para o contrato v22."""
     radius = cfg.NEST_RADIUS
     y = radius + 1
     stride = 2 * radius + 1
@@ -46,16 +46,24 @@ def _valid_test_nests():
     )
 
 
-def _install_checkpoint_geometry():
-    """Instala zones vazias e nests deterministicos.
-
-    Nao consome RNG. Fixtures de persistence/step precisam de geometry
-    valida sob o contrato v21.
-    """
-    state.zones = np.zeros(
-        (layout.LAYOUT.world_width, layout.LAYOUT.world_height),
-        dtype=bool,
+def _valid_test_zone_centers():
+    """Centros de zona determinísticos, sem consumir RNG."""
+    center = (
+        layout.LAYOUT.world_width - cfg.ZONE_RADIUS - 1,
+        layout.LAYOUT.world_height - cfg.ZONE_RADIUS - 1,
     )
+    return tuple(center for _ in range(cfg.NUMBER_OF_ZONES))
+
+
+def _install_checkpoint_geometry():
+    """Instala geometry valida sob o contrato v22.
+
+    Nao consome RNG. Fixtures de persistence/step precisam de
+    geometry valida sob v22.
+    """
+    centers = _valid_test_zone_centers()
+    state.zone_centers = centers
+    state.zones = world.build_zone_mask(centers)
     state.nests = _valid_test_nests()
 
 
@@ -447,7 +455,7 @@ def test_load_restores_cooldown_without_hot_clamp(tmp_path):
     world.place_initially()
     world.fill_fields()
 
-    # Geometry precisa existir explicitamente: o save v21 exige
+    # Geometry precisa existir explicitamente: o save v22 exige
     # zones e nests validos. Instalacao deterministica, sem RNG.
     _install_checkpoint_geometry()
 

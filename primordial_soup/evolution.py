@@ -325,7 +325,7 @@ def _reproduce_one_pair(
 
 # --- Reproducao -----------------------------------------------------------
 
-def reproduce_lineage(index: int) -> None:
+def reproduce_lineage(index: int) -> int:
     """Executa o bloco reprodutivo para a linhagem dona do turno.
 
     Le state.runtime_rules uma vez. Nao aplica ecologia. Nao toca em
@@ -334,6 +334,13 @@ def reproduce_lineage(index: int) -> None:
 
     Chamado depois de apply_ecology_resolution(); ver
     simulation.step().
+
+    Returns:
+        Quantidade de descendentes efetivamente anexados a linhagem
+        nesta chamada. Zero cobre linhagem extinta, nenhum pai
+        elegivel, todos os attempts esgotados e ausencia de pool
+        reproduzivel. Nao emite feedback, nao conhece UI, nao
+        desenha; a observacao e apenas local ao bloco reprodutivo.
     """
     if not (0 <= index < cfg.TOTAL_LINEAGES):
         raise IndexError(
@@ -345,7 +352,7 @@ def reproduce_lineage(index: int) -> None:
     matrix = agent["agents"]
     if matrix.shape[0] == 0:
         # Linhagem extinta: nada a reproduzir, nao exige geometria.
-        return
+        return 0
 
     nests = state.nests
     if nests is None:
@@ -360,6 +367,7 @@ def reproduce_lineage(index: int) -> None:
         )
 
     rules = state.runtime_rules
+    newborn_count = 0
 
     attempts = max(
         1,
@@ -390,3 +398,6 @@ def reproduce_lineage(index: int) -> None:
         )
         if not children:
             break
+        newborn_count += len(children)
+
+    return newborn_count

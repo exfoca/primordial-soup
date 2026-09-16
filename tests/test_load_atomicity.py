@@ -22,7 +22,7 @@ from primordial_soup.state import agents
 
 
 def _valid_test_nests():
-    """Geometria deterministica de ninhos valida para o contrato v21."""
+    """Geometria deterministica de ninhos valida para o schema v23."""
     radius = cfg.NEST_RADIUS
     y = radius + 1
     stride = 2 * radius + 1
@@ -33,16 +33,27 @@ def _valid_test_nests():
     )
 
 
-def _install_checkpoint_geometry():
-    """Instala zones vazias e nests determinísticos.
-
-    Nao consome RNG: fixtures de persistence nao devem alterar a
-    sequencia aleatoria global so por preparar um checkpoint.
-    """
-    state.zones = np.zeros(
-        (layout.LAYOUT.world_width, layout.LAYOUT.world_height),
-        dtype=bool,
+def _valid_test_zone_centers():
+    """Centros de zona deterministicos, sem consumir RNG."""
+    center = (
+        layout.LAYOUT.world_width - cfg.ZONE_RADIUS - 1,
+        layout.LAYOUT.world_height - cfg.ZONE_RADIUS - 1,
     )
+    return tuple(
+        center
+        for _ in range(cfg.NUMBER_OF_ZONES)
+    )
+
+
+def _install_checkpoint_geometry():
+    """Instala geometry valida sob o schema v23 sem consumir RNG.
+
+    zone_centers e a autoridade geometrica; zones e derivada por
+    world.build_zone_mask(). Nao consome RNG.
+    """
+    centers = _valid_test_zone_centers()
+    state.zone_centers = centers
+    state.zones = world.build_zone_mask(centers)
     state.nests = _valid_test_nests()
 
 
@@ -54,9 +65,9 @@ def fresh_world():
     aqui criaria um estado impossivel no runtime (agents=50, ids=50,
     pool=0) e quebraria os testes de compactacao e de save/load.
 
-    Geometry e instalada explicitamente: o checkpoint v21 exige zones
-    e nests validos. Fixtures que salvam mundo manual precisam de um
-    runtime checkpointavel deterministico.
+    Geometry e instalada explicitamente: o checkpoint v23 exige
+    zone_centers, zones e nests validos. Fixtures que salvam mundo
+    manual precisam de um runtime checkpointavel deterministico.
     """
     state.reset_counters()
     seed_lineages()
@@ -70,6 +81,7 @@ def fresh_world():
     yield
     state.reset_counters()
     state.zones = None
+    state.zone_centers = None
     state.nests = None
     agents.clear()
 
@@ -80,6 +92,7 @@ def _isolate_state():
     proprio load de teste parta de um runtime limpo."""
     state.reset_counters()
     state.zones = None
+    state.zone_centers = None
     state.nests = None
     agents.clear()
     seed_lineages()
@@ -88,7 +101,7 @@ def _isolate_state():
 
 
 # ---------------------------------------------------------------------------
-# Structural validation of the v10 contract: lineage count, per-array
+# Structural validation of the v23 contract: lineage count, per-array
 # rank, and cross-array lockstep. Each test corrupts exactly one aspect of
 # a valid save and asserts that load() rejects it with False.
 # ---------------------------------------------------------------------------
@@ -505,6 +518,23 @@ def test_failed_load_does_not_mutate_runtime_state(fresh_world, tmp_path):
     # Metrica sintetica no historico.
     state.metrics_history["populacao"].append((0, (1.0, 1.0, 1.0)))
 
+    # Archive/Inspection de morto sinteticos. O ID nao esta vivo e ja
+    # foi alocado segundo next_critter_id, logo o runtime e saveavel.
+    dead_agent = np.zeros((world.AGENT_COLUMNS,), dtype=np.float32)
+    dead_agent[world.INDEX_X] = 33.0
+    dead_agent[world.INDEX_Y] = 44.0
+    dead_snapshot = state.DeathSnapshot(
+        critter_id=4000,
+        lineage_index=0,
+        lineage_id="R",
+        tick=100,
+        agent=dead_agent,
+        genome=np.zeros((cfg.GENOME_SIZE,), dtype=np.float32),
+    )
+    state.record_death_snapshot(dead_snapshot)
+    state.set_inspection_death_selection(dead_snapshot)
+    state.inspected_trail.append((33, 44))
+
     # Snapshot de conteudo (para comparacao por valor).
     rules_before = state.runtime_rules
     before = {
@@ -519,9 +549,13 @@ def test_failed_load_does_not_mutate_runtime_state(fresh_world, tmp_path):
         "next_critter_id": state.next_critter_id,
         "zones_active": state.zones_active,
         "zones_id": id(state.zones),
+        "zone_centers": state.zone_centers,
+        "zone_centers_id": id(state.zone_centers),
         "nests": state.nests,
         "nests_id": id(state.nests),
         "inspected_critter_id": state.inspected_critter_id,
+        "inspection_death_snapshot": state.inspection_death_snapshot,
+        "recent_deaths": tuple(state.recent_deaths),
         "discovery_criterion": state.discovery_criterion,
         "discovery_lineage_filter": state.discovery_lineage_filter,
         "trail": list(state.inspected_trail),
@@ -538,6 +572,7 @@ def test_failed_load_does_not_mutate_runtime_state(fresh_world, tmp_path):
     agent_refs = [ag["agents"] for ag in agents]
     ids_refs = [ag["ids"] for ag in agents]
     field_refs = [ag["field"] for ag in agents]
+    recent_deaths_ref = state.recent_deaths
 
     # --- 2. Save com 2 linhagens e escalares diferentes ---
     path = tmp_path / "invalido.pkl"
@@ -574,9 +609,14 @@ def test_failed_load_does_not_mutate_runtime_state(fresh_world, tmp_path):
     assert state.next_critter_id == before["next_critter_id"]
     assert state.zones_active == before["zones_active"]
     assert id(state.zones) == before["zones_id"]
+    assert state.zone_centers == before["zone_centers"]
+    assert id(state.zone_centers) == before["zone_centers_id"]
     assert state.nests == before["nests"]
     assert id(state.nests) == before["nests_id"]
     assert state.inspected_critter_id == before["inspected_critter_id"]
+    assert state.inspection_death_snapshot is before["inspection_death_snapshot"]
+    assert tuple(state.recent_deaths) == before["recent_deaths"]
+    assert state.recent_deaths is recent_deaths_ref
     assert state.discovery_criterion == before["discovery_criterion"]
     assert state.discovery_lineage_filter == before["discovery_lineage_filter"]
     assert list(state.inspected_trail) == before["trail"]
@@ -640,21 +680,28 @@ def test_failed_load_does_not_consume_rng(fresh_world, tmp_path):
         "load() rejeitado consumiu draws do RNG global "
         "(generate_zones chamado no parse phase)."
     )
+
+
 # ---------------------------------------------------------------------------
-# Patch final: v20 behavior/lifecycle runtime persistence
+# Patch 4: v23 behavior/lifecycle runtime persistence
 # ---------------------------------------------------------------------------
 
 
-def test_v21_runtime_rules_and_nests_round_trip(fresh_world, tmp_path):
-    """Roundtrip v21: RuntimeRules + nests.
+def test_v23_runtime_rules_world_geometry_and_death_history_round_trip(
+    fresh_world, tmp_path
+):
+    """Roundtrip v23: RuntimeRules + geometry + recent deaths.
 
-    Roundtrip do contrato atual: nao apenas os campos behavior, mas
-    tambem a geometria persistente (nests) precisa ser restaurada
-    identica ao que foi salvo.
+    Roundtrip do contrato atual: campos behavior, RuntimeRules
+    completo e TODA a geometria persistente (zone centers, mascara de
+    zonas e nests) precisam ser restaurados identicos ao que foi
+    salvo.
     """
     from primordial_soup import persistence
 
     _install_checkpoint_geometry()
+    expected_zone_centers = state.zone_centers
+    expected_zones = state.zones.copy()
     expected_nests = state.nests
     state.update_runtime_rules(
         local_scale_sigma=0.25,
@@ -666,13 +713,28 @@ def test_v21_runtime_rules_and_nests_round_trip(fresh_world, tmp_path):
         death_hp_threshold=500,
     )
     saved_rules = state.runtime_rules
+    state.tick_count = 100
+    state.deaths = 1
+    dead_agent = np.zeros((world.AGENT_COLUMNS,), dtype=np.float32)
+    dead_agent[world.INDEX_X] = 12.0
+    dead_agent[world.INDEX_Y] = 13.0
+    expected_death = state.DeathSnapshot(
+        critter_id=state.next_critter_id,
+        lineage_index=0,
+        lineage_id="R",
+        tick=100,
+        agent=dead_agent,
+        genome=np.zeros((cfg.GENOME_SIZE,), dtype=np.float32),
+    )
+    state.next_critter_id += 1
+    state.record_death_snapshot(expected_death)
     path = tmp_path / "save.pkl"
     assert persistence.save(str(path)) is True
 
     with open(path, "rb") as f:
         data = pickle.load(f)
     assert data["versao"] == cfg.SAVE_VERSION
-    assert data["versao"] == 21
+    assert data["versao"] == 23
     assert data["low_hp_threshold"] == 3500
     assert data["stay_still_impulse"] == -0.5
     assert data["death_hp_threshold"] == 500
@@ -695,11 +757,23 @@ def test_v21_runtime_rules_and_nests_round_trip(fresh_world, tmp_path):
         death_hp_threshold=0,
     )
     state.nests = None
+    state.zone_centers = None
+    state.zones = None
+    state.recent_deaths.clear()
 
     assert state.runtime_rules != saved_rules
     assert persistence.load(str(path)) is True
     assert state.runtime_rules == saved_rules
+    assert state.zone_centers == expected_zone_centers
+    assert np.array_equal(state.zones, expected_zones)
     assert state.nests == expected_nests
+    assert len(state.recent_deaths) == 1
+    restored = state.recent_deaths[0]
+    assert restored.critter_id == expected_death.critter_id
+    assert restored.lineage_id == expected_death.lineage_id
+    assert restored.tick == expected_death.tick
+    assert np.array_equal(restored.agent, expected_death.agent)
+    assert np.array_equal(restored.genome, expected_death.genome)
 
 
 @pytest.mark.parametrize(
@@ -710,7 +784,7 @@ def test_v21_runtime_rules_and_nests_round_trip(fresh_world, tmp_path):
         "death_hp_threshold",
     ],
 )
-def test_v21_rejects_missing_lifecycle_runtime_field_atomically(
+def test_v23_rejects_missing_lifecycle_runtime_field_atomically(
     fresh_world, tmp_path, field
 ):
     from primordial_soup import persistence
@@ -728,11 +802,11 @@ def test_v21_rejects_missing_lifecycle_runtime_field_atomically(
     assert state.runtime_rules is before
 
 
-def test_v20_is_rejected_without_migration(fresh_world, tmp_path):
-    """v20 e predecessor direto do schema atual; sem migration.
+def test_v22_is_rejected_without_migration(fresh_world, tmp_path):
+    """v22 e predecessor direto do schema atual; sem migration.
 
     A politica do projeto e rejeitar tudo abaixo de SAVE_VERSION. Um
-    v20 encontrado em disco deve ser recusado de forma limpa, sem
+    v22 encontrado em disco deve ser recusado de forma limpa, sem
     tocar no runtime.
     """
     from primordial_soup import persistence
@@ -741,7 +815,7 @@ def test_v20_is_rejected_without_migration(fresh_world, tmp_path):
     assert persistence.save(str(path)) is True
     with open(path, "rb") as f:
         data = pickle.load(f)
-    data["versao"] = 20
+    data["versao"] = 22
     with open(path, "wb") as f:
         pickle.dump(data, f)
 

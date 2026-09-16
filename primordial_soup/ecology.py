@@ -15,7 +15,8 @@ ecologicos de todas as linhagens a partir de um snapshot congelado:
     - triad chaos (uma unica relacao por celula triad)
     - morte determinada apos todos os deltas
     - compactacao lockstep ids/pool/agents
-    - captura de death snapshot para Inspection
+    - captura de DeathSnapshot para toda mortalidade
+    - archive recente e Inspection quando aplicavel
     - recomputacao do composite score
 
 O modulo e dono da semantica ecologica; evolution.py deixa de ser.
@@ -90,8 +91,8 @@ PREDATION_RELATIONS: tuple[tuple[int, int], ...] = (
 # --- Zone delta -----------------------------------------------------------
 
 def _zone_delta(xs: np.ndarray, ys: np.ndarray) -> np.ndarray:
-    """Retorna [N] float32 com state.zone_hp_effect para quem esta
-    dentro de zona, 0 fora.
+    """Retorna [N] float32 com state.runtime_rules.zone_hp_effect
+    para quem esta dentro de zona, 0 fora.
 
     Retorna zeros se nao houver zonas (state.zones is None), se
     zones_active for False, ou se zone_hp_effect for 0. O toggle
@@ -474,42 +475,29 @@ def _compute_composite_score(matrix: np.ndarray) -> np.ndarray:
 
 # --- Death snapshot -------------------------------------------------------
 
-def _capture_death_snapshot_if_needed(
+def _capture_death_snapshots(
     lineage_index: int,
     agent: dict,
-    alive: np.ndarray,
+    dead_indices: np.ndarray,
     matrix: np.ndarray,
 ) -> None:
-    """Captura o estado final do bicho observado, se ele morreu neste
-    tick.
+    """Captura toda mortalidade antes da compactacao lockstep.
 
-    Chamada entre o calculo de `alive` e a compactacao de
-    ids/pool/agents, para a linha ainda estar presente ao copiar.
-
-    Invariante: se o snapshot for criado, snapshot.critter_id ==
-    state.inspected_critter_id e o bicho estava vivo ANTES deste
-    tick e NAO esta em `alive`.
+    Um DeathSnapshot independente e registrado por linha morta, na
+    ordem natural dos indices. record_death_snapshot() tambem instala
+    o mesmo objeto na Inspection quando o morto era o observado.
     """
-    observed_id = state.inspected_critter_id
-    if observed_id is None:
-        return
-
-    matches = np.flatnonzero(agent["ids"] == observed_id)
-    if matches.size == 0:
-        return
-
-    ai = int(matches[0])
-    if ai in alive:
-        return  # observado sobreviveu; nada a capturar
-
-    state.inspection_death_snapshot = state.InspectionDeathSnapshot(
-        critter_id=int(observed_id),
-        lineage_index=lineage_index,
-        lineage_id=str(agent["id"]),
-        tick=int(state.tick_count),
-        agent=matrix[ai].copy(),
-        genome=agent["pool"][ai].copy(),
-    )
+    for ai_raw in dead_indices:
+        ai = int(ai_raw)
+        snapshot = state.DeathSnapshot(
+            critter_id=int(agent["ids"][ai]),
+            lineage_index=lineage_index,
+            lineage_id=str(agent["id"]),
+            tick=int(state.tick_count),
+            agent=matrix[ai].copy(),
+            genome=agent["pool"][ai].copy(),
+        )
+        state.record_death_snapshot(snapshot)
 
 
 # --- Apply ----------------------------------------------------------------
@@ -520,7 +508,7 @@ def apply_ecology_resolution(resolution: EcologyResolution) -> None:
     FASE A: aplicar HP delta, encounter delta e age em TODAS as
             linhagens.
     FASE B: determinar alive masks de TODAS as linhagens.
-    FASE C: capturar death snapshot e contabilizar deaths.
+    FASE C: capturar todos os death snapshots e contabilizar deaths.
     FASE D: compactar ids/pool/agents de TODAS as linhagens em
             lockstep.
     FASE E: recalcular composite score dos sobreviventes.
@@ -550,15 +538,15 @@ def apply_ecology_resolution(resolution: EcologyResolution) -> None:
             matrix[:, INDEX_HP] > rules.death_hp_threshold
         )
 
-    # FASE C: snapshot e contagem.
+    # FASE C: snapshots de toda mortalidade e contagem.
     total_deaths = 0
     for li, agent in enumerate(agents):
         matrix = agent["agents"]
         if matrix.shape[0] == 0:
             continue
-        alive = np.nonzero(alive_masks[li])[0]
-        total_deaths += matrix.shape[0] - alive.size
-        _capture_death_snapshot_if_needed(li, agent, alive, matrix)
+        dead = np.nonzero(~alive_masks[li])[0]
+        total_deaths += int(dead.size)
+        _capture_death_snapshots(li, agent, dead, matrix)
 
     state.deaths += total_deaths
 

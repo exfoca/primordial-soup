@@ -1,4 +1,6 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 exfoca
 
-from ._version import __version__
+"""Canonical application version."""
+
+__version__ = "0.7.0"

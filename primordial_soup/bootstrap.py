@@ -50,10 +50,13 @@ def bootstrap_new_world() -> None:
 
     state.reset_counters()
 
-    # Nests sao geometria do mundo. reset_counters() nao os possui:
-    # bootstrap descarta a geometria anterior e gera novos centros
-    # depois de construir as zonas.
+    # Nests e centros de zonas sao geometria do mundo.
+    # reset_counters() nao os possui: bootstrap descarta a geometria
+    # anterior e gera novos centros depois de construir as zonas.
+    # A ordem canonica e zones -> nests, porque generate_nests()
+    # evita as zonas recem-geradas.
     state.nests = None
+    state.zone_centers = None
 
     seed_lineages()
 
@@ -65,7 +68,7 @@ def bootstrap_new_world() -> None:
     place_initially()
     fill_fields()
 
-    state.zones = generate_zones()
+    state.zones, state.zone_centers = generate_zones()
     state.nests = generate_nests(state.zones)
 
     rules = default_runtime_rules()

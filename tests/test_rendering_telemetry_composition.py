@@ -356,3 +356,293 @@ def test_draw_gate_still_hides_all_three_regions(
     rendering.draw()
 
     assert calls["hud"] == 0
+
+
+# ---------------------------------------------------------------------------
+# Zone HP no Telemetry: delegacao ao formatter canonico
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("effect", "expected"),
+    [
+        (5, "+5"),
+        (0, "0"),
+        (-1, "-1"),
+    ],
+)
+def test_telemetry_zone_hp_uses_canonical_format(
+    effect,
+    expected,
+    monkeypatch,
+):
+    """Telemetry formata zone_hp_effect via world.format_zone_hp_effect.
+
+    O bug original era f"{effect:+d}" -> "+0" para effect == 0.
+    Este teste exercita _draw_telemetry_panel() - a fronteira real
+    onde o defeito vivia - e intercepta o par (label, value) enviado
+    a _draw_hud_kv_inline. Nao testa apenas a funcao isolada, porque
+    isso nao teria impedido a regressao do consumidor.
+    """
+    from primordial_soup import i18n
+    from primordial_soup import rendering
+    from primordial_soup import state
+
+    original_rules = state.runtime_rules
+    try:
+        state.update_runtime_rules(zone_hp_effect=effect)
+
+        monkeypatch.setattr(
+            rendering, "_screen", pygame.Surface((800, 600))
+        )
+        monkeypatch.setattr(
+            rendering,
+            "_draw_hud_kv",
+            lambda screen, label, value, x, y: y + 1,
+        )
+        monkeypatch.setattr(
+            rendering,
+            "_draw_hud_divider",
+            lambda screen, x, y, width: y + 1,
+        )
+        monkeypatch.setattr(
+            rendering, "_zone_summary", lambda: "zones"
+        )
+
+        captured: list[tuple[str, str]] = []
+
+        def capture_inline(screen, entries, x, y):
+            captured.extend(entries)
+            return y + 1
+
+        monkeypatch.setattr(
+            rendering, "_draw_hud_kv_inline", capture_inline
+        )
+
+        rendering._draw_telemetry_panel(0, 0, 400)
+
+        zone_hp_label = i18n.t("hud.label.zone_hp")
+        zone_hp_entries = [
+            value
+            for label, value in captured
+            if label == zone_hp_label
+        ]
+
+        assert zone_hp_entries == [expected], (
+            f"effect={effect}: esperado [{expected!r}] em "
+            f"hud.label.zone_hp; obtido {zone_hp_entries!r}."
+        )
+
+        if effect == 0:
+            # Reforca a regressao especifica: zero nunca pode virar "+0".
+            assert "+0" not in zone_hp_entries
+    finally:
+        state.set_runtime_rules(original_rules)
+
+
+def test_telemetry_zone_hp_delegates_to_world_formatter(
+    monkeypatch,
+):
+    """Telemetry delega a world.format_zone_hp_effect, sem include_unit.
+
+    Prova arquitetural: o Telemetry nao recria regra local de sinal.
+    Se o formatter for substituido, o valor sentinel precisa aparecer
+    no par enviado ao HUD, e o formatter precisa receber
+    include_unit=False (o label do HUD ja e "ZONE HP").
+    """
+    from primordial_soup import i18n
+    from primordial_soup import rendering
+    from primordial_soup import state
+
+    original_rules = state.runtime_rules
+    try:
+        state.update_runtime_rules(zone_hp_effect=37)
+
+        calls: list[tuple[int, bool]] = []
+
+        def fake_format(effect, *, include_unit=False):
+            calls.append((effect, include_unit))
+            return "ZONE_HP_SENTINEL"
+
+        monkeypatch.setattr(
+            rendering.world,
+            "format_zone_hp_effect",
+            fake_format,
+        )
+
+        monkeypatch.setattr(
+            rendering, "_screen", pygame.Surface((800, 600))
+        )
+        monkeypatch.setattr(
+            rendering,
+            "_draw_hud_kv",
+            lambda screen, label, value, x, y: y + 1,
+        )
+        monkeypatch.setattr(
+            rendering,
+            "_draw_hud_divider",
+            lambda screen, x, y, width: y + 1,
+        )
+        monkeypatch.setattr(
+            rendering, "_zone_summary", lambda: "zones"
+        )
+
+        captured: list[tuple[str, str]] = []
+
+        def capture_inline(screen, entries, x, y):
+            captured.extend(entries)
+            return y + 1
+
+        monkeypatch.setattr(
+            rendering, "_draw_hud_kv_inline", capture_inline
+        )
+
+        rendering._draw_telemetry_panel(0, 0, 400)
+
+        assert calls == [(37, False)], (
+            f"Telemetry deve chamar format_zone_hp_effect(37, "
+            f"include_unit=False); chamadas observadas: {calls!r}."
+        )
+
+        zone_hp_label = i18n.t("hud.label.zone_hp")
+        zone_hp_entries = [
+            value
+            for label, value in captured
+            if label == zone_hp_label
+        ]
+        assert zone_hp_entries == ["ZONE_HP_SENTINEL"], (
+            "Telemetry nao propagou o retorno do formatter canonico "
+            f"para o HUD; observado: {zone_hp_entries!r}."
+        )
+    finally:
+        state.set_runtime_rules(original_rules)
+
+
+# ---------------------------------------------------------------------------
+# RuntimeRules x config: Telemetry le o valor ativo, nao o default
+# ---------------------------------------------------------------------------
+
+
+def test_telemetry_global_mutation_uses_runtime_rules(
+    fresh_world,
+    screen,
+    render_fonts,
+    monkeypatch,
+):
+    """O Telemetry le global_probability/global_scale_fraction de
+    RuntimeRules, nao dos defaults estaticos correspondentes em
+    config.py.
+
+    Monkeypatcha cfg.GLOBAL_PROBABILITY e cfg.GLOBAL_SCALE_FRACTION
+    para valores deliberadamente divergentes; o valor exibido deve
+    seguir RuntimeRules.
+    """
+    _set_screen(screen, monkeypatch)
+
+    original = state.runtime_rules
+    captured: list[tuple[str, str]] = []
+    try:
+        state.update_runtime_rules(
+            global_probability=75,
+            global_scale_fraction=40,
+        )
+        monkeypatch.setattr(cfg, "GLOBAL_PROBABILITY", 0.10)
+        monkeypatch.setattr(cfg, "GLOBAL_SCALE_FRACTION", 0.20)
+
+        monkeypatch.setattr(
+            rendering,
+            "_draw_hud_kv",
+            lambda screen_, label, value, x, y: y + 1,
+        )
+        monkeypatch.setattr(
+            rendering,
+            "_draw_hud_divider",
+            lambda screen_, x, y, width: y + 1,
+        )
+
+        def fake_inline(screen_, entries, x, y):
+            captured.extend(entries)
+            return y + 1
+
+        monkeypatch.setattr(
+            rendering, "_draw_hud_kv_inline", fake_inline
+        )
+        monkeypatch.setattr(
+            rendering, "_zone_summary", lambda: "zones"
+        )
+
+        rendering._draw_telemetry_panel(0, 0, 400)
+
+        values = [value for _label, value in captured]
+        assert "75%@40%" in values
+        assert "10%@20%" not in values
+    finally:
+        state.set_runtime_rules(original)
+
+
+# ---------------------------------------------------------------------------
+# Camera zoom: Telemetry reflete o fator atual
+# ---------------------------------------------------------------------------
+
+
+def test_telemetry_displays_camera_zoom(
+    fresh_world,
+    screen,
+    render_fonts,
+    monkeypatch,
+):
+    """O painel de telemetria mostra o fator de zoom atual da camera.
+
+    Este teste valida apenas a FORMATACAO do HUD (label + valor),
+    nao a matematica da camera. Por isso manipula `_camera.zoom`
+    diretamente em vez de simular wheel. A matematica da camera e
+    coberta por tests/test_rendering_camera.py.
+    """
+    _set_screen(screen, monkeypatch)
+
+    from primordial_soup import i18n
+
+    monkeypatch.setattr(
+        rendering,
+        "_draw_hud_divider",
+        lambda screen_, x, y, width: y + 1,
+    )
+
+    captured_zoom: list[tuple[str, str]] = []
+
+    def fake_kv(screen_, label, value, x, y):
+        captured_zoom.append((label, value))
+        return y + 1
+
+    monkeypatch.setattr(rendering, "_draw_hud_kv", fake_kv)
+
+    def capture_inline(screen_, entries, x, y):
+        for label, value in entries:
+            captured_zoom.append((label, value))
+        return y + 1
+
+    monkeypatch.setattr(
+        rendering, "_draw_hud_kv_inline", capture_inline
+    )
+    monkeypatch.setattr(
+        rendering, "_zone_summary", lambda: "zones"
+    )
+
+    try:
+        rendering.reset_camera()
+        captured_zoom.clear()
+        rendering._draw_telemetry_panel(0, 0, 400)
+        assert (
+            i18n.t("hud.label.zoom"),
+            "1.00x",
+        ) in captured_zoom
+
+        captured_zoom.clear()
+        rendering._camera.zoom = 1.20
+        rendering._draw_telemetry_panel(0, 0, 400)
+        assert (
+            i18n.t("hud.label.zoom"),
+            "1.20x",
+        ) in captured_zoom
+    finally:
+        rendering.reset_camera()

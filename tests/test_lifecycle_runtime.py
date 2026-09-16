@@ -15,7 +15,7 @@ from primordial_soup.world import INDEX_HP, INDEX_X, INDEX_Y
 
 
 def _valid_test_nests():
-    """Geometria deterministica de ninhos valida para o contrato v21."""
+    """Geometria deterministica de ninhos valida para o schema v23."""
     radius = cfg.NEST_RADIUS
     y = radius + 1
     stride = 2 * radius + 1
@@ -33,8 +33,27 @@ def _empty_zones():
     )
 
 
+def _valid_test_zone_centers():
+    """Centros de zona determinísticos, sem consumir RNG."""
+    center = (
+        layout.LAYOUT.world_width - cfg.ZONE_RADIUS - 1,
+        layout.LAYOUT.world_height - cfg.ZONE_RADIUS - 1,
+    )
+    return tuple(
+        center
+        for _ in range(cfg.NUMBER_OF_ZONES)
+    )
+
+
 def _install_checkpoint_geometry():
-    state.zones = _empty_zones()
+    """Instala geometry valida sob o schema v23 sem consumir RNG.
+
+    zone_centers e a autoridade geometrica; zones e derivada por
+    world.build_zone_mask().
+    """
+    centers = _valid_test_zone_centers()
+    state.zone_centers = centers
+    state.zones = world.build_zone_mask(centers)
     state.nests = _valid_test_nests()
 
 
@@ -65,6 +84,7 @@ def lifecycle_world():
             row[INDEX_HP] = 1000.0
 
     state.zones = None
+    state.zone_centers = None
     state.nests = None
     world.fill_fields()
 
@@ -73,6 +93,7 @@ def lifecycle_world():
     state.set_runtime_rules(original_rules)
     state.reset_counters()
     state.zones = None
+    state.zone_centers = None
     state.nests = None
     agents.clear()
 
@@ -219,6 +240,7 @@ def test_fresh_bootstrap_restores_lifecycle_defaults(monkeypatch):
     original = state.runtime_rules
     saved_agents = list(agents)
     saved_zones = state.zones
+    saved_zone_centers = state.zone_centers
     saved_nests = state.nests
     try:
         agents.clear()
@@ -227,13 +249,16 @@ def test_fresh_bootstrap_restores_lifecycle_defaults(monkeypatch):
             stay_still_impulse=-0.5,
             death_hp_threshold=500,
         )
-        sentinel_zones = _empty_zones()
+        sentinel_zone_centers = _valid_test_zone_centers()
+        sentinel_zones = world.build_zone_mask(sentinel_zone_centers)
         sentinel_nests = _valid_test_nests()
         monkeypatch.setattr(bootstrap, "seed_lineages", lambda: None)
         monkeypatch.setattr(bootstrap, "place_initially", lambda: None)
         monkeypatch.setattr(bootstrap, "fill_fields", lambda: None)
         monkeypatch.setattr(
-            bootstrap, "generate_zones", lambda: sentinel_zones
+            bootstrap,
+            "generate_zones",
+            lambda: (sentinel_zones, sentinel_zone_centers),
         )
         monkeypatch.setattr(
             bootstrap, "generate_nests", lambda zones: sentinel_nests
@@ -253,10 +278,14 @@ def test_fresh_bootstrap_restores_lifecycle_defaults(monkeypatch):
         assert state.runtime_rules.death_hp_threshold == int(
             cfg.DIE_WHEN_HP_LESS_OR_EQUAL
         )
+        assert state.zones is sentinel_zones
+        assert state.zone_centers == sentinel_zone_centers
+        assert state.nests == sentinel_nests
     finally:
         agents[:] = saved_agents
         state.set_runtime_rules(original)
         state.zones = saved_zones
+        state.zone_centers = saved_zone_centers
         state.nests = saved_nests
 
 
@@ -272,6 +301,7 @@ def test_recreate_preserves_lifecycle_runtime_rules_identity(monkeypatch):
     original = state.runtime_rules
     saved_agents = list(agents)
     saved_zones = state.zones
+    saved_zone_centers = state.zone_centers
     saved_nests = state.nests
     try:
         agents.clear()
@@ -281,13 +311,16 @@ def test_recreate_preserves_lifecycle_runtime_rules_identity(monkeypatch):
             death_hp_threshold=500,
         )
         before = state.runtime_rules
-        sentinel_zones = _empty_zones()
+        sentinel_zone_centers = _valid_test_zone_centers()
+        sentinel_zones = world.build_zone_mask(sentinel_zone_centers)
         sentinel_nests = _valid_test_nests()
         monkeypatch.setattr(bootstrap, "seed_lineages", lambda: None)
         monkeypatch.setattr(bootstrap, "place_initially", lambda: None)
         monkeypatch.setattr(bootstrap, "fill_fields", lambda: None)
         monkeypatch.setattr(
-            bootstrap, "generate_zones", lambda: sentinel_zones
+            bootstrap,
+            "generate_zones",
+            lambda: (sentinel_zones, sentinel_zone_centers),
         )
         monkeypatch.setattr(
             bootstrap, "generate_nests", lambda zones: sentinel_nests
@@ -301,10 +334,12 @@ def test_recreate_preserves_lifecycle_runtime_rules_identity(monkeypatch):
         controls.recreate()
 
         assert state.runtime_rules is before
+        assert state.zone_centers == sentinel_zone_centers
     finally:
         agents[:] = saved_agents
         state.set_runtime_rules(original)
         state.zones = saved_zones
+        state.zone_centers = saved_zone_centers
         state.nests = saved_nests
 
 
@@ -322,7 +357,7 @@ def test_recreate_preserves_lifecycle_runtime_rules_identity(monkeypatch):
         ("stay_still_impulse", "not-a-number"),
     ],
 )
-def test_v21_rejects_invalid_lifecycle_runtime_field_atomically(tmp_path, field, bad):
+def test_v23_rejects_invalid_lifecycle_runtime_field_atomically(tmp_path, field, bad):
     import pickle
 
     from primordial_soup import persistence
@@ -330,6 +365,7 @@ def test_v21_rejects_invalid_lifecycle_runtime_field_atomically(tmp_path, field,
     original = state.runtime_rules
     saved_agents = list(agents)
     saved_zones = state.zones
+    saved_zone_centers = state.zone_centers
     saved_nests = state.nests
     try:
         state.reset_counters()
@@ -357,11 +393,12 @@ def test_v21_rejects_invalid_lifecycle_runtime_field_atomically(tmp_path, field,
         agents[:] = saved_agents
         state.set_runtime_rules(original)
         state.zones = saved_zones
+        state.zone_centers = saved_zone_centers
         state.nests = saved_nests
 
 
-def test_v19_is_rejected_without_migration(tmp_path):
-    """v19 e predecessor direto do schema atual; sem migration."""
+def test_v22_is_rejected_without_migration(tmp_path):
+    """v22 e predecessor direto do schema atual; sem migration."""
     import pickle
 
     from primordial_soup import persistence
@@ -369,6 +406,7 @@ def test_v19_is_rejected_without_migration(tmp_path):
     original = state.runtime_rules
     saved_agents = list(agents)
     saved_zones = state.zones
+    saved_zone_centers = state.zone_centers
     saved_nests = state.nests
     try:
         state.reset_counters()
@@ -385,7 +423,7 @@ def test_v19_is_rejected_without_migration(tmp_path):
         assert persistence.save(str(path)) is True
         with open(path, "rb") as f:
             data = pickle.load(f)
-        data["versao"] = 19
+        data["versao"] = 22
         with open(path, "wb") as f:
             pickle.dump(data, f)
 
@@ -396,6 +434,7 @@ def test_v19_is_rejected_without_migration(tmp_path):
         agents[:] = saved_agents
         state.set_runtime_rules(original)
         state.zones = saved_zones
+        state.zone_centers = saved_zone_centers
         state.nests = saved_nests
 
 

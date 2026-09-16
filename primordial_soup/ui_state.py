@@ -4,12 +4,22 @@
 """Estado transitorio da interface grafica.
 
 Separado de state.py de proposito: state.py representa o MUNDO, este
-modulo representa a NAVEGACAO da aplicacao grafica sobre ele. Nada
-daqui vai para o savegame; nada daqui influencia a simulacao.
+modulo representa a APRESENTACAO/NAVEGACAO da aplicacao grafica
+sobre ele. Nada daqui vai para o savegame; nada daqui influencia a
+simulacao.
 
-Em particular, este modulo NAO e importado por simulation.py,
-evolution.py, brain.py, senses.py, genetics.py, world.py, movement.py
-nem persistence.py. Ele existe apenas para a camada de apresentacao.
+Fronteira real (pos-Patch 3):
+
+  - O simulation core (simulation.step, evolution, ecology,
+    senses, brain, genetics, world, movement, persistence) NAO
+    depende de ui_state.
+
+  - O composition root grafico (simulation.run) faz import lazy de
+    ui_state para conectar apresentacao, exatamente como ja faz para
+    rendering, panels_defs, audio e feedback.
+
+Este modulo continua sem dependencia inversa: nao importa state.py
+nem simulation.py.
 """
 
 from __future__ import annotations
@@ -172,6 +182,120 @@ def reset() -> None:
         panel_cursors[key] = None
     for key in panel_scroll_offsets:
         panel_scroll_offsets[key] = 0
+    clear_birth_waves()
+
+
+# --- Birth Waves ------------------------------------------------------
+#
+# Apresentacao pura: nasce do fato "houve descendentes da linhagem L
+# neste tick" reportado por simulation.step(). Nao altera o mundo, nao
+# vai para o save, nao consome RNG. A duracao e wall-clock porque a
+# velocidade da simulacao nao deve alterar a percepcao da animacao.
+
+BIRTH_WAVE_DURATION_SECONDS: float = 1.25
+
+
+@dataclass(frozen=True, slots=True)
+class BirthWave:
+    """Onda de nascimento ancorada em um ninho.
+
+    Guarda apenas identidade da linhagem + instante de inicio. Centro,
+    raio e cor sao derivados pelo rendering a partir de state.nests e
+    cfg.LINEAGES; nao duplicamos esses dados aqui.
+    """
+    lineage_index: int
+    started_at: float
+
+
+birth_waves: list[BirthWave] = []
+
+
+def add_birth_wave(
+    lineage_index: int,
+    *,
+    started_at: float | None = None,
+) -> None:
+    """Registra uma onda para `lineage_index`.
+
+    `started_at=None` usa time.monotonic(). O argumento explicito
+    existe apenas para testes deterministicos; nao ha caminho de
+    producao que o utilize.
+
+    Valida minimamente `lineage_index` como int Python estrito e
+    nao-negativo. O limite superior pertence a camada que conhece
+    cfg.TOTAL_LINEAGES; aqui nao importamos config.py.
+    """
+    if type(lineage_index) is not int or lineage_index < 0:
+        raise ValueError(
+            "add_birth_wave: lineage_index deve ser int Python "
+            f"estrito e nao-negativo; recebido {lineage_index!r}."
+        )
+    timestamp = (
+        time.monotonic()
+        if started_at is None
+        else float(started_at)
+    )
+    birth_waves.append(
+        BirthWave(
+            lineage_index=lineage_index,
+            started_at=timestamp,
+        )
+    )
+
+
+def clear_birth_waves() -> None:
+    """Remove todas as waves. Muta a colecao in-place para preservar
+    identidade para consumidores que mantem referencia."""
+    birth_waves.clear()
+
+
+def get_birth_waves() -> tuple[BirthWave, ...]:
+    """Copia imutavel das waves ativas. Rendering consome por aqui
+    em vez de tocar a lista global."""
+    return tuple(birth_waves)
+
+
+def birth_wave_progress(
+    wave: BirthWave,
+    *,
+    now: float | None = None,
+) -> float:
+    """Progresso [0.0, 1.0] da wave.
+
+    clamp em ambos os extremos: valores negativos (clock retrocedido
+    ou wave do futuro, o que nao deveria ocorrer em producao) sao
+    0.0; progresso acima de 1.0 e clampado em 1.0.
+    """
+    current = time.monotonic() if now is None else float(now)
+    elapsed = max(0.0, current - wave.started_at)
+    progress = elapsed / BIRTH_WAVE_DURATION_SECONDS
+    return min(1.0, progress)
+
+
+def expire_birth_waves_if_needed(
+    *,
+    now: float | None = None,
+) -> bool:
+    """Remove waves expiradas (progress >= 1.0).
+
+    Retorna True se ao menos uma wave foi removida. Muta in-place
+    para preservar a identidade da lista.
+    """
+    current = time.monotonic() if now is None else float(now)
+    survivors = [
+        wave
+        for wave in birth_waves
+        if birth_wave_progress(wave, now=current) < 1.0
+    ]
+    if len(survivors) == len(birth_waves):
+        return False
+    birth_waves[:] = survivors
+    return True
+
+
+def has_birth_waves() -> bool:
+    """Consulta pura: existe ao menos uma wave? Nao expira nada."""
+    return bool(birth_waves)
 
 
 # --- Modal helpers ----------------------------------------------------

@@ -57,6 +57,25 @@ def _set_queue(monkeypatch, events):
     monkeypatch.setattr(pygame.event, "get", lambda: list(events))
 
 
+def _register_configuration_panel():
+    """Registra um painel fake Configuration no registry.
+
+    Painel minimo com um unico item interativo ("x"), suficiente para
+    que _cycle_panel() inicialize o cursor do destino. Compartilhado
+    pelos testes que precisam de um segundo painel registrado.
+    """
+    second = panels_module.Panel(
+        id=ui_state.PANEL_CONFIGURATION,
+        activation_key=pygame.K_c,
+        title_key="panel.title",
+        items=[
+            panels_module.Item("x", panels_module.ItemKind.ACTION, "x"),
+        ],
+    )
+    panels_module.PANELS[second.id] = second
+    return second
+
+
 # ---------------------------------------------------------------------------
 # Fila inteira
 # ---------------------------------------------------------------------------
@@ -203,18 +222,7 @@ def test_shift_tab_cycles_panels_not_items(monkeypatch):
     por _cycle_panel, que troca o painel focado. O cursor do painel
     de origem e preservado, nao alterado.
     """
-    from primordial_soup import panels as panels_module
-
-    # Registra um segundo painel para o ciclo ter destino.
-    second = panels_module.Panel(
-        id=ui_state.PANEL_CONFIGURATION,
-        activation_key=pygame.K_c,
-        title_key="panel.title",
-        items=[
-            panels_module.Item("x", panels_module.ItemKind.ACTION, "x"),
-        ],
-    )
-    panels_module.PANELS[second.id] = second
+    _register_configuration_panel()
 
     ui_state.set_active_panel(ui_state.PANEL_INSPECTION)
     ui_state.panel_cursors[ui_state.PANEL_INSPECTION] = "b"
@@ -226,10 +234,112 @@ def test_shift_tab_cycles_panels_not_items(monkeypatch):
 
     input_dispatcher.process_events()
 
-    # Painel mudou (cursor de Inspection preservado, cursor do novo
-    # painel inicializado).
+    # Com exatamente dois paineis registrados, Shift+Tab de
+    # Inspection so pode ir para Configuration.
+    assert ui_state.active_panel == ui_state.PANEL_CONFIGURATION
     assert ui_state.panel_cursors[ui_state.PANEL_INSPECTION] == "b"
-    assert ui_state.active_panel != ui_state.PANEL_INSPECTION
+    assert ui_state.panel_cursors[ui_state.PANEL_CONFIGURATION] == "x"
+
+
+def test_tab_from_world_enters_first_panel_not_last_panel(monkeypatch):
+    """world + Tab: entra pelo PRIMEIRO painel do registry.
+
+    Este teste protege especificamente contra a implementacao errada
+    de usar ui_state.last_panel como destino. Configuramos
+    last_panel == Configuration e verificamos que Tab ainda vai para
+    Inspection (primeiro do registry).
+    """
+    _register_configuration_panel()
+
+    # Estado inicial deliberado: last_panel aponta para Configuration,
+    # active_panel e world.
+    ui_state.set_active_panel(ui_state.PANEL_CONFIGURATION)
+    ui_state.set_active_panel(ui_state.PANEL_WORLD)
+
+    assert ui_state.active_panel == ui_state.PANEL_WORLD
+    assert ui_state.last_panel == ui_state.PANEL_CONFIGURATION
+
+    # Zera cursores para verificar inicializacao do destino.
+    ui_state.panel_cursors[ui_state.PANEL_INSPECTION] = None
+    ui_state.panel_cursors[ui_state.PANEL_CONFIGURATION] = None
+
+    _set_queue(monkeypatch, [
+        _event(pygame.KEYDOWN, key=pygame.K_TAB, mod=0),
+    ])
+
+    result = input_dispatcher.process_events()
+
+    assert ui_state.active_panel == ui_state.PANEL_INSPECTION, (
+        "world + Tab deve entrar pelo PRIMEIRO painel do registry "
+        "(Inspection), nao por last_panel."
+    )
+    assert ui_state.panel_cursors[ui_state.PANEL_INSPECTION] == "a"
+    assert ui_state.panel_cursors[ui_state.PANEL_CONFIGURATION] is None
+    assert result.flow is Flow.CONTINUE
+    assert result.redraw is True
+
+
+def test_shift_tab_from_world_enters_last_panel(monkeypatch):
+    """world + Shift+Tab: entra pelo ULTIMO painel do registry."""
+    _register_configuration_panel()
+
+    ui_state.set_active_panel(ui_state.PANEL_WORLD)
+    ui_state.panel_cursors[ui_state.PANEL_INSPECTION] = None
+    ui_state.panel_cursors[ui_state.PANEL_CONFIGURATION] = None
+
+    _set_queue(monkeypatch, [
+        _event(pygame.KEYDOWN, key=pygame.K_TAB, mod=pygame.KMOD_SHIFT),
+    ])
+
+    result = input_dispatcher.process_events()
+
+    assert ui_state.active_panel == ui_state.PANEL_CONFIGURATION
+    assert ui_state.panel_cursors[ui_state.PANEL_CONFIGURATION] == "x"
+    assert result.flow is Flow.CONTINUE
+    assert result.redraw is True
+
+
+def test_tab_cycles_forward_and_wraps_panels(monkeypatch):
+    """Tab em painel real: proximo painel, com wrap circular.
+
+    Dois paineis registrados: Inspection -> Configuration -> Inspection.
+    """
+    _register_configuration_panel()
+
+    ui_state.set_active_panel(ui_state.PANEL_INSPECTION)
+
+    _set_queue(monkeypatch, [
+        _event(pygame.KEYDOWN, key=pygame.K_TAB, mod=0),
+    ])
+    input_dispatcher.process_events()
+    assert ui_state.active_panel == ui_state.PANEL_CONFIGURATION
+
+    _set_queue(monkeypatch, [
+        _event(pygame.KEYDOWN, key=pygame.K_TAB, mod=0),
+    ])
+    input_dispatcher.process_events()
+    assert ui_state.active_panel == ui_state.PANEL_INSPECTION
+
+
+def test_tab_with_empty_registry_is_safe_noop(monkeypatch):
+    """Registry vazio: Tab e no-op seguro, sem exception.
+
+    Protege o ramo `if not order: return CONTINUE(redraw=False)` de
+    _cycle_panel(). Este contrato ja existia antes do patch; o teste
+    apenas o registra.
+    """
+    panels_module.PANELS.clear()
+    ui_state.set_active_panel(ui_state.PANEL_WORLD)
+
+    _set_queue(monkeypatch, [
+        _event(pygame.KEYDOWN, key=pygame.K_TAB, mod=0),
+    ])
+
+    result = input_dispatcher.process_events()
+
+    assert ui_state.active_panel == ui_state.PANEL_WORLD
+    assert result.flow is Flow.CONTINUE
+    assert result.redraw is False
 
 
 def test_panel_activation_initializes_cursor(monkeypatch):

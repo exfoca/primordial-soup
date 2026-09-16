@@ -34,6 +34,24 @@ from primordial_soup.world import (
 )
 
 
+def _valid_test_nests():
+    """Geometria deterministica de ninhos valida para fixtures de
+    checkpoint.
+
+    Tres centros colineares, separados por 2*radius+1, de modo que os
+    discos de radius NEST_RADIUS nao compartilhem celulas. Mesmo
+    helper dos demais arquivos de teste de persistencia/spawn.
+    """
+    radius = cfg.NEST_RADIUS
+    y = radius + 1
+    stride = 2 * radius + 1
+    return (
+        (radius + 1, y),
+        (radius + 1 + stride, y),
+        (radius + 1 + 2 * stride, y),
+    )
+
+
 @pytest.fixture
 def breeding_pair():
     """Monta um cenario onde _reproduce_one_pair vai sortear pais
@@ -70,6 +88,10 @@ def breeding_pair():
     # interferir via state.
     state.mutation_rate = 0  # sem mutacao: previsivel
 
+    # _reproduce_one_pair exige state.nests inicializado (spawn dos
+    # filhos). Instalamos um conjunto deterministico, sem consumir RNG.
+    state.nests = _valid_test_nests()
+
     yield
 
     state.reset_counters()
@@ -91,6 +113,15 @@ def test_each_parent_receives_bonus_once_per_event(breeding_pair):
         mutation_rate=0,
         mutated_genes=1,
         local_scale_fraction=cfg.MIN_LOCAL_SCALE_FRACTION,
+        lineage_index=0,
+        crossover_mode=cfg.CROSSOVER_MODE,
+        crossover_probability=float(cfg.CROSSOVER_PROBABILITY),
+        block_size=int(cfg.BLOCK_SIZE),
+        mutation_mode=cfg.MUTATION_MODE,
+        local_scale_sigma=float(cfg.LOCAL_SCALE_SIGMA),
+        global_probability=int(cfg.GLOBAL_PROBABILITY * 100),
+        global_scale_fraction=int(cfg.GLOBAL_SCALE_FRACTION * 100),
+        global_scale_sigma=float(cfg.GLOBAL_SCALE_SIGMA),
     )
 
     # O evento deve ter produzido OFFSPRING_PER_PAIR filhos.

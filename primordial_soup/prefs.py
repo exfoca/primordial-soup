@@ -31,6 +31,10 @@ from . import ui_state
 PREFS_VERSION = 1
 PREFS_FILENAME = "prefs.json"
 
+# Preferencias de audio do operador. Nao pertencem ao savegame.
+music_enabled: bool = True
+sfx_enabled: bool = True
+
 
 # --- Localizacao --------------------------------------------------------
 
@@ -96,6 +100,18 @@ def _validate_bool(value):
     return None
 
 
+def _set_music_enabled(value: bool) -> None:
+    """Setter de prefs.load(). Nao marca dirty (uso interno)."""
+    global music_enabled
+    music_enabled = value
+
+
+def _set_sfx_enabled(value: bool) -> None:
+    """Setter de prefs.load(). Nao marca dirty (uso interno)."""
+    global sfx_enabled
+    sfx_enabled = value
+
+
 # Mapeamento campo -> (getter, setter, validador).
 # getter/setter acessam state ou ui_state conforme o caso.
 _FIELDS = {
@@ -122,6 +138,16 @@ _FIELDS = {
     "floating_hud_visible": (
         lambda: ui_state.floating_hud_visible,
         lambda v: setattr(ui_state, "floating_hud_visible", v),
+        _validate_bool,
+    ),
+    "music_enabled": (
+        lambda: music_enabled,
+        _set_music_enabled,
+        _validate_bool,
+    ),
+    "sfx_enabled": (
+        lambda: sfx_enabled,
+        _set_sfx_enabled,
         _validate_bool,
     ),
 }

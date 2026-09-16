@@ -21,6 +21,7 @@ from .world import (
     AGENT_COLUMNS,
     INDEX_X,
     INDEX_Y,
+    build_zone_mask,
     seed_lineages,
 )
 
@@ -650,6 +651,336 @@ def _validate_nest_centers(
     return tuple(parsed)
 
 
+# Validacao dos centros de zonas
+
+
+def _zone_centers_payload() -> list[list[int]] | None:
+    """Valida state.zone_centers e devolve o payload v22.
+
+    Contrato:
+      - Se cfg.NUMBER_OF_ZONES <= 0:
+          exige state.zones is None e state.zone_centers == ()
+          devolve []
+      - Caso normal:
+          exige count == NUMBER_OF_ZONES, tuple de tuple[int,int]
+          estritos, bounds validos;
+          reconstroi a mascara por build_zone_mask() e exige
+          np.array_equal(state.zones, expected);
+          devolve [[x, y], ...]
+
+    Em qualquer violacao retorna None. NAO muta state.
+    """
+    if cfg.NUMBER_OF_ZONES <= 0:
+        if state.zones is not None:
+            print(
+                "[save] NUMBER_OF_ZONES <= 0 exige zones is None; "
+                "checkpoint abortado."
+            )
+            return None
+        if state.zone_centers != ():
+            print(
+                "[save] NUMBER_OF_ZONES <= 0 exige zone_centers == (); "
+                "checkpoint abortado."
+            )
+            return None
+        return []
+
+    centers = state.zone_centers
+    if centers is None:
+        print(
+            "[save] zone_centers is None; checkpoint abortado."
+        )
+        return None
+
+    try:
+        expected_mask = build_zone_mask(centers)
+    except ValueError as exc:
+        print(
+            f"[save] zone_centers invalidos; checkpoint abortado: {exc}"
+        )
+        return None
+
+    if state.zones is None:
+        print(
+            "[save] zones is None mas zone_centers existe; "
+            "checkpoint abortado."
+        )
+        return None
+
+    if not np.array_equal(state.zones, expected_mask):
+        print(
+            "[save] zones != build_zone_mask(zone_centers); "
+            "checkpoint abortado."
+        )
+        return None
+
+    return [[int(cx), int(cy)] for cx, cy in centers]
+
+
+def _parse_zone_centers(data) -> tuple[tuple[int, int], ...] | object:
+    """Parser estrito de "centros_zonas" para o load v22.
+
+    Aceita chave canonica "centros_zonas"; alias EN "zone_centers"
+    permitido pela uniformidade do _read_key, mas save sempre escreve
+    a canonica.
+
+    Para NUMBER_OF_ZONES <= 0: aceita somente []; devolve ().
+    Caso normal: aceita list com exatamente NUMBER_OF_ZONES
+    sub-listas de 2 int estritos; devolve tuple de tuple[int,int].
+
+    Rejeita bool, float, np.int64, str, None, bounds fora do mundo,
+    sub-listas com len != 2. Retorna _INVALID em qualquer falha.
+    """
+    raw = _read_key(data, "centros_zonas", "zone_centers")
+    if raw is _MISSING:
+        return _INVALID
+
+    if cfg.NUMBER_OF_ZONES <= 0:
+        if raw == []:
+            return ()
+        return _INVALID
+
+    if not isinstance(raw, list):
+        return _INVALID
+    if len(raw) != cfg.NUMBER_OF_ZONES:
+        return _INVALID
+
+    width = layout.LAYOUT.world_width
+    height = layout.LAYOUT.world_height
+
+    parsed: list[tuple[int, int]] = []
+    for entry in raw:
+        if not isinstance(entry, (list, tuple)):
+            return _INVALID
+        if isinstance(entry, (str, bytes)):
+            return _INVALID
+        try:
+            pair = list(entry)
+        except TypeError:
+            return _INVALID
+        if len(pair) != 2:
+            return _INVALID
+        x, y = pair
+        if type(x) is not int or type(y) is not int:
+            return _INVALID
+        if not (0 <= x < width):
+            return _INVALID
+        if not (0 <= y < height):
+            return _INVALID
+        parsed.append((x, y))
+
+    return tuple(parsed)
+
+
+def _recent_deaths_payload() -> list[dict] | None:
+    """Valida o archive runtime e constroi o payload canonico v23.
+
+    Nao muta state. Os ndarrays sao copiados em float32 sem conversao
+    para listas Python, preservando fidelidade e reduzindo overhead.
+    """
+    snapshots = state.get_recent_deaths()
+    if len(snapshots) > state.deaths:
+        print("[save] recent_deaths excede contador total de mortes.")
+        return None
+
+    live_ids: set[int] = set()
+    try:
+        for lineage in agents:
+            live_ids.update(int(value) for value in lineage["ids"])
+    except (KeyError, TypeError, ValueError, OverflowError):
+        print("[save] ids vivos invalidos ao validar recent_deaths.")
+        return None
+
+    seen_ids: set[int] = set()
+    previous_tick: int | None = None
+    payload: list[dict] = []
+    width = layout.LAYOUT.world_width
+    height = layout.LAYOUT.world_height
+
+    for snapshot in snapshots:
+        if not isinstance(snapshot, state.DeathSnapshot):
+            print("[save] recent_deaths contem objeto que nao e DeathSnapshot.")
+            return None
+
+        critter_id = snapshot.critter_id
+        if type(critter_id) is not int or critter_id < 1:
+            print("[save] DeathSnapshot id invalido.")
+            return None
+        if critter_id >= state.next_critter_id:
+            print("[save] DeathSnapshot usa id ainda nao alocado.")
+            return None
+        if critter_id in seen_ids:
+            print("[save] DeathSnapshot id duplicado no archive.")
+            return None
+        if critter_id in live_ids:
+            print("[save] DeathSnapshot id tambem esta vivo.")
+            return None
+        seen_ids.add(critter_id)
+
+        lineage_index = snapshot.lineage_index
+        if type(lineage_index) is not int:
+            print("[save] DeathSnapshot lineage_index invalido.")
+            return None
+        if not (0 <= lineage_index < cfg.TOTAL_LINEAGES):
+            print("[save] DeathSnapshot lineage_index fora do range.")
+            return None
+        lineage_id = cfg.LINEAGES[lineage_index]["id"]
+        if snapshot.lineage_id != lineage_id:
+            print("[save] DeathSnapshot lineage_id inconsistente.")
+            return None
+
+        death_tick = snapshot.tick
+        if type(death_tick) is not int or not (1 <= death_tick <= state.tick_count):
+            print("[save] DeathSnapshot tick invalido.")
+            return None
+        if previous_tick is not None and death_tick < previous_tick:
+            print("[save] recent_deaths fora de ordem cronologica.")
+            return None
+        previous_tick = death_tick
+
+        age = state.tick_count - death_tick
+        if not (0 <= age < cfg.DEATH_MARKER_TTL_TICKS):
+            print("[save] recent_deaths contem snapshot expirado.")
+            return None
+
+        agent_row = snapshot.agent
+        if (
+            not isinstance(agent_row, np.ndarray)
+            or agent_row.dtype != np.float32
+            or agent_row.shape != (AGENT_COLUMNS,)
+        ):
+            print("[save] DeathSnapshot agent invalido.")
+            return None
+
+        x = agent_row[INDEX_X]
+        y = agent_row[INDEX_Y]
+        if not (np.isfinite(x) and np.isfinite(y)):
+            print("[save] DeathSnapshot x/y nao-finitos.")
+            return None
+        if x != np.floor(x) or y != np.floor(y):
+            print("[save] DeathSnapshot x/y nao-integrais.")
+            return None
+        if not (0 <= x < width and 0 <= y < height):
+            print("[save] DeathSnapshot x/y fora do mundo.")
+            return None
+
+        genome = snapshot.genome
+        if (
+            not isinstance(genome, np.ndarray)
+            or genome.dtype != np.float32
+            or genome.shape != (cfg.GENOME_SIZE,)
+        ):
+            print("[save] DeathSnapshot genome invalido.")
+            return None
+
+        payload.append(
+            {
+                "id": critter_id,
+                "linhagem": snapshot.lineage_id,
+                "tick": death_tick,
+                "agente": agent_row.copy(),
+                "genoma": genome.copy(),
+            }
+        )
+
+    return payload
+
+
+def _parse_recent_deaths(
+    raw,
+    *,
+    saved_tick: int,
+    saved_next_id: int,
+    live_ids: set[int],
+    total_deaths: int,
+) -> tuple[state.DeathSnapshot, ...] | object:
+    """Parser transacional e estrito do archive de mortes v23."""
+    if not isinstance(raw, list):
+        return _INVALID
+
+    lineage_indices = {
+        lineage["id"]: index
+        for index, lineage in enumerate(cfg.LINEAGES)
+    }
+    width = layout.LAYOUT.world_width
+    height = layout.LAYOUT.world_height
+    seen_ids: set[int] = set()
+    previous_tick: int | None = None
+    parsed: list[state.DeathSnapshot] = []
+
+    for record in raw:
+        if not isinstance(record, dict):
+            return _INVALID
+        required = ("id", "linhagem", "tick", "agente", "genoma")
+        if any(key not in record for key in required):
+            return _INVALID
+
+        critter_id = record["id"]
+        if type(critter_id) is not int:
+            return _INVALID
+        if not (1 <= critter_id < saved_next_id):
+            return _INVALID
+        if critter_id in seen_ids or critter_id in live_ids:
+            return _INVALID
+        seen_ids.add(critter_id)
+
+        lineage_id = record["linhagem"]
+        if type(lineage_id) is not str or lineage_id not in lineage_indices:
+            return _INVALID
+        lineage_index = lineage_indices[lineage_id]
+
+        death_tick = record["tick"]
+        if type(death_tick) is not int:
+            return _INVALID
+        if not (1 <= death_tick <= saved_tick):
+            return _INVALID
+        if saved_tick - death_tick >= cfg.DEATH_MARKER_TTL_TICKS:
+            return _INVALID
+        if previous_tick is not None and death_tick < previous_tick:
+            return _INVALID
+        previous_tick = death_tick
+
+        raw_agent = record["agente"]
+        if (
+            not isinstance(raw_agent, np.ndarray)
+            or raw_agent.dtype != np.float32
+            or raw_agent.shape != (AGENT_COLUMNS,)
+        ):
+            return _INVALID
+        x = raw_agent[INDEX_X]
+        y = raw_agent[INDEX_Y]
+        if not (np.isfinite(x) and np.isfinite(y)):
+            return _INVALID
+        if x != np.floor(x) or y != np.floor(y):
+            return _INVALID
+        if not (0 <= x < width and 0 <= y < height):
+            return _INVALID
+
+        raw_genome = record["genoma"]
+        if (
+            not isinstance(raw_genome, np.ndarray)
+            or raw_genome.dtype != np.float32
+            or raw_genome.shape != (cfg.GENOME_SIZE,)
+        ):
+            return _INVALID
+
+        parsed.append(
+            state.DeathSnapshot(
+                critter_id=critter_id,
+                lineage_index=lineage_index,
+                lineage_id=lineage_id,
+                tick=death_tick,
+                agent=raw_agent.copy(),
+                genome=raw_genome.copy(),
+            )
+        )
+
+    if len(parsed) > total_deaths:
+        return _INVALID
+
+    return tuple(parsed)
+
+
 # Save
 
 
@@ -686,8 +1017,15 @@ def save(path: str | None = None) -> bool:
     if path is None:
         path = save_path()
 
+    # Geometria de zonas: validada ANTES de qualquer escrita.
+    # Sob v23, mask e centers continuam um contrato unico; uma divergencia
+    # invalida o checkpoint, e o loader o rejeitaria de qualquer forma.
+    zone_centers_payload = _zone_centers_payload()
+    if zone_centers_payload is None:
+        return False
+
     # Geometria de ninhos: validada ANTES de qualquer escrita.
-    # Um checkpoint sem geometria nao e v21 valido; o loader o
+    # Um checkpoint sem geometria nao e v23 valido; o loader o
     # rejeitaria. Falhar aqui evita produzir um arquivo que o proprio
     # codigo recusaria.
     try:
@@ -708,6 +1046,10 @@ def save(path: str | None = None) -> bool:
         ]
         for i in range(cfg.TOTAL_LINEAGES)
     }
+
+    recent_deaths_payload = _recent_deaths_payload()
+    if recent_deaths_payload is None:
+        return False
 
     data = {
         "versao": cfg.SAVE_VERSION,
@@ -740,6 +1082,9 @@ def save(path: str | None = None) -> bool:
         # legitimo.
         "nascimentos": state.births,
         "mortes": state.deaths,
+        # v23: historico recente completo. Agent/genome permanecem
+        # ndarray float32 no pickle; lineage_index e x/y sao derivados.
+        "mortes_recentes": recent_deaths_payload,
         # --- v11: estado exato de continuacao ---------------------
         #
         # Fase do scheduler reprodutivo. Sem esses dois campos, um
@@ -766,6 +1111,7 @@ def save(path: str | None = None) -> bool:
         # --- fim v11 ----------------------------------------------
         "modificadores_ambientais": cfg.ENVIRONMENTAL_MODIFIERS,
         "zonas": state.zones,
+        "centros_zonas": zone_centers_payload,
         "zonas_ativas": state.zones_active,
         # Efeito de HP das zonas em runtime. Opcional no load
         # (default cfg.HP_EFFECT_IN_ZONE); ausente em saves
@@ -890,12 +1236,12 @@ def load(path: str | None = None) -> bool:
     nao existir E o slot ativo for o default, tenta o PATH legado
     single-file (cfg.GENOME_FILE) como fallback, com aviso impresso.
     E fallback de NOME DE ARQUIVO, nao promessa de compatibilidade de
-    formato: v10 rejeita qualquer save com `versao` abaixo de
+    formato: v23 rejeita qualquer save com `versao` abaixo de
     SAVE_VERSION (politica P1), entao um arquivo legado encontrado
     sera rejeitado no check de versao, nao carregado em silencio. O
     fallback e limitado ao slot default.
 
-    Contrato v21 estrito: um save valido contem exatamente
+    Contrato v23 estrito: um save valido contem exatamente
     cfg.TOTAL_LINEAGES linhagens, cada uma com tres arrays paralelos
     em lockstep, todos os metadados de versao exatamente iguais aos
     atuais, todos os escalares de estado obrigatorios, zona valida
@@ -922,8 +1268,8 @@ def load(path: str | None = None) -> bool:
     Consequencias:
       - Um load rejeitado deixa o runtime byte-a-byte intacto:
         escalares, zonas, zonas_active, zone_hp_effect,
-        next_critter_id, agents, sessao de inspecao, historico de
-        metricas.
+        next_critter_id, agents, recent_deaths, sessao de inspecao,
+        historico de metricas.
       - Nem generate_zones() nem generate_nests() sao chamados em
         qualquer caminho do load (parse, validacao ou commit). Isso
         importa para reprodutibilidade: um load rejeitado nao pode
@@ -1317,6 +1663,45 @@ def load(path: str | None = None) -> bool:
         )
         return False
     parsed_zones: np.ndarray = zones_arr
+
+    # --- Centros de zonas (obrigatorios em v22) ---
+    #
+    # Parseado imediatamente apos parsed_zones. A coerencia
+    # mask<->centers e validada aqui, ANTES do COMMIT POINT, para
+    # que um payload inconsistente nao altere o runtime.
+    parsed_zone_centers = _parse_zone_centers(data)
+    if parsed_zone_centers is _INVALID:
+        print(
+            "[load] centros_zonas ausente ou invalido; save invalido."
+        )
+        return False
+
+    # Coerencia mask <-> centers: reconstroi a mascara esperada e
+    # exige igualdade exata com a mascara persistida. Nao corrige,
+    # nao regenera, nao consome RNG. build_zone_mask() e pura.
+    try:
+        expected_zone_mask = build_zone_mask(parsed_zone_centers)
+    except ValueError as exc:
+        print(
+            f"[load] centros_zonas invalidos ({exc}); save invalido."
+        )
+        return False
+
+    if expected_zone_mask is None:
+        # NUMBER_OF_ZONES <= 0 e o unico caso que produz None.
+        if parsed_zones is not None:
+            print(
+                "[load] centros_zonas vazio mas zonas presente; "
+                "save invalido."
+            )
+            return False
+    else:
+        if not np.array_equal(parsed_zones, expected_zone_mask):
+            print(
+                "[load] zonas e centros_zonas inconsistentes; "
+                "save invalido."
+            )
+            return False
 
     # --- Ninhos (obrigatorios em v21) ---
     #
@@ -1817,6 +2202,35 @@ def load(path: str | None = None) -> bool:
     if not _validate_identity(ids_per_lineage, saved_next_id):
         return False
 
+    # --- v23: historico recente de mortes -------------------------
+    # O archive depende da identidade viva ja validada, do proximo ID,
+    # do tick salvo e do contador historico de mortes. Parseia tudo em
+    # locais e somente instala no COMMIT POINT.
+    raw_recent_deaths = _read_key(
+        data,
+        "mortes_recentes",
+        "recent_deaths",
+    )
+    if raw_recent_deaths is _MISSING:
+        print("[load] mortes_recentes ausente; save v23 invalido.")
+        return False
+
+    live_ids = {
+        int(critter_id)
+        for lineage_ids in ids_per_lineage
+        for critter_id in lineage_ids
+    }
+    parsed_recent_deaths = _parse_recent_deaths(
+        raw_recent_deaths,
+        saved_tick=parsed_tick,
+        saved_next_id=saved_next_id,
+        live_ids=live_ids,
+        total_deaths=parsed_deaths,
+    )
+    if parsed_recent_deaths is _INVALID:
+        print("[load] mortes_recentes invalido; save v23 invalido.")
+        return False
+
     # ------------------------------------------------------------------
     # COMMIT POINT — todas as checagens passaram. Daqui em diante,
     # sem return antecipado: as escritas abaixo sempre completam, e o
@@ -1863,12 +2277,14 @@ def load(path: str | None = None) -> bool:
     random.setstate(parsed_rng_py)
     np.random.set_state(parsed_rng_np)
 
-    # Zonas: restauracao direta. Sob v11 estrito, `parsed_zones` ja
-    # e uma mascara booleana valida com o shape esperado; nao ha
-    # caminho de regeneracao, nao ha consumo de RNG no commit.
+    # Zonas: restauracao direta. Sob v23 estrito, `parsed_zones` e
+    # `parsed_zone_centers` ja foram validados e provaram-se
+    # coerentes; nao ha caminho de regeneracao, nao ha consumo de
+    # RNG no commit.
     # O efeito de HP das zonas ja foi aplicado via set_runtime_rules
     # acima, junto com os demais campos runtime.
     state.zones = parsed_zones
+    state.zone_centers = parsed_zone_centers
     state.nests = parsed_nests
     state.zones_active = parsed_zones_active
 
@@ -1878,6 +2294,11 @@ def load(path: str | None = None) -> bool:
     agents.extend(loaded)
 
     state.next_critter_id = saved_next_id
+
+    # v23: archive persistente instalado in-place. Preserva a identidade
+    # da deque para qualquer consumidor que mantenha referencia a ela.
+    state.recent_deaths.clear()
+    state.recent_deaths.extend(parsed_recent_deaths)
 
     # fill_fields() NAO e chamado aqui. O field de cada linhagem foi
     # construido na fase parse, depois de validar x/y, e ja reflete

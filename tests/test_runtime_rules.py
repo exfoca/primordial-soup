@@ -824,9 +824,11 @@ def test_bootstrap_fresh_restores_two_scale_defaults(monkeypatch):
     from primordial_soup import bootstrap
     from primordial_soup import layout
     from primordial_soup import simulation
+    from primordial_soup import world
 
     original = state.runtime_rules
     saved_zones = state.zones
+    saved_zone_centers = state.zone_centers
     saved_nests = state.nests
     saved_agents = list(agents)
     try:
@@ -837,10 +839,14 @@ def test_bootstrap_fresh_restores_two_scale_defaults(monkeypatch):
             global_scale_fraction=40,
             global_scale_sigma=2.0,
         )
-        sentinel_zones = np.zeros(
-            (layout.LAYOUT.world_width, layout.LAYOUT.world_height),
-            dtype=bool,
+        sentinel_zone_centers = tuple(
+            (
+                layout.LAYOUT.world_width - cfg.ZONE_RADIUS - 1,
+                layout.LAYOUT.world_height - cfg.ZONE_RADIUS - 1,
+            )
+            for _ in range(cfg.NUMBER_OF_ZONES)
         )
+        sentinel_zones = world.build_zone_mask(sentinel_zone_centers)
         sentinel_nests = (
             (cfg.NEST_RADIUS + 1, cfg.NEST_RADIUS + 1),
             (cfg.NEST_RADIUS + 1 + 2 * cfg.NEST_RADIUS + 1, cfg.NEST_RADIUS + 1),
@@ -850,7 +856,9 @@ def test_bootstrap_fresh_restores_two_scale_defaults(monkeypatch):
         monkeypatch.setattr(bootstrap, "place_initially", lambda: None)
         monkeypatch.setattr(bootstrap, "fill_fields", lambda: None)
         monkeypatch.setattr(
-            bootstrap, "generate_zones", lambda: sentinel_zones
+            bootstrap,
+            "generate_zones",
+            lambda: (sentinel_zones, sentinel_zone_centers),
         )
         monkeypatch.setattr(
             bootstrap, "generate_nests", lambda zones: sentinel_nests
@@ -878,6 +886,7 @@ def test_bootstrap_fresh_restores_two_scale_defaults(monkeypatch):
     finally:
         state.set_runtime_rules(original)
         state.zones = saved_zones
+        state.zone_centers = saved_zone_centers
         state.nests = saved_nests
         agents[:] = saved_agents
 
@@ -890,9 +899,11 @@ def test_recreate_preserves_two_scale_runtime_identity(monkeypatch):
     from primordial_soup import bootstrap
     from primordial_soup import controls
     from primordial_soup import layout
+    from primordial_soup import world
 
     original = state.runtime_rules
     saved_zones = state.zones
+    saved_zone_centers = state.zone_centers
     saved_nests = state.nests
     saved_agents = list(agents)
     try:
@@ -904,10 +915,14 @@ def test_recreate_preserves_two_scale_runtime_identity(monkeypatch):
             global_scale_sigma=2.0,
         )
         expected = state.runtime_rules
-        sentinel_zones = np.zeros(
-            (layout.LAYOUT.world_width, layout.LAYOUT.world_height),
-            dtype=bool,
+        sentinel_zone_centers = tuple(
+            (
+                layout.LAYOUT.world_width - cfg.ZONE_RADIUS - 1,
+                layout.LAYOUT.world_height - cfg.ZONE_RADIUS - 1,
+            )
+            for _ in range(cfg.NUMBER_OF_ZONES)
         )
+        sentinel_zones = world.build_zone_mask(sentinel_zone_centers)
         sentinel_nests = (
             (cfg.NEST_RADIUS + 1, cfg.NEST_RADIUS + 1),
             (cfg.NEST_RADIUS + 1 + 2 * cfg.NEST_RADIUS + 1, cfg.NEST_RADIUS + 1),
@@ -917,7 +932,9 @@ def test_recreate_preserves_two_scale_runtime_identity(monkeypatch):
         monkeypatch.setattr(bootstrap, "place_initially", lambda: None)
         monkeypatch.setattr(bootstrap, "fill_fields", lambda: None)
         monkeypatch.setattr(
-            bootstrap, "generate_zones", lambda: sentinel_zones
+            bootstrap,
+            "generate_zones",
+            lambda: (sentinel_zones, sentinel_zone_centers),
         )
         monkeypatch.setattr(
             bootstrap, "generate_nests", lambda zones: sentinel_nests
@@ -938,5 +955,6 @@ def test_recreate_preserves_two_scale_runtime_identity(monkeypatch):
     finally:
         state.set_runtime_rules(original)
         state.zones = saved_zones
+        state.zone_centers = saved_zone_centers
         state.nests = saved_nests
         agents[:] = saved_agents

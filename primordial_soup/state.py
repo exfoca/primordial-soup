@@ -46,6 +46,18 @@ zones: np.ndarray | None = None
 # "ausente", a tupla de 3 centros e o contrato de "presente".
 nests: tuple[tuple[int, int], ...] | None = None
 
+# Centros canonicos das zonas ambientais. Tuple de NUMBER_OF_ZONES
+# pares (x, y) int Python, na mesma ordem em que os centros foram
+# sorteados por generate_zones(). A mascara state.zones e a uniao
+# toroidal dos discos definidos por estes centros com cfg.ZONE_RADIUS;
+# a coerencia mascara<->centros e validada por save/load.
+#
+# None significa "geometria ainda nao inicializada". Apos bootstrap
+# ou load bem-sucedido, quando NUMBER_OF_ZONES > 0, ha exatamente
+# NUMBER_OF_ZONES centros. Sempre substituido junto com state.zones e
+# state.nests.
+zone_centers: tuple[tuple[int, int], ...] | None = None
+
 zones_active: bool = True
 
 # O efeito de HP por tick dentro de zona vive em runtime_rules
@@ -220,8 +232,8 @@ inspected_critter_id: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
-class InspectionDeathSnapshot:
-    """Estado final do bicho observado, capturado na morte.
+class DeathSnapshot:
+    """Estado final de uma criatura capturado no momento da morte.
 
     `agent` e copia da linha de AGENT_COLUMNS no momento da morte;
     `genome` e copia da linha correspondente do pool. Ambos usam
@@ -243,7 +255,12 @@ class InspectionDeathSnapshot:
 # vivo (ou nenhuma sessao ativa). Invariante (garantida por
 # set_inspection_selection): se nao-None, critter_id ==
 # inspected_critter_id.
-inspection_death_snapshot: InspectionDeathSnapshot | None = None
+inspection_death_snapshot: DeathSnapshot | None = None
+
+# Historico recente de toda mortalidade, em ordem cronologica. Sem
+# maxlen: a unica politica de retencao e temporal, aplicada por
+# expire_recent_deaths() em simulation ticks.
+recent_deaths: deque[DeathSnapshot] = deque()
 
 # Rastro do bicho observado. Cada entrada e (x, y). Vazio quando nada
 # esta selecionado; cresce um ponto por tick enquanto ha observado; e
@@ -350,6 +367,7 @@ def reset_counters() -> None:
       - births, deaths,
       - inspected_critter_id (o ID se refere a populacao antiga),
       - inspection_death_snapshot,
+      - recent_deaths,
       - inspected_trail,
       - metrics_history,
       - zones_active (volta ao default ON, porque R regenera as
@@ -397,6 +415,7 @@ def reset_counters() -> None:
     inspection_death_snapshot = None
 
     # --- Historicos ---
+    recent_deaths.clear()
     for series in metrics_history.values():
         series.clear()
 
@@ -411,8 +430,61 @@ def reset_counters() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Inspection selection
+# Death history / Inspection selection
 # ---------------------------------------------------------------------------
+
+
+def record_death_snapshot(snapshot: DeathSnapshot) -> None:
+    """Registra uma morte mantendo ordem cronologica e Observation.
+
+    O mesmo objeto armazenado no archive e instalado na Inspection
+    quando a criatura morta e a atualmente observada. O trail nao e
+    limpo: ele pertence a Observation que acabou de congelar.
+    """
+    global inspection_death_snapshot
+
+    if recent_deaths and snapshot.tick < recent_deaths[-1].tick:
+        raise ValueError("death snapshot tick regressivo")
+
+    recent_deaths.append(snapshot)
+    if snapshot.critter_id == inspected_critter_id:
+        inspection_death_snapshot = snapshot
+
+
+def get_recent_deaths() -> tuple[DeathSnapshot, ...]:
+    """Retorna uma visao imutavel do archive recente de mortes."""
+    return tuple(recent_deaths)
+
+
+def expire_recent_deaths(*, current_tick: int | None = None) -> int:
+    """Remove snapshots cujo TTL em simulation ticks terminou.
+
+    O archive e cronologico, entao somente o prefixo vencido precisa
+    ser removido. Uma Inspection ja iniciada pode continuar apontando
+    para um snapshot que deixou de ser descobrivel no mapa.
+    """
+    if current_tick is None:
+        current_tick = tick_count
+
+    removed = 0
+    while recent_deaths:
+        oldest = recent_deaths[0]
+        if current_tick - oldest.tick < cfg.DEATH_MARKER_TTL_TICKS:
+            break
+        recent_deaths.popleft()
+        removed += 1
+    return removed
+
+
+def set_inspection_death_selection(snapshot: DeathSnapshot) -> None:
+    """Seleciona atomicamente um DeathSnapshot para Inspection."""
+    global inspected_critter_id, inspection_death_snapshot
+
+    if inspected_critter_id != snapshot.critter_id:
+        inspected_trail.clear()
+
+    inspected_critter_id = snapshot.critter_id
+    inspection_death_snapshot = snapshot
 
 
 def set_inspection_selection(critter_id: int | None) -> None:

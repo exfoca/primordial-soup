@@ -1,14 +1,14 @@
 # 🧪 Experiments
 
-Watching Primordial Soup is entertaining. Experimenting with it is more
-useful.
+Watching Primordial Soup is entertaining. Experimenting with it is more useful.
 
 The difference is whether you can answer:
 
 > What changed, what stayed constant, and would the result happen again?
 
-A colorful population explosion is an observation. A controlled
-comparison across repeated runs is evidence.
+A colorful population explosion is an observation. A controlled comparison across repeated runs is evidence.
+
+**This is the single authority for experimental methodology.** The mechanics being measured live in [World Rules](world-rules.md); the evolutionary model in [Evolution](evolution.md); the CLI in [Headless](headless.md).
 
 ---
 
@@ -39,7 +39,7 @@ The last one is still fun. It is simply difficult to publish.
 
 ---
 
-# One variable at a time
+## One variable at a time
 
 The safest experimental rule:
 
@@ -48,22 +48,17 @@ change one thing
 measure several things
 ```
 
-If Red becomes dominant after you simultaneously changed mutation rate,
-zone HP effect, selection weights and reproductive age, you know that
-something caused something.
+If Red becomes dominant after you simultaneously changed mutation rate, zone HP effect, selection weights, and reproductive age, you know that something caused something.
 
-For a controlled comparison, change one independent variable while
-keeping the rest fixed.
+For a controlled comparison, change one independent variable while keeping the rest fixed.
 
 ---
 
-# Use repeated runs
+## Use repeated runs
 
-Primordial Soup is stochastic.
+Primordial Soup is stochastic. Two identical configurations can produce different histories.
 
-Two identical configurations can produce different histories.
-
-Never treat one run as proof. A useful pattern:
+Never treat one run as proof.
 
 ```text
 configuration A     configuration B
@@ -74,38 +69,23 @@ seed 4              seed 4
 seed 5              seed 5
 ```
 
-More runs produce stronger evidence.
-
-Five runs are much better than one. Twenty are much better than five.
+More runs produce stronger evidence. Five runs are much better than one. Twenty are much better than five.
 
 ---
 
-# Fix the duration
+## Fix the duration
 
 Comparisons should normally use the same number of simulation ticks.
 
-Do not compare a 5,000-tick run to an 80,000-tick run and conclude
-that the longer one produced deeper generations.
+Do not compare a 5,000-tick run to an 80,000-tick run and conclude that the longer one produced deeper generations.
 
 ---
 
-# Prefer headless runs for measurements
+## Prefer headless runs for measurements
 
-GUI is better for:
+GUI is better for observing behavior, inspecting individuals, forming hypotheses, and discovering unexpected patterns.
 
-* observing behavior;
-* inspecting individuals;
-* forming hypotheses;
-* discovering unexpected patterns.
-
-Headless is better for:
-
-* repeated trials;
-* fixed-duration runs;
-* fixed seeds;
-* parameter sweeps;
-* automation;
-* reproducible comparisons.
+Headless is better for repeated trials, fixed-duration runs, fixed seeds, parameter sweeps, automation, and reproducible comparisons.
 
 A basic run:
 
@@ -117,7 +97,7 @@ See [Headless](headless.md).
 
 ---
 
-# What can be measured?
+# What can be measured
 
 | Metric                      | What it helps answer                                |
 | --------------------------- | --------------------------------------------------- |
@@ -128,12 +108,11 @@ See [Headless](headless.md).
 | **Average composite score** | How well is the lineage performing under selection? |
 | **Mutation rate**           | What mutation regime was active?                    |
 
-Metrics are sampled every 10 ticks. The in-memory history keeps up to
-600 samples. Saved metrics are more useful for longer analysis.
+Metrics are sampled periodically. The in-memory history is bounded; saved metrics are more useful for longer analysis.
 
 ---
 
-# Metrics answer different questions
+## Metrics answer different questions
 
 Population alone is not enough.
 
@@ -144,12 +123,11 @@ Run B: population 120, maximum generation 24
 
 Which evolved "better"? Cannot be answered from population alone.
 
-A high composite score reflects the **selection function you designed**.
-It is not an external measure of intelligence.
+A high composite score reflects the **selection function you designed**. It is not an external measure of intelligence.
 
 ---
 
-# Record the experimental conditions
+## Record the experimental conditions
 
 For every serious experiment, record:
 
@@ -170,12 +148,9 @@ extinctions
 unexpected observations
 ```
 
-If you cannot reconstruct the experiment later, you did not really
-preserve the experiment.
+If you cannot reconstruct the experiment later, you did not really preserve the experiment.
 
----
-
-# A simple template
+### A simple template
 
 ```text
 QUESTION
@@ -196,519 +171,347 @@ That last field prevents a surprising amount of nonsense.
 
 ---
 
-# Experiment 1 — Mutation rate
+# Experiments worth running
 
-## Question
+## Mutation rate
+
+### Question
 
 How does mutation probability affect evolutionary progress?
 
-## Hypothesis
+### Hypothesis
 
-Very low mutation may preserve successful genomes but reduce novelty.
-Moderate mutation may balance inheritance and exploration. Very high
-mutation may repeatedly damage useful inherited structure.
+Very low mutation may preserve successful genomes but reduce novelty. Moderate mutation may balance inheritance and exploration. Very high mutation may repeatedly damage useful inherited structure.
 
-## Setup
+### Setup
 
-```text
-C
-↓
-Configuration
-↓
-Mutation rate
-↓
-← / →
-```
+Compare several rates through the Configuration panel, or through repeated headless runs. Use the same seed set and duration for every condition.
 
-Compare several rates: `0%, 5%, 20%, 50%, 100%`.
+### Observe
 
-Use the same seed set and duration for every condition.
+Maximum generation, population trajectories, average composite score, longest lifetime, extinction frequency.
 
-```text
-5 seeds
-50,000 ticks each
-```
+### Interpretation
 
-## Observe
-
-Compare: maximum generation, population trajectories, average composite
-score, longest lifetime, extinction frequency.
-
-## Interpretation
-
-Do not expect a monotonic result. "More mutation = more evolution" is
-not generally valid. Mutation supplies variation. Selection decides
-whether that variation persists.
+Do not expect a monotonic result. *More mutation = more evolution* is not generally valid. Mutation supplies variation. Selection decides whether that variation persists.
 
 ---
 
-# Experiment 2 — Mutation-free inheritance
+## Mutation-free inheritance
 
-Set mutation rate to `0%`.
+Set mutation rate to zero.
 
-Descendants can still differ through crossover, but no new numerical
-variation is introduced.
+Descendants can still differ through crossover, but no new numerical variation is introduced.
 
-## Question
+### Question
 
-How much evolutionary change can occur through recombination of founder
-genetic material alone?
+How much evolutionary change can occur through recombination of founder genetic material alone?
 
-A population can continue changing without mutation because crossover
-reshuffles existing genes. But its accessible genetic search space is
-restricted to material already present among founders and their
-recombinations.
+A population can continue changing without mutation because crossover reshuffles existing genes. But its accessible genetic search space is restricted to material already present among founders and their recombinations.
 
-This is a useful control condition. It is **not** equivalent to turning
-evolution off.
+This is a useful control condition. It is **not** equivalent to turning evolution off.
 
 ---
 
-# Experiment 3 — Mutation overload
+## Mutation overload
 
-Set mutation rate to `100%`.
+Set mutation rate to maximum.
 
-## Question
+### Question
 
-Can useful inherited neural structure remain stable when every
-descendant mutates?
+Can useful inherited neural structure remain stable when every descendant mutates?
 
-## Observe
+### Observe
 
-Compare against the default mutation regime: population stability,
-maximum generation, score, extinction, run-to-run variance.
+Compare against the default mutation regime: population stability, maximum generation, score, extinction, run-to-run variance.
 
-High variance between seeds is itself an interesting result. Chaos can
-be data. Just not necessarily adaptation.
+High variance between seeds is itself an interesting result. Chaos can be data. Just not necessarily adaptation.
 
 ---
 
-# Experiment 4 — Beneficial zones
+## Beneficial zones
 
-Keep environmental zones active with a positive HP effect, for example
-`+20`.
+Keep environmental zones active with a positive HP effect.
 
-## Question
+### Question
 
-Do lineages develop spatial distributions associated with beneficial
-regions?
+Do lineages develop spatial distributions associated with beneficial regions?
 
-## Observe
+### Observe
 
-Look for clustering near zones, population differences, long-lived
-individuals near zones, repeated occupation patterns.
+Look for clustering near zones, population differences, long-lived individuals near zones, repeated occupation patterns.
 
 Use inspection to study individuals inside and outside those regions.
 
-## Caveat
+### Caveat
 
-Seeing a cluster inside a beneficial zone does not prove the critters
-evolved "knowledge that zones are good". Several mechanisms can generate
-clustering. Individuals that randomly remain in beneficial regions may
-simply survive longer.
+Seeing a cluster inside a beneficial zone does not prove the critters evolved *knowledge that zones are good*. Several mechanisms can generate clustering. Individuals that randomly remain in beneficial regions may simply survive longer.
 
-To claim behavioral adaptation, compare repeated runs and inspect
-whether evolved controllers systematically produce different movement
-relative to the environment.
+To claim behavioral adaptation, compare repeated runs and inspect whether evolved controllers systematically produce different movement relative to the environment.
 
 ---
 
-# Experiment 5 — Turn refuges into traps
+## Turn refuges into traps
 
-Begin with beneficial zones. Run long enough for the population to
-experience them. Then change:
+Begin with beneficial zones. Run long enough for the population to experience them. Then change the zone HP effect from positive to negative.
 
-```text
-C
-↓
-Configuration
-↓
-Zone HP effect
-↓
-← / →
-```
-
-from positive to negative.
-
-## Question
+### Question
 
 How does a population respond when an environmental condition reverses?
 
 The geography remains the same. Only its ecological consequence changes.
 
-## Observe
+### Observe
 
-Population collapse, extinction, changes in spatial distribution,
-changes across later generations, individual movement near zones.
+Population collapse, extinction, changes in spatial distribution, changes across later generations, individual movement near zones.
 
-This separates adaptation to a location from adaptation to what that
-location does.
+This separates adaptation to a location from adaptation to what that location does.
 
 Yesterday's paradise becomes today's toxic swamp.
 
 ---
 
-# Experiment 6 — Zones on vs off
+## Zones on vs off
 
-Compare:
+Compare zones active against zones inactive while keeping everything else identical.
 
-```text
-A: zones active
-B: zones inactive
-```
-
-Keep everything else identical.
-
-## Question
+### Question
 
 Does geographic heterogeneity materially change evolutionary dynamics?
 
-Compare population stability, maximum generations, lifetimes, extinction
-frequency, spatial clustering.
+Compare population stability, maximum generations, lifetimes, extinction frequency, spatial clustering.
 
 ---
 
-# Experiment 7 — Selection pressure
+## Selection pressure
 
-The default composite score weights are:
-
-```text
-longevity     = 0.5
-exploration   = 0.3
-interaction   = 0.3
-reproduction = 0.3
-```
+The default composite score weights longevity, exploration, interaction, and reproduction.
 
 Changing them changes what evolutionary success means.
 
-Longevity-heavy: do populations evolve toward more conservative
-behavior?
+### Questions
 
-Exploration-heavy: do movement rates, encounters or mortality change?
+- Longevity-heavy: do populations evolve toward more conservative behavior?
+- Exploration-heavy: do movement rates, encounters, or mortality change?
+- Interaction-heavy: does stronger ecological contact emerge, and at what survival cost?
+- Reproduction-heavy: does reproductive success become increasingly concentrated?
 
-Interaction-heavy: does stronger ecological contact emerge, and at what
-survival cost?
-
-Reproduction-heavy: does reproductive success become increasingly
-concentrated?
-
-These require configuration changes. See [Configuration](configuration.md).
+These require configuration changes. See [Runtime Configuration](runtime-config.md).
 
 ---
 
-# Experiment 8 — Reproductive age
+## Reproductive age
 
-The current minimum reproductive age is `5,555` ticks.
+The minimum reproductive age determines how much life history must accumulate before parenthood is even possible.
 
-Compare lower and higher thresholds.
-
-## Question
+### Question
 
 How does generation turnover affect adaptation and population stability?
 
-A lower threshold may produce faster generations, more reproductive
-opportunities, less lifetime evaluation before reproduction.
+A lower threshold may produce faster generations, more reproductive opportunities, and less lifetime evaluation before reproduction.
 
-A higher threshold may produce slower generations, stronger survival
-filtering, fewer eligible parents.
+A higher threshold may produce slower generations, stronger survival filtering, and fewer eligible parents.
 
-A system producing generations rapidly is not necessarily producing
-better descendants.
+A system producing generations rapidly is not necessarily producing better descendants.
 
 ---
 
-# Experiment 9 — Encounter gate
+## Encounter gate
 
-The current minimum is `6` encounters.
+The minimum encounter count determines how much ecological contact is required before reproduction.
 
-Raise it.
+### Question
 
-## Question
+Does stronger reproductive pressure toward inter-lineage interaction change ecology?
 
-Does stronger reproductive pressure toward inter-lineage interaction
-change ecology?
-
-Possible outcomes: more ecological contact, higher mortality, greater
-clustering, fewer eligible parents, slower population recovery.
+Possible outcomes: more ecological contact, higher mortality, greater clustering, fewer eligible parents, slower population recovery.
 
 A sufficiently strict gate may reduce reproduction dramatically.
 
 ---
 
-# Experiment 10 — Crossover strategy
+## Crossover strategy
 
-Primordial Soup supports `blocks`, `uniform`, `two_points`.
+Primordial Soup supports `blocks`, `uniform`, and `two_points`.
 
-Run the same seed set and duration for each. Do not change mutation
-simultaneously.
+Run the same seed set and duration for each. Do not change mutation simultaneously.
 
-## Question
+### Question
 
-Which crossover strategy better preserves or recombines useful neural
-structures?
+Which crossover strategy better preserves or recombines useful neural structures?
 
-Because genomes encode neural parameters, contiguous gene structure may
-matter. Or it may not. That is precisely why this is an experiment
-rather than an opinion.
+Because genomes encode neural parameters, contiguous gene structure may matter. Or it may not. That is precisely why this is an experiment rather than an opinion.
 
 ---
 
-# Experiment 11 — Long-run evolution
+## Long-run evolution
 
-Run `100,000` ticks or more in headless mode.
+Run 100,000 ticks or more in headless mode.
 
-## Question
+### Question
 
-Do metrics continue improving, stabilize, oscillate or collapse over
-long periods?
+Do metrics continue improving, stabilize, oscillate, or collapse over long periods?
 
-Watch for plateaus, population cycles, repeated extinctions, score
-stabilization, generation growth, long-term lineage imbalance.
+Watch for plateaus, population cycles, repeated extinctions, score stabilization, generation growth, and long-term lineage imbalance.
 
-A long run can expose dynamics invisible at 5,000 ticks. It can also
-produce a very long example of random history.
+A long run can expose dynamics invisible at 5,000 ticks. It can also produce a very long example of random history.
 
 Repeat the experiment.
 
 ---
 
-# Experiment 12 — Same configuration, different seeds
+## Same configuration, different seeds
 
-Do not change any parameter. Run several seeds: `42, 43, 44, 45, 46`.
+Do not change any parameter. Run several seeds.
 
-## Question
+### Question
 
-How much of the observed outcome is configuration, and how much is
-stochastic history?
+How much of the observed outcome is configuration, and how much is stochastic history?
 
-This is one of the most important baseline experiments in the entire
-project. If identical settings produce dramatically different outcomes,
-later comparisons need enough repetitions to separate signal from
-variance.
+This is one of the most important baseline experiments in the entire project. If identical settings produce dramatically different outcomes, later comparisons need enough repetitions to separate signal from variance.
 
-Before asking "Does parameter X matter?", first learn "How noisy is this
-universe when X does not change?".
+Before asking *"Does parameter X matter?"*, first learn *"How noisy is this universe when X does not change?"*.
 
 ---
 
-# Experiment 13 — Same seed, changed parameter
+## Same seed, changed parameter
 
 Use one seed repeatedly while changing exactly one parameter.
 
-```text
-seed 42, mutation 1%
-seed 42, mutation 5%
-seed 42, mutation 20%
-```
+This can help isolate treatment effects. But do not use only one seed. A parameter may interact unusually with one particular random history.
 
-This can help isolate treatment effects. But do not use only one seed. A
-parameter may interact unusually with one particular random history.
-
-The best design combines both ideas: multiple treatments × multiple
-shared seeds.
+The best design combines both ideas: multiple treatments × multiple shared seeds.
 
 ---
 
-# Experiment 14 — Near-extinction intervention
+## Near-extinction intervention
 
-Let a lineage approach extinction. Then:
+Let a lineage approach extinction. Then use **Heal all critters** from the Configuration panel.
 
-```text
-C
-↓
-Configuration
-↓
-Heal all critters
-↓
-Enter
-```
+This resets the HP of all surviving critters to the configured initial HP.
 
-This resets the HP of all surviving critters to the configured initial
-HP.
+This is not a clean natural-evolution experiment. It is an **intervention experiment**. That distinction should be recorded explicitly.
 
-This is not a clean natural-evolution experiment. It is an
-**intervention experiment**. That distinction should be recorded
-explicitly.
+Note that the global `H` accelerator does not perform this intervention. `H` toggles the floating HUD and has no effect on the simulation. Heal All remains exclusively available through the Configuration panel.
 
-Note that the global **H** accelerator does not perform this
-intervention anymore. **H** toggles the floating HUD and has no effect
-on the simulation.
+### Question
 
-## Question
+What happens when accumulated genomes are preserved but immediate survival pressure is suddenly reset?
 
-What happens when accumulated genomes are preserved but immediate
-survival pressure is suddenly reset?
+This can be useful for studying whether a population under severe ecological stress recovers when immediate mortality pressure is temporarily relieved.
 
-This can be useful for studying whether a population under severe
-ecological stress recovers when immediate mortality pressure is
-temporarily relieved.
-
-Do not compare this directly with untouched runs without labeling the
-intervention. You played god. Write it in the methods section.
+Do not compare this directly with untouched runs without labeling the intervention. You played god. Write it in the methods section.
 
 ---
 
-# Experiment 15 — Individual case study
+## Individual case study
 
 Run a population for a substantial period. Use inspection.
 
-For example:
+For example, criterion = highest generation, lineage = Red.
 
-```text
-criterion = highest generation
-lineage   = R
-```
+Observe the candidate. Follow its trail. Pause and single-step around interesting encounters.
 
-Observe the candidate. Follow its trail. Pause and single-step around
-interesting encounters.
+Record HP, age, generation, encounters, offspring, composite score, local vision, and movement pattern.
 
-Record: HP, age, generation, encounters, offspring, composite score,
-local vision, movement pattern.
+### Question
 
-## Question
+Can population-level performance be associated with recognizable individual behavior?
 
-Can population-level performance be associated with recognizable
-individual behavior?
-
-This is exploratory analysis. It is useful for generating hypotheses.
-It is not sufficient to establish a population-wide evolutionary
-strategy.
+This is exploratory analysis. It is useful for generating hypotheses. It is not sufficient to establish a population-wide evolutionary strategy.
 
 ---
 
-# Experiment 16 — Extinction frequency
+## Extinction frequency
 
-Choose one treatment variable. For every seed, record whether each
-lineage survives to the target duration.
+Choose one treatment variable. For every seed, record whether each lineage survives to the target duration.
 
-```text
-condition A, 20 runs
-R extinct in 2
-G extinct in 5
-B extinct in 3
+### Question
 
-condition B, 20 runs
-R extinct in 11
-G extinct in 13
-B extinct in 9
-```
+Does this treatment change lineage survival rates?
 
-Now you have something much stronger than "everyone seemed to die
-faster".
+Extinction can be treated as an outcome variable. Twenty runs with 2 extinctions is a very different result from twenty runs with 11 extinctions.
 
-Extinction can be treated as an outcome variable.
+Much stronger than *"everyone seemed to die faster"*.
 
 ---
 
-# Separate exploratory and confirmatory work
+# Methodology
+
+## Separate exploratory and confirmatory work
 
 ```text
-EXPLORATORY
-watch, poke, inspect, notice something strange, form a hypothesis
+EXPLORATORY   watch, poke, inspect, notice something strange, form a hypothesis
+CONFIRMATORY  define treatment, fix seeds, fix duration, repeat, measure, compare
 ```
 
-then:
-
-```text
-CONFIRMATORY
-define treatment, fix seeds, fix duration, repeat, measure, compare
-```
-
-The GUI is excellent for the first. Headless runs are excellent for the
-second.
+The GUI is excellent for the first. Headless runs are excellent for the second.
 
 ---
 
-# Save interesting worlds
+## Save interesting worlds
 
-Four graphical slots: `default`, `world_a`, `world_b`, `world_c`.
+Use the graphical save slots to preserve memorable worlds.
 
-Save through **S → Session → Save now → Enter**. Cycle slots with the
-global **N**.
-
-But save slots are not a substitute for repeated experimentation. Four
-memorable worlds can still be four anecdotes.
+But save slots are not a substitute for repeated experimentation. Four memorable worlds can still be four anecdotes.
 
 ---
 
-# Use GIFs as evidence carefully
+## Use GIFs as evidence carefully
 
-Recording is useful for showing behavior, documenting a visual
-phenomenon, comparing spatial organization, communicating results.
+Recording is useful for showing behavior, documenting a visual phenomenon, comparing spatial organization, and communicating results.
 
 It is poor as the only quantitative evidence.
 
-A GIF can show "this pattern occurred". It usually cannot establish
-"this treatment produces this pattern more often".
+A GIF can show *"this pattern occurred"*. It usually cannot establish *"this treatment produces this pattern more often"*.
 
 Use recordings alongside metrics.
 
 ---
 
-# Beware survivor bias
+## Beware survivor bias
 
-Inspection naturally focuses attention on living individuals, especially
-oldest, highest generation, best score. These are survivors by
-definition.
+Inspection naturally focuses attention on living individuals, especially oldest, highest generation, and best score. These are survivors by definition.
 
-If you study only them, you may miss the much larger collection of
-genomes that failed.
+If you study only them, you may miss the much larger collection of genomes that failed.
 
-The most impressive surviving critter is interesting. The thousands of
-dead relatives are also part of the experiment.
+The most impressive surviving critter is interesting. The thousands of dead relatives are also part of the experiment.
 
 ---
 
-# Beware retrospective storytelling
+## Beware retrospective storytelling
 
-Artificial-life systems are excellent at producing visual patterns that
-invite explanation.
+Artificial-life systems are excellent at producing visual patterns that invite explanation.
 
-Treat intuitive explanations as hypotheses. Then ask what measurable
-prediction follows.
+Treat intuitive explanations as hypotheses. Then ask what measurable prediction follows.
 
-Evolution does not become more scientific because its story sounds
-plausible.
+Evolution does not become more scientific because its story sounds plausible.
 
 ---
 
 # A recommended first study
 
-## Question
+### Question
 
-Does mutation probability affect genealogical depth and lineage
-survival?
+Does mutation probability affect genealogical depth and lineage survival?
 
-## Treatments
+### Treatments
 
-`1%, 5%, 20%`.
+Low, medium, high — adjusted through the Configuration panel or across separate headless runs.
 
-Adjust through:
-
-```text
-C
-↓
-Configuration
-↓
-Mutation rate
-↓
-← / →
-```
-
-## Seeds
+### Seeds
 
 10 shared seeds.
 
-## Duration
+### Duration
 
 50,000 ticks.
 
 That produces 3 treatments × 10 seeds = 30 runs.
 
-## Record
+### Record
 
-For each lineage: final population, maximum generation, longest
-lifetime, average composite score, extinct yes/no.
+For each lineage: final population, maximum generation, longest lifetime, average composite score, extinct yes/no.
 
 Compare treatment distributions rather than individual runs.
 
@@ -716,12 +519,11 @@ No lab coat necessary. Spreadsheet recommended.
 
 ---
 
-# What not to conclude
+## What not to conclude
 
 Primordial Soup can support statements such as:
 
-> Under this simulation configuration, treatment A produced higher
-> maximum generation than treatment B across these seeds.
+> Under this simulation configuration, treatment A produced higher maximum generation than treatment B across these seeds.
 
 It does not automatically support statements such as:
 
@@ -747,17 +549,15 @@ If the result surprises you: good.
 
 If the result survives repetition: better.
 
-If the result disappears when you repeat it: also useful. You just
-learned that the first result was probably history rather than
-mechanism.
+If the result disappears when you repeat it: also useful. You just learned that the first result was probably history rather than mechanism.
 
 ---
 
 # Related documentation
 
-→ [Simulation](simulation.md)
-→ [Evolution](evolution.md)
-→ [Inspection](inspection.md)
-→ [Headless](headless.md)
-→ [Configuration](configuration.md)
-→ [Persistence](persistence.md)
+→ [World Rules](world-rules.md) — the mechanics being measured
+→ [Evolution](evolution.md) — selection, gates, crossover and mutation
+→ [Runtime Configuration](runtime-config.md) — every HOT rule you can vary
+→ [Headless](headless.md) — running controlled batches
+→ [User Interface](ui.md) — observing individuals
+→ [Persistence](persistence.md) — saving worlds for later inspection

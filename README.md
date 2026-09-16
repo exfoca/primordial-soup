@@ -5,7 +5,7 @@
 </p>
 
 <p align="center">
-  <img alt="Version" src="https://img.shields.io/badge/version-0.6.0-blue">
+  <img alt="Version" src="https://img.shields.io/badge/version-0.7.0-blue">
   <img alt="License: MIT" src="https://img.shields.io/badge/License-MIT-yellow.svg">
   <img alt="Python" src="https://img.shields.io/badge/python-3.12%2B-3776AB?logo=python&logoColor=white">
   <img alt="UI" src="https://img.shields.io/badge/UI-English%20%7C%20PT--BR-555555">
@@ -31,27 +31,13 @@ Science is like that.
 
 ---
 
-## What is Primordial Soup?
+## What is this?
 
 **Primordial Soup** is an artificial-life simulation populated by autonomous critters whose behavior is controlled by small inherited recurrent neural networks.
 
-Every critter can:
+Each critter can perceive nearby members of all three lineages, sense a little of its own internal state, choose one of nine movement actions, encounter predators and prey, gain and lose HP, reproduce when eligible, pass a recombined and possibly mutated genome to descendants, and eventually die.
 
-* perceive nearby members of all three lineages;
-* sense part of its own internal state;
-* choose one of nine movement actions;
-* explore the world;
-* encounter predators and prey;
-* gain and lose HP;
-* survive environmental pressure;
-* reproduce when eligible;
-* pass a recombined and potentially mutated genome to descendants;
-* accumulate a measurable evolutionary history;
-* and eventually die.
-
-There is no player-controlled creature and no predefined winning strategy.
-
-The experiment is the interaction between **neural behavior, inheritance, ecology, selection pressure, spatial structure, and time**.
+There is no player-controlled creature and no predefined winning strategy. The experiment is the interaction between neural behavior, inheritance, ecology, selection pressure, spatial structure, and time.
 
 > 🧠 **Primordial Soup does not train its critters. It replaces them.**
 >
@@ -63,18 +49,19 @@ The experiment is the interaction between **neural behavior, inheritance, ecolog
 
 ## 📚 Documentation
 
-The README is the quick introduction.
+This README is the quick introduction. The actual rules of the universe live in `docs/`:
 
-The actual rules of the universe live here:
-
-| Document                                           | Purpose                                                                               |
-| -------------------------------------------------- | ------------------------------------------------------------------------------------- |
-| [World Rules](docs/world-rules.md)                 | Ecology, predation, overcrowding, nests, zones, death, reproduction and genetic rules |
-| [Critters and Brains](docs/critters-and-brains.md) | Perception, recurrent neural network, genome, movement and stable identity            |
-| [Runtime Configuration](docs/runtime-config.md)    | HOT rules, defaults, limits and live experimental controls                            |
-| [Persistence](docs/persistence.md)                 | Checkpoints, deterministic continuation, stable IDs, RNG state and compatibility      |
-| [User Interface](docs/ui.md)                       | Panels, navigation, Inspection, controls and operator interaction                     |
-| [Architecture](docs/architecture.md)               | Modules, state ownership, tick lifecycle, boundaries and architectural invariants     |
+| Document | Purpose |
+| -------- | ------- |
+| [World Rules](docs/world-rules.md) | Ecology, predation, overcrowding, nests, zones, death, reproduction and genetic rules |
+| [Critters and Brains](docs/critters-and-brains.md) | Perception, recurrent neural network, genome, movement and stable identity |
+| [Evolution](docs/evolution.md) | Selection, reproductive gates, crossover, mutation and the composite score |
+| [Runtime Configuration](docs/runtime-config.md) | HOT rules, defaults, limits and live experimental controls |
+| [Persistence](docs/persistence.md) | Checkpoints, deterministic continuation, stable IDs, RNG state and compatibility |
+| [User Interface](docs/ui.md) | Panels, navigation, Inspection, controls and operator interaction |
+| [Headless](docs/headless.md) | CLI, reproducible runs, seed semantics and batch experiments |
+| [Experiments](docs/experiments.md) | Methodology, controlled comparisons and what counts as evidence |
+| [Architecture](docs/architecture.md) | Modules, state ownership, tick lifecycle, boundaries and architectural invariants |
 
 A useful reading order is:
 
@@ -85,11 +72,15 @@ World Rules
   ↓
 Critters and Brains
   ↓
+Evolution
+  ↓
 Runtime Configuration
   ↓
 Persistence
   ↓
 User Interface
+  ↓
+Experiments
   ↓
 Architecture
 ```
@@ -102,51 +93,21 @@ If you want to modify the code without accidentally inventing a second universe,
 
 ## 🧠 The critter brain
 
-Each critter sees an **11×11 local window** with one perception channel for each lineage:
+Each critter sees an **11×11 local window** with one perception channel for each lineage (Red, Green, Blue), plus four inputs describing its own internal state.
+
+That produces **367 neural inputs**.
+
+The brain is a small recurrent network:
 
 ```text
-Red
-Green
-Blue
-```
-
-Four additional inputs describe internal state.
-
-That produces:
-
-```text
-363 visual inputs
-+ 4 internal inputs
----------------------
-367 total inputs
-```
-
-The brain is a small recurrent neural network:
-
-```text
-367 inputs
-    ↓
-25 hidden neurons
-    ↺ recurrent state
-    ↓
-12 hidden neurons
-    ↓
-9 movement outputs
+367 inputs → 25 hidden → 12 hidden → 9 movement outputs
 ```
 
 The nine outputs correspond to the Moore neighborhood: eight directions plus staying in place.
 
-All neural weights, biases, and recurrent weights live inside the critter's genome:
+All neural weights, biases, and recurrent weights live inside the critter's genome: **10,245 genes**.
 
-```text
-10,245 genes
-```
-
-The network is evaluated during life.
-
-It is **not trained during life**.
-
-What changes across generations is the genome.
+The network is evaluated during life. It is **not trained during life**. What changes across generations is the genome.
 
 Machine learning:
 
@@ -170,32 +131,18 @@ For the complete organism model, see [Critters and Brains](docs/critters-and-bra
 Every simulation tick follows a fixed lifecycle:
 
 ```text
-perceive
-   ↓
-decide
-   ↓
-move
-   ↓
-resolve ecology
-   ↓
-apply HP / encounters / deaths
-   ↓
-reproduce if a lineage owns this turn
-   ↓
-update the world
-   ↓
-record metrics
+perceive → decide → move → resolve ecology
+        → apply HP / encounters / deaths
+        → reproduce if a lineage owns this turn
+        → update the world
+        → record metrics
 ```
 
 Ecological effects are resolved from the same post-movement world snapshot before deaths are applied.
 
-This matters.
+This matters. A critter does not get to survive an interaction merely because another array happened to be processed first.
 
-A critter does not get to survive an interaction merely because another array happened to be processed first.
-
-That would not be evolution.
-
-That would be a scheduling bug wearing a lab coat.
+That would not be evolution. That would be a scheduling bug wearing a lab coat.
 
 The complete ecological specification is in [World Rules](docs/world-rules.md).
 
@@ -203,7 +150,7 @@ The complete ecological specification is in [World Rules](docs/world-rules.md).
 
 ## 🔴 🟢 🔵 Three lineages
 
-The world contains three lineages:
+The world contains three lineages with a non-transitive predation cycle:
 
 | Predator | Prey     |
 | -------- | -------- |
@@ -211,19 +158,11 @@ The world contains three lineages:
 | 🟢 Green | 🔵 Blue  |
 | 🔵 Blue  | 🔴 Red   |
 
-Predation occurs when predator and prey occupy the same cell.
-
-The prey loses HP.
-
-The predator gains the transferred HP.
-
-If several predators share the cell, the reward is divided between them.
+Predation occurs when predator and prey occupy the same cell. The prey loses HP; the predator gains the transferred HP. If several predators share the cell, the reward is divided between them.
 
 Same-lineage overcrowding is a separate pressure and damages organisms sharing a cell with too many members of their own lineage.
 
-There is no HP ceiling.
-
-Successful predators may accumulate considerably more HP than they started with.
+There is no HP ceiling. Successful predators may accumulate considerably more HP than they started with.
 
 Chaos is allowed to keep its earnings.
 
@@ -231,74 +170,29 @@ Chaos is allowed to keep its earnings.
 
 ## 🪺 Nests
 
-Each lineage owns exactly one persistent nest.
+Each lineage owns exactly one persistent nest with two jobs: predator refuge and birthplace for descendants.
 
-Nests have two jobs:
+A critter inside its own nest is protected from predators. It is **not** protected from overcrowding.
 
-```text
-predator refuge
-+
-birthplace for descendants
-```
+Nests do not grant HP, change metabolism, alter perception, modify score, improve genetics, or increase reproduction probability.
 
-A critter inside its own nest is protected from predators.
+Founders begin at random positions. Descendants are born in or immediately around their lineage's nest.
 
-It is **not** protected from overcrowding.
-
-Nests do not:
-
-* grant HP;
-* change metabolism;
-* alter perception;
-* modify score;
-* improve genetics;
-* increase reproduction probability.
-
-Founders begin at random positions.
-
-Descendants are born near their lineage's nest.
-
-A nest is geography.
-
-Not a spa.
+A nest is geography. Not a spa.
 
 ---
 
 ## 🧬 Reproduction and evolution
 
-Reproduction is selective rather than automatic.
+Reproduction is selective rather than automatic. Potential parents must pass runtime-configurable gates involving **age**, **HP**, **composite score**, and **encounters**.
 
-Potential parents must pass runtime-configurable gates involving:
-
-```text
-age
-HP
-composite score
-encounters
-```
-
-Eligible organisms are ranked and a reproductive pool is formed.
-
-Two parents are selected.
+Eligible organisms are ranked; a reproductive pool is formed; two parents are selected.
 
 Their genomes undergo crossover, producing two complementary descendants, after which mutation may alter the inherited neural parameters.
 
-Available crossover strategies include:
+Available crossover strategies: `blocks`, `uniform`, `two_points`.
 
-```text
-blocks
-uniform
-two points
-```
-
-Mutation supports:
-
-```text
-two scales
-surgical
-```
-
-The two-scale model allows smaller local perturbations and rarer, larger exploratory mutations.
+Mutation supports: `two_scales`, `surgical`.
 
 New descendants receive stable IDs, begin a new generation, and spawn at their lineage's nest.
 
@@ -306,33 +200,17 @@ New descendants receive stable IDs, begin a new generation, and spawn at their l
 >
 > Sexual reproduction with only one parent would require considerably more theological documentation.
 
-For exact reproduction, mutation and ecological rules, see [World Rules](docs/world-rules.md).
+For exact reproduction, mutation and ecological rules, see [World Rules](docs/world-rules.md) and [Evolution](docs/evolution.md).
 
 ---
 
 ## ⚙️ Change the rules while it runs
 
-A large part of the experiment can be modified without restarting the simulation.
-
-The **Configuration** panel exposes HOT rules for:
-
-* genetics;
-* crossover;
-* mutation;
-* behavior;
-* metabolism;
-* predation;
-* overcrowding;
-* environmental zones;
-* reproduction;
-* parent selection;
-* fitness scoring.
+A large part of the experiment can be modified without restarting the simulation. The **Configuration** panel exposes HOT rules for genetics, mutation, behavior, metabolism, predation, overcrowding, environmental zones, reproduction, parent selection, and fitness scoring.
 
 Runtime changes are validated before replacing the active rule set.
 
-The point is not to discover one sacred configuration.
-
-The point is to create different selection pressures and see what survives them.
+The point is not to discover one sacred configuration. The point is to create different selection pressures and see what survives them.
 
 Defaults, ranges and exact semantics are documented in [Runtime Configuration](docs/runtime-config.md).
 
@@ -340,9 +218,7 @@ Defaults, ranges and exact semantics are documented in [Runtime Configuration](d
 
 ## 🔬 Inspection and metrics
 
-Primordial Soup is designed to be observed, not merely watched.
-
-The interface contains five panels:
+Primordial Soup is designed to be observed, not merely watched. The interface contains five panels:
 
 | Key | Panel             | Purpose                                     |
 | --- | ----------------- | ------------------------------------------- |
@@ -350,41 +226,13 @@ The interface contains five panels:
 | `C` | **Configuration** | Change runtime rules                        |
 | `M` | **Metrics**       | Inspect population and evolutionary metrics |
 | `S` | **Session**       | Save, load, or create a world               |
-| `T` | **Tools**         | Language, recording and diagnostics         |
+| `T` | **Tools**         | Language, audio, recording and diagnostics  |
 
-Inspection tracks critters using stable IDs rather than array positions.
+Inspection tracks critters using stable IDs rather than array positions. You can inspect HP, age, generation, encounters, offspring, score, position, vision, neural weights, and trajectory.
 
-You can inspect information such as:
+Every death is snapshotted before the population is compacted. Recent deaths remain discoverable on the map for 2000 simulation ticks as lineage-colored X markers.
 
-```text
-HP
-age
-generation
-encounters
-offspring
-score
-position
-vision
-neural weights
-trajectory
-```
-
-If the observed critter dies, its final inspection state is preserved.
-
-Death terminates the organism.
-
-It does not invalidate the paperwork.
-
-The Metrics panel tracks:
-
-```text
-population
-average HP
-longest lifetime
-maximum generation
-average composite score
-mutation rate
-```
+If the observed critter dies, its final inspection state is preserved. Death terminates the organism. It does not invalidate the paperwork.
 
 See [User Interface](docs/ui.md) for the complete interaction model.
 
@@ -414,35 +262,28 @@ See [User Interface](docs/ui.md) for the complete interaction model.
 | `Ctrl+L`            | Load                           |
 | `P`                 | Print simulation state         |
 
-The graphical interface supports:
-
-```text
-English
-Portuguese (Brazil)
-```
+The graphical interface supports **English** and **Portuguese (Brazil)**.
 
 ---
 
-## ▶️ Running Primordial Soup
+## ▶️ Running
 
 Primordial Soup requires **Python 3.12 or newer**.
-
-From the repository root:
 
 ```bash
 python -m pip install -e .
 python -m primordial_soup
 ```
 
-No arguments means graphical mode.
-
-Then press:
+No arguments means graphical mode. Then press:
 
 ```text
 SPACE
 ```
 
 The universe has been informed.
+
+The background track begins when the simulation starts running. Music and sound effects can be controlled independently from Tools.
 
 ### Nix / NixOS
 
@@ -468,67 +309,34 @@ The same simulation can run without opening a Pygame window.
 Create a deterministic world, simulate 10,000 ticks, and save it:
 
 ```bash
-python -m primordial_soup \
-  --new \
-  --seed 42 \
-  --duration 10000 \
-  --save world_a
+python -m primordial_soup --new --seed 42 --duration 10000 --save world_a
 ```
 
 Continue the same world for another 5,000 ticks:
 
 ```bash
-python -m primordial_soup \
-  --load world_a \
-  --duration 5000
+python -m primordial_soup --load world_a --duration 5000
 ```
 
-Headless mode is useful for:
+Headless mode is useful for batch experiments, reproducible seeds, parameter studies, CI smoke tests, and long evolutionary runs.
 
-```text
-batch experiments
-reproducible seeds
-parameter studies
-CI smoke tests
-long evolutionary runs
-```
+Graphical and headless execution use the same simulation core and checkpoint format. Headless mode does not initialize the audio backend.
 
-Graphical and headless execution use the same simulation core and checkpoint format.
+See [Headless](docs/headless.md) for the complete CLI contract, and [Experiments](docs/experiments.md) for methodology.
 
 ---
 
 ## 💾 Persistence
 
-Primordial Soup saves complete simulation checkpoints.
+Primordial Soup saves complete simulation checkpoints. A checkpoint preserves critters, genomes, stable IDs, runtime rules, tick counters, the reproduction scheduler, environmental zone mask, canonical zone centers, nest geometry, the recent-death archive, and both Python and NumPy RNG states.
 
-A checkpoint preserves the state required to continue the same stochastic history, including:
-
-```text
-critters
-genomes
-stable IDs
-runtime rules
-tick counters
-reproduction scheduler
-environmental zones
-nest geometry
-Python RNG state
-NumPy RNG state
-```
-
-This is deliberate.
-
-A checkpoint is supposed to continue the same universe — not reconstruct something that merely resembles it.
+This is deliberate. A checkpoint is supposed to continue the same universe — not reconstruct something that merely resembles it.
 
 > 💾 **Save the world.**
 >
 > **The universe that comes back is the same universe that went in.**
 
-The current checkpoint contract is:
-
-```text
-save version 21
-```
+The current checkpoint contract is **save version 23**.
 
 For validation, compatibility and atomic load/save behavior, see [Persistence](docs/persistence.md).
 
@@ -536,13 +344,7 @@ For validation, compatibility and atomic load/save behavior, see [Persistence](d
 
 ## 🏗️ Architecture
 
-Primordial Soup has one simulation core shared by graphical and headless execution.
-
-The canonical tick is owned by:
-
-```text
-simulation.step()
-```
+Primordial Soup has one simulation core shared by graphical and headless execution. The canonical tick is owned by `simulation.step()`.
 
 Major responsibilities are intentionally separated:
 
@@ -557,23 +359,21 @@ world        → population and spatial representation
 state        → active universe state
 persistence  → checkpoints
 rendering    → pixels
+feedback     → semantic presentation events
+audio        → music and sound effects
 ```
 
 Some boundaries are treated as hard architectural invariants:
 
 ```text
 rendering does not advance the simulation
-
 UI state does not change physics
-
+audio does not alter simulation state
+headless does not initialize audio
 ecology is resolved from a frozen snapshot
-
 population arrays remain in lockstep
-
 stable identity is independent of array position
-
 RuntimeRules is immutable
-
 fresh-world construction has one authority
 ```
 
@@ -587,8 +387,6 @@ The dependency graph is not.
 
 ## 🧪 Tests
 
-Run the test suite with:
-
 ```bash
 python -m pytest tests/ -v
 ```
@@ -599,9 +397,7 @@ On Nix:
 nix flake check
 ```
 
-Artificial life may be chaotic.
-
-The test suite should not be.
+Artificial life may be chaotic. The test suite should not be.
 
 ---
 
@@ -613,15 +409,9 @@ Primordial Soup is released under the **MIT License**.
 
 ## 🙏 Acknowledgements
 
-Primordial Soup was inspired by
-[**Neuroparticles**](https://github.com/xcontcom/neuroparticles)
-by [Serhii Herasymov](https://github.com/xcontcom) — a smaller
-artificial-life experiment that showed how far a 9-output neural
-network, uniform crossover and random mutation can go on a toroidal
-grid.
+Primordial Soup was inspired by [**Neuroparticles**](https://github.com/xcontcom/neuroparticles) by [Serhii Herasymov](https://github.com/xcontcom) — a smaller artificial-life experiment that showed how far a 9-output neural network, uniform crossover and random mutation can go on a toroidal grid.
 
-The idea of building a larger universe around those same principles
-came directly from that project.
+The idea of building a larger universe around those same principles came directly from that project.
 
 ---
 

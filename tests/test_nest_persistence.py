@@ -1,4 +1,4 @@
-"""Contratos de persistencia dos ninhos (schema v21).
+"""Contratos de persistencia dos ninhos (schema v22).
 
 Cobre:
 
@@ -43,18 +43,20 @@ def _valid_nests():
     )
 
 
-def _empty_zones():
-    return np.zeros(
-        (layout.LAYOUT.world_width, layout.LAYOUT.world_height),
-        dtype=bool,
+def _valid_test_zone_centers():
+    """Centros de zona determinísticos, sem consumir RNG."""
+    center = (
+        layout.LAYOUT.world_width - cfg.ZONE_RADIUS - 1,
+        layout.LAYOUT.world_height - cfg.ZONE_RADIUS - 1,
     )
+    return tuple(center for _ in range(cfg.NUMBER_OF_ZONES))
 
 
 def _prepare_checkpointable_world():
-    """Runtime minimo e deterministico para save/load.
+    """Runtime minimo e deterministico para save/load (v22).
 
     Nao usa bootstrap real. Nao consome stdlib RNG para zones nem
-    nests. Serve apenas para produzir payloads v21 validos.
+    nests. Produz payloads v22 validos.
     """
     state.reset_counters()
     world.seed_lineages()
@@ -65,7 +67,9 @@ def _prepare_checkpointable_world():
         )
     world.place_initially()
     world.fill_fields()
-    state.zones = _empty_zones()
+    centers = _valid_test_zone_centers()
+    state.zone_centers = centers
+    state.zones = world.build_zone_mask(centers)
     state.nests = _valid_nests()
 
 
@@ -84,12 +88,14 @@ def clean_state():
     """Restaura runtime e geometry ao redor de cada teste."""
     original_rules = state.runtime_rules
     saved_zones = state.zones
+    saved_zone_centers = state.zone_centers
     saved_nests = state.nests
     saved_agents = list(agents)
     yield
     state.set_runtime_rules(original_rules)
     state.reset_counters()
     state.zones = saved_zones
+    state.zone_centers = saved_zone_centers
     state.nests = saved_nests
     agents[:] = saved_agents
 
@@ -288,10 +294,9 @@ def test_load_rejects_nest_inside_zone(clean_state, tmp_path):
 
     with open(path, "rb") as f:
         data = pickle.load(f)
-    # Ativa uma celula no proprio centro de R: o centro pertence ao
-    # disco do ninho (distancia 0 <= radius), entao há interseccao.
-    rx, ry = data["nests"]["R"]
-    data["zonas"][rx, ry] = True
+    # Coloca o nest R sobre o primeiro centro de zona salvo.
+    zx, zy = data["centros_zonas"][0]
+    data["nests"]["R"] = [int(zx), int(zy)]
     with open(path, "wb") as f:
         pickle.dump(data, f)
 

@@ -3,9 +3,11 @@
 
 from typing import Final
 
+from ._version import __version__
+
 # 0. IDENTIDADE
 WORLD_NAME: Final = "Primordial Soup"
-WORLD_VERSION: Final = "0.6.0"
+WORLD_VERSION: Final = __version__
 RANDOM_SEED: Final = None
 
 
@@ -373,6 +375,11 @@ TRAIL_MAX_LENGTH: Final = 2000
 TRAIL_COLOR_OLD: Final = 40
 TRAIL_COLOR_NEW: Final = 240
 
+# Retencao temporal dos death markers, em simulation ticks.
+# Coincide numericamente com TRAIL_MAX_LENGTH, mas tem semantica
+# independente e nao deve ser acoplada ao tamanho do trail.
+DEATH_MARKER_TTL_TICKS: Final = 2000
+
 INSPECTION_PANEL_WIDTH: Final = 320
 INSPECTION_CELL_HEIGHT: Final = 8
 
@@ -433,7 +440,13 @@ SAVE_FORMAT: Final = "pickle"
 #     base_decay_per_tick, predation_transfer,
 #     damage_per_own_overcrowding, nests.
 #     Incompativel com v20.
-SAVE_VERSION: Final = 21
+# v22: persistencia dos centros canonicos das zonas;
+#     mascara e centros passam a ser validados como uma
+#     geometria unica. Incompativel com v21.
+# v23: historico recente de mortes persistente; DeathSnapshot
+#     completo com agent/genome; death markers clicaveis preservados
+#     entre save/load. Incompativel com v22.
+SAVE_VERSION: Final = 23
 ARCHITECTURE_VERSION: Final = "mlp-1x25x12-rec"
 GENOME_VERSION: Final = "layout-v4"
 
@@ -446,6 +459,12 @@ RECORDING_MAX_FRAMES: Final = 400
 RECORDING_SCALE: Final = 0.5
 RECORDING_LOOP: Final = 0  # 0 = loop infinito
 RECORDING_COLORS: Final = 128  # paleta GIF (<= 256)
+
+
+# 10c. AUDIO — feedback sonoro da interface
+# Somente apresentacao grafica. Nao altera o estado da simulacao.
+SOUND_VOLUME_MUSIC: Final = 0.1
+SOUND_VOLUME_SFX: Final = 1.0
 
 
 # 11. DIAGNOSTICO — telemetria do experimento
@@ -682,6 +701,10 @@ assert RECORDING_MAX_FRAMES > 0, "RECORDING_MAX_FRAMES deve ser positivo."
 assert 0.0 < RECORDING_SCALE <= 1.0, "RECORDING_SCALE deve estar em (0, 1]."
 assert 0 <= RECORDING_LOOP, "RECORDING_LOOP deve ser >= 0 (0 = infinito)."
 assert 2 <= RECORDING_COLORS <= 256, "RECORDING_COLORS deve estar em [2, 256]."
+
+# --- invariantes de audio ----------------------------------------------
+assert 0.0 <= SOUND_VOLUME_MUSIC <= 1.0, "SOUND_VOLUME_MUSIC deve estar em [0.0, 1.0]."
+assert 0.0 <= SOUND_VOLUME_SFX <= 1.0, "SOUND_VOLUME_SFX deve estar em [0.0, 1.0]."
 
 # --- consistência do layout do genoma ----------------------------------
 # Documenta o layout pretendido e protege contra edições futuras que

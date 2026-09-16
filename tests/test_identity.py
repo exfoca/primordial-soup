@@ -17,7 +17,8 @@ from primordial_soup.state import agents
 
 
 def _valid_test_nests():
-    """Geometria deterministica de ninhos valida para o contrato v21.
+    """Geometria deterministica de ninhos valida para fixtures de
+    checkpoint.
 
     Tres centros colineares, separados por 2*radius+1, de modo que os
     discos de radius NEST_RADIUS nao compartilhem celulas.
@@ -32,17 +33,26 @@ def _valid_test_nests():
     )
 
 
-def _install_checkpoint_geometry():
-    """Instala zones e nests deterministicos em state.
-
-    Fixtures que preparam mundo manualmente precisam de geometry
-    valida sob o schema v21 antes de qualquer save. Esta funcao faz
-    isso sem consumir RNG.
-    """
-    state.zones = np.zeros(
-        (layout.LAYOUT.world_width, layout.LAYOUT.world_height),
-        dtype=bool,
+def _valid_test_zone_centers():
+    """Centros de zona determinísticos, sem consumir RNG."""
+    center = (
+        layout.LAYOUT.world_width - cfg.ZONE_RADIUS - 1,
+        layout.LAYOUT.world_height - cfg.ZONE_RADIUS - 1,
     )
+    return tuple(center for _ in range(cfg.NUMBER_OF_ZONES))
+
+
+def _install_checkpoint_geometry():
+    """Instala geometria valida de checkpoint em state.
+
+    Fixtures que preparam mundo manualmente precisam de geometria
+    valida antes de qualquer save. Esta funcao faz isso sem consumir
+    RNG: zone_centers e a autoridade, zones e derivada por
+    world.build_zone_mask().
+    """
+    centers = _valid_test_zone_centers()
+    state.zone_centers = centers
+    state.zones = world.build_zone_mask(centers)
     state.nests = _valid_test_nests()
 
 
@@ -66,6 +76,7 @@ def fresh_world():
     yield
     state.reset_counters()
     state.zones = None
+    state.zone_centers = None
     state.nests = None
     agents.clear()
 
@@ -168,6 +179,7 @@ def test_save_load_preserves_ids(fresh_world, tmp_path):
     # Esvazia o estado e recarrega.
     state.reset_counters()
     state.zones = None
+    state.zone_centers = None
     state.nests = None
     agents.clear()
     seed_lineages()
@@ -217,6 +229,7 @@ def test_recreate_save_load_preserves_ids(
     # Isola o runtime antes do load, seguindo o padrao da suite.
     state.reset_counters()
     state.zones = None
+    state.zone_centers = None
     state.nests = None
     agents.clear()
     seed_lineages()

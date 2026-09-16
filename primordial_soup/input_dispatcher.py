@@ -21,8 +21,11 @@ Ordem de roteamento (importante):
     tecla de ativacao de painel?
       -> foca painel
 
+    Tab / Shift+Tab?
+      -> cicla paineis (inclusive a partir de world)
+
     active_panel != world?
-      -> painel handler (Tab, Shift+Tab, <-, ->, Enter, ESC)
+      -> painel handler (setas, Enter, ESC)
 
     senao
       -> no-op
@@ -39,6 +42,7 @@ import pygame
 
 from . import ui_state
 from . import panels
+from . import feedback
 from .panels import DispatchResult, Flow, ItemKind
 
 
@@ -145,36 +149,43 @@ def _move_cursor(panel: panels.Panel, direction: int) -> None:
     """Avanca (direction=+1) ou retrocede (-1) o cursor do painel.
 
     Wrap circular. No-op se o painel nao tem itens interativos.
+    Emite MENU_MOVE apenas quando o cursor efetivamente muda.
     """
     interactive = panel.interactive_indices()
     if not interactive:
         return
 
     current_id = ui_state.panel_cursors.get(panel.id)
+
     if current_id is None:
-        # Sem cursor previo: entra no primeiro (ou ultimo, se direction<0).
-        ui_state.panel_cursors[panel.id] = panel.items[
+        new_id = panel.items[
             interactive[0] if direction > 0 else interactive[-1]
         ].id
-        return
+    else:
+        current_idx_in_items = next(
+            (
+                i
+                for i, item in enumerate(panel.items)
+                if item.id == current_id
+            ),
+            None,
+        )
 
-    # Posicao atual na lista de interativos.
-    current_idx_in_items = next(
-        (i for i, item in enumerate(panel.items) if item.id == current_id),
-        None,
-    )
-    if current_idx_in_items is None:
-        # Cursor aponta para item que sumiu; reseta.
-        ui_state.panel_cursors[panel.id] = panel.items[interactive[0]].id
-        return
+        if current_idx_in_items is None:
+            new_id = panel.items[interactive[0]].id
+        else:
+            try:
+                pos = interactive.index(current_idx_in_items)
+            except ValueError:
+                pos = 0
 
-    try:
-        pos = interactive.index(current_idx_in_items)
-    except ValueError:
-        pos = 0
+            new_pos = (pos + direction) % len(interactive)
+            new_id = panel.items[interactive[new_pos]].id
 
-    new_pos = (pos + direction) % len(interactive)
-    ui_state.panel_cursors[panel.id] = panel.items[interactive[new_pos]].id
+    ui_state.panel_cursors[panel.id] = new_id
+
+    if new_id != current_id:
+        feedback.emit(feedback.FeedbackEvent.MENU_MOVE)
 
 
 def _activate_item(panel: panels.Panel, item: panels.Item) -> DispatchResult:
@@ -189,14 +200,40 @@ def _adjust_item(
 ) -> DispatchResult:
     """<- ->: ajusta o valor do item.
 
-    Somente VALUE e ENUM respondem a setas. TOGGLE e ACTION sao no-op
-    em setas; Enter e o caminho canonico.
+    VALUE e ENUM delegam a direcao ao handler e emitem MENU_CHANGE
+    quando o valor exibido realmente muda.
+
+    TOGGLE tambem pode receber a direcao, mas sua semantica pertence
+    ao handler concreto: o dispatcher apenas deixa de bloquear, nao
+    impoe nenhuma politica. ACTION permanece no-op em setas.
+
+    TOGGLE nao emite MENU_CHANGE generico: toggles de audio nao
+    devem produzir som de menu nem ao ligar nem ao desligar.
     """
-    if item.kind not in (ItemKind.VALUE, ItemKind.ENUM):
+    if item.kind not in (
+        ItemKind.VALUE,
+        ItemKind.ENUM,
+        ItemKind.TOGGLE,
+    ):
         return DispatchResult.continue_(redraw=False)
+
     if item.handler is None:
         return DispatchResult.continue_(redraw=False)
-    return item.handler(panel, item, direction)
+
+    if item.kind == ItemKind.TOGGLE:
+        return item.handler(panel, item, direction)
+
+    value_fn = item.value_fn
+    before_value = value_fn() if value_fn is not None else None
+
+    result = item.handler(panel, item, direction)
+
+    if value_fn is not None:
+        after_value = value_fn()
+        if after_value != before_value:
+            feedback.emit(feedback.FeedbackEvent.MENU_CHANGE)
+
+    return result
 
 
 # --- Roteamento de teclado ---
@@ -496,6 +533,21 @@ def _handle_keydown(key: int, mod: int) -> DispatchResult:
         if key in activation:
             return _focus_panel(activation[key])
 
+    # Tab / Shift+Tab: cicla paineis a partir de QUALQUER estado,
+    # inclusive world. O destino e resolvido por _cycle_panel(), que
+    # ja trata o caso world entrando pelo primeiro (ou ultimo, se
+    # Shift) painel do registry. Esta e a UNICA autoridade de
+    # roteamento de Tab; _handle_panel_key() nao trata mais Tab.
+    #
+    # event.mod em vez de pygame.key.get_mods(): o modificador fica
+    # associado ao evento efetivamente processado, e nao ao estado
+    # global do teclado no instante da consulta. Isso torna o
+    # comportamento deterministico em bursts e testavel sem depender
+    # do subsistema de input do pygame.
+    if key == pygame.K_TAB:
+        shift = mod & pygame.KMOD_SHIFT
+        return _cycle_panel(-1 if shift else +1)
+
     # Handlers do painel ativo.
     if ui_state.active_panel != ui_state.PANEL_WORLD:
         panel = panels.PANELS.get(ui_state.active_panel)
@@ -545,15 +597,8 @@ def _cycle_panel(direction: int) -> DispatchResult:
 
 
 def _handle_panel_key(panel: panels.Panel, key: int, mod: int) -> DispatchResult:
-    if key == pygame.K_TAB:
-        # event.mod em vez de pygame.key.get_mods(): o modificador
-        # fica associado ao evento efetivamente processado, e nao ao
-        # estado global do teclado no instante da consulta. Isso
-        # torna o comportamento deterministico em bursts e testavel
-        # sem depender do subsistema de input do pygame.
-        shift = mod & pygame.KMOD_SHIFT
-        return _cycle_panel(-1 if shift else +1)
-
+    # Tab / Shift+Tab nao chegam aqui: _handle_keydown() os roteia
+    # antes deste gate, para funcionarem tambem a partir do world.
     if key == pygame.K_DOWN:
         _move_cursor(panel, +1)
         return DispatchResult.continue_(redraw=True)

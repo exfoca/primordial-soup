@@ -24,6 +24,7 @@ from . import config as cfg
 from . import state
 from . import i18n
 from . import prefs
+from . import feedback
 from .panels import DispatchResult
 from .world import (
     max_generation,
@@ -94,6 +95,12 @@ def print_state() -> None:
 
 def action_recreate() -> DispatchResult:
     recreate()
+    # Waves referenciam o ninho da run anterior; recriar o mundo
+    # invalida-as. Nao chamamos ui_state.reset() para preservar
+    # painel, cursor, scroll, HUD e preferencias do operador.
+    from . import ui_state
+    ui_state.clear_birth_waves()
+    feedback.emit(feedback.FeedbackEvent.WORLD_GENERATED)
     return DispatchResult.continue_(redraw=True)
 
 
@@ -153,6 +160,7 @@ def action_save() -> DispatchResult:
             i18n.t("notice.save_ok", slot=slot),
             kind=ui_state.NOTICE_SUCCESS,
         )
+        feedback.emit(feedback.FeedbackEvent.SAVE_OK)
     else:
         ui_state.show_notice(
             i18n.t("notice.save_fail", slot=slot),
@@ -174,10 +182,15 @@ def action_load() -> DispatchResult:
     ok = persistence.load()
     if ok:
         state.paused = True
+        # A geometria de ninhos mudou junto com o mundo; waves da
+        # run anterior nao se aplicam mais. Em load falho o mundo
+        # atual continua valido e as waves permanecem (atomicidade).
+        ui_state.clear_birth_waves()
         ui_state.show_notice(
             i18n.t("notice.load_ok", slot=slot),
             kind=ui_state.NOTICE_SUCCESS,
         )
+        feedback.emit(feedback.FeedbackEvent.LOAD_OK)
     else:
         ui_state.show_notice(
             i18n.t("notice.load_fail", slot=slot),

@@ -8,6 +8,7 @@ import numpy as np
 from . import config as cfg
 from . import layout
 from . import nest_geometry
+from . import state
 from .state import agents
 
 
@@ -51,12 +52,11 @@ def format_zones_txt() -> str:
         return i18n.t("hud.zones_none")
 
     effect = int(state.runtime_rules.zone_hp_effect)
-    sign = "+" if effect >= 0 else ""
     txt = i18n.t(
         "hud.zones_fmt",
         n=cfg.NUMBER_OF_ZONES,
         r=cfg.ZONE_RADIUS,
-        bonus=f"{sign}{effect}",
+        bonus=format_zone_hp_effect(effect),
     )
     if not state.zones_active:
         txt = i18n.t("hud.zones_off_suffix", base=txt)
@@ -66,57 +66,162 @@ def format_zones_txt() -> str:
     return txt
 
 
-def generate_zones() -> np.ndarray | None:
-    """Constroi a mascara booleana das zonas ambientais.
+def build_zone_mask(
+    centers: tuple[tuple[int, int], ...],
+) -> np.ndarray | None:
+    """Deriva a mascara booleana das zonas a partir dos centros.
 
-    Retorna None apenas se NUMBER_OF_ZONES <= 0 (caso de borda
-    deliberado; o config default sempre gera zonas). Caso contrario
-    retorna um array [WORLD_WIDTH, WORLD_HEIGHT] dtype=bool marcando
-    as celulas que pertencem a pelo menos uma zona.
+    Autoridade unica da conversao centros -> mascara. Pura e
+    deterministica: NAO consome RNG, NAO muta state, NAO le
+    runtime_rules.
 
-    A mascara e a GEOMETRIA das zonas, independente de estarem ativas.
-    O toggle state.zones_active controla renderizacao e aplicacao do
-    HP bonus; NAO modifica esta mascara.
+    Contrato:
+      - Se cfg.NUMBER_OF_ZONES <= 0: o unico input valido e
+        centers == () e o retorno e None.
+      - Caso contrario: len(centers) == NUMBER_OF_ZONES, cada centro
+        e tuple[int, int] estrito, cada coordenada esta em
+        [0, world_width) x [0, world_height).
 
-    Zonas sao circulos com centros amostrados uniformemente no toro;
-    a distancia e toroidal para evitar artefatos nas bordas. Zonas
-    podem se sobrepor; a mascara e a uniao (OR).
+    Nao aceita list, bool, float, np.int64, str, None ou coordenadas
+    fora do mundo. Essas violacoes levantam ValueError; a fronteira
+    de persistencia e quem lida com payload externo (listas do
+    pickle), nao esta funcao.
+
+    A mascara e a uniao toroidal dos discos de raio cfg.ZONE_RADIUS
+    centrados em cada entrada; sobreposicao e permitida (OR).
+    """
+    if cfg.NUMBER_OF_ZONES <= 0:
+        if centers != ():
+            raise ValueError(
+                "build_zone_mask: NUMBER_OF_ZONES <= 0 exige "
+                f"centers == (), recebido {centers!r}."
+            )
+        return None
+
+    if not isinstance(centers, tuple):
+        raise ValueError(
+            "build_zone_mask: centers deve ser tuple, "
+            f"recebido {type(centers).__name__}."
+        )
+
+    if len(centers) != cfg.NUMBER_OF_ZONES:
+        raise ValueError(
+            "build_zone_mask: esperado exatamente "
+            f"{cfg.NUMBER_OF_ZONES} centros, recebido {len(centers)}."
+        )
+
+    width = layout.LAYOUT.world_width
+    height = layout.LAYOUT.world_height
+
+    for index, center in enumerate(centers):
+        if type(center) is not tuple:
+            raise ValueError(
+                f"build_zone_mask: centro {index} deve ser tuple, "
+                f"recebido {type(center).__name__}."
+            )
+        if len(center) != 2:
+            raise ValueError(
+                f"build_zone_mask: centro {index} deve ter exatamente "
+                f"2 elementos, recebido {len(center)}."
+            )
+        cx, cy = center
+        if type(cx) is not int or type(cy) is not int:
+            raise ValueError(
+                f"build_zone_mask: centro {index} deve conter "
+                "exatamente 2 int Python estritos; recebido "
+                f"({type(cx).__name__}, {type(cy).__name__})."
+            )
+        if not (0 <= cx < width):
+            raise ValueError(
+                f"build_zone_mask: centro {index} x={cx} fora do "
+                f"intervalo [0, {width})."
+            )
+        if not (0 <= cy < height):
+            raise ValueError(
+                f"build_zone_mask: centro {index} y={cy} fora do "
+                f"intervalo [0, {height})."
+            )
+
+    mask = np.zeros((width, height), dtype=bool)
+    r = cfg.ZONE_RADIUS
+    r2 = r * r
+
+    xs = np.arange(width)
+    ys = np.arange(height)
+
+    for cx, cy in centers:
+        dx = np.abs(xs - cx)
+        dx = np.minimum(dx, width - dx)
+        dy = np.abs(ys - cy)
+        dy = np.minimum(dy, height - dy)
+        dist2 = dx[:, None] ** 2 + dy[None, :] ** 2
+        mask |= dist2 <= r2
+
+    return mask
+
+
+def generate_zones(
+) -> tuple[np.ndarray | None, tuple[tuple[int, int], ...]]:
+    """Sorteia centros de zonas e deriva a mascara correspondente.
+
+    Retorna (mask, centers). O par e coerente por construcao:
+    centers descreve exatamente a geometria que produziu mask.
+
+    Caso NUMBER_OF_ZONES <= 0: retorna (None, ()).
+
+    Caso normal: sorteia exatamente NUMBER_OF_ZONES pares (x, y) com
+    random.randrange(width) / random.randrange(height), na ordem
+    x,y,x,y,... A sequencia de RNG e identica a da versao anterior
+    (2 draws por zona); a mudanca de API nao altera a sequencia
+    estocastica do bootstrap.
+
+    A mascara e derivada por build_zone_mask(), autoridade unica da
+    conversao centros->mascara. Nao ha logica duplicada aqui.
 
     O valor canonico da chave "modificadores_ambientais" e "zonas". O
     literal "nenhum" foi removido como opcao de config; a funcao nao
     checa mais por ele.
     """
     if cfg.NUMBER_OF_ZONES <= 0:
-        return None
-
-    mask = np.zeros(
-        (layout.LAYOUT.world_width, layout.LAYOUT.world_height), dtype=bool
-    )
+        return None, ()
 
     width = layout.LAYOUT.world_width
     height = layout.LAYOUT.world_height
-    r = cfg.ZONE_RADIUS
-    r2 = r * r
 
+    centers_list: list[tuple[int, int]] = []
     for _ in range(cfg.NUMBER_OF_ZONES):
         cx = random.randrange(width)
         cy = random.randrange(height)
+        centers_list.append((cx, cy))
 
-        # Toroidal distance to the centre, vectorised.
-        # dx = min(|x - cx|, width - |x - cx|), same for y.
-        xs = np.arange(width)
-        ys = np.arange(height)
+    centers = tuple(centers_list)
+    mask = build_zone_mask(centers)
+    return mask, centers
 
-        dx = np.abs(xs - cx)
-        dx = np.minimum(dx, width - dx)
-        dy = np.abs(ys - cy)
-        dy = np.minimum(dy, height - dy)
 
-        # [W, H] squared distance (broadcast).
-        dist2 = dx[:, None] ** 2 + dy[None, :] ** 2
-        mask |= dist2 <= r2
+def format_zone_hp_effect(
+    effect: int,
+    *,
+    include_unit: bool = False,
+) -> str:
+    """Formata o efeito de HP das zonas.
 
-    return mask
+    Contrato exato:
+        effect > 0   -> "+5"
+        effect == 0  -> "0"
+        effect < 0   -> "-5"
+
+    Nunca produz "+0". Nunca usa f"{effect:+d}" (que produziria
+    "+0"). A unidade "HP" e canonica e nao e localizada; se
+    include_unit for True, o retorno e "+5 HP", "0 HP" ou "-5 HP".
+
+    Esta funcao NAO le state.runtime_rules. O chamador passa o valor
+    efetivo.
+    """
+    value = f"+{effect}" if effect > 0 else str(effect)
+    if include_unit:
+        return f"{value} HP"
+    return value
 
 
 def generate_nests(
@@ -512,6 +617,51 @@ def find_agent_at(x: int, y: int, radius: int | None = None) -> tuple[int, int] 
         if local_d2 < best_d2:
             best_d2 = local_d2
             best = (li, local_best)
+
+    return best
+
+
+def find_recent_death_at(
+    x: int,
+    y: int,
+    radius: int | None = None,
+) -> state.DeathSnapshot | None:
+    """Retorna o DeathSnapshot mais proximo num raio toroidal.
+
+    Em empate de distancia vence a morte mais recente. Como o archive
+    e cronologico, iterar em ordem reversa e substituir somente por
+    distancia estritamente menor implementa esse desempate sem usar
+    tick como criterio primario.
+    """
+    if radius is None:
+        radius = cfg.CLICK_RADIUS_IN_CELLS
+
+    snapshots = state.get_recent_deaths()
+    if radius <= 0:
+        for snapshot in reversed(snapshots):
+            sx = int(snapshot.agent[INDEX_X])
+            sy = int(snapshot.agent[INDEX_Y])
+            if sx == x and sy == y:
+                return snapshot
+        return None
+
+    width = layout.LAYOUT.world_width
+    height = layout.LAYOUT.world_height
+    r2 = radius * radius
+    best: state.DeathSnapshot | None = None
+    best_d2 = r2 + 1
+
+    for snapshot in reversed(snapshots):
+        sx = int(snapshot.agent[INDEX_X])
+        sy = int(snapshot.agent[INDEX_Y])
+        dx = abs(sx - x)
+        dx = min(dx, width - dx)
+        dy = abs(sy - y)
+        dy = min(dy, height - dy)
+        d2 = dx * dx + dy * dy
+        if d2 <= r2 and d2 < best_d2:
+            best_d2 = d2
+            best = snapshot
 
     return best
 

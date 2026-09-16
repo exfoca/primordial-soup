@@ -186,6 +186,8 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "item.load": "Load",
         "item.new_world": "New world",
         "item.language": "Language",
+        "item.music": "Music",
+        "item.sfx": "Sound effects",
         "item.recording": "Recording",
         "item.print_state": "Print state",
         # --- Footers ---
@@ -432,6 +434,8 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "item.load": "Carregar",
         "item.new_world": "Novo mundo",
         "item.language": "Idioma",
+        "item.music": "Música",
+        "item.sfx": "Efeitos sonoros",
         "item.recording": "Gravação",
         "item.print_state": "Imprimir estado",
         # --- Rodapes ---

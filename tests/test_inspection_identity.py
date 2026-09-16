@@ -24,7 +24,8 @@ from primordial_soup.state import agents
 
 
 def _valid_test_nests():
-    """Geometria deterministica de ninhos valida para o contrato v21.
+    """Geometria deterministica de ninhos valida para fixtures de
+    checkpoint.
 
     Tres centros colineares, separados por 2*radius+1, de modo que os
     discos de radius NEST_RADIUS nao compartilhem celulas.
@@ -39,16 +40,25 @@ def _valid_test_nests():
     )
 
 
-def _install_checkpoint_geometry():
-    """Instala zones e nests deterministicos em state.
-
-    Fixtures que preparam mundo manualmente precisam de geometry
-    valida sob o schema v21 antes de qualquer save.
-    """
-    state.zones = np.zeros(
-        (layout.LAYOUT.world_width, layout.LAYOUT.world_height),
-        dtype=bool,
+def _valid_test_zone_centers():
+    """Centros de zona determinísticos, sem consumir RNG."""
+    center = (
+        layout.LAYOUT.world_width - cfg.ZONE_RADIUS - 1,
+        layout.LAYOUT.world_height - cfg.ZONE_RADIUS - 1,
     )
+    return tuple(center for _ in range(cfg.NUMBER_OF_ZONES))
+
+
+def _install_checkpoint_geometry():
+    """Instala geometria valida de checkpoint em state.
+
+    Fixtures que preparam mundo manualmente precisam de geometria
+    valida antes de qualquer save. zone_centers e a autoridade,
+    zones e derivada por world.build_zone_mask().
+    """
+    centers = _valid_test_zone_centers()
+    state.zone_centers = centers
+    state.zones = world.build_zone_mask(centers)
     state.nests = _valid_test_nests()
 
 
@@ -68,12 +78,25 @@ def fresh_world():
     yield
     state.reset_counters()
     state.zones = None
+    state.zone_centers = None
     state.nests = None
     agents.clear()
 
 
 def _first_id(li: int = 0) -> int:
     return int(agents[li]["ids"][0])
+
+
+def _death_snapshot(li: int, ai: int) -> state.DeathSnapshot:
+    lineage = agents[li]
+    return state.DeathSnapshot(
+        critter_id=int(lineage["ids"][ai]),
+        lineage_index=li,
+        lineage_id=str(lineage["id"]),
+        tick=max(1, int(state.tick_count)),
+        agent=lineage["agents"][ai].copy(),
+        genome=lineage["pool"][ai].copy(),
+    )
 
 
 def test_set_selection_by_id_clears_trail(fresh_world):
@@ -123,52 +146,38 @@ def test_lineage_filter_change_does_not_change_observation(fresh_world):
 
 
 def test_death_captures_snapshot_and_keeps_id(fresh_world):
-    """Observado morre: ID permanece, snapshot e criado, trail congelado."""
-    from primordial_soup.ecology import _capture_death_snapshot_if_needed
-
+    """Observado morre: ID permanece, snapshot e trail congela."""
     cid = int(agents[0]["ids"][0])
     state.set_inspection_selection(cid)
     state.inspected_trail.append((3, 3))
     trail_len = len(state.inspected_trail)
+    snapshot = _death_snapshot(0, 0)
 
-    agent = agents[0]
-    matrix = agent["agents"]
-    matrix[0, INDEX_HP] = 0.0
-    alive = np.nonzero(matrix[:, INDEX_HP] > 0)[0]
-    _capture_death_snapshot_if_needed(0, agent, alive, matrix)
+    state.record_death_snapshot(snapshot)
 
     assert state.inspected_critter_id == cid
-    assert state.inspection_death_snapshot is not None
-    assert state.inspection_death_snapshot.critter_id == cid
-    assert len(state.inspected_trail) == trail_len  # nao limpa
+    assert state.inspection_death_snapshot is snapshot
+    assert state.recent_deaths[-1] is snapshot
+    assert len(state.inspected_trail) == trail_len
 
 
 def test_death_of_other_critter_does_not_snapshot(fresh_world):
-    from primordial_soup.ecology import _capture_death_snapshot_if_needed
-
     cid = int(agents[0]["ids"][5])
     state.set_inspection_selection(cid)
+    snapshot = _death_snapshot(0, 0)
 
-    agent = agents[0]
-    matrix = agent["agents"]
-    matrix[0, INDEX_HP] = 0.0  # mata o indice 0, nao o observado
-    alive = np.nonzero(matrix[:, INDEX_HP] > 0)[0]
-    _capture_death_snapshot_if_needed(0, agent, alive, matrix)
+    state.record_death_snapshot(snapshot)
 
     assert state.inspection_death_snapshot is None
+    assert state.recent_deaths[-1] is snapshot
 
 
 def test_new_selection_clears_snapshot(fresh_world):
-    from primordial_soup.ecology import _capture_death_snapshot_if_needed
-
     cid = int(agents[0]["ids"][0])
     state.set_inspection_selection(cid)
-    agent = agents[0]
-    matrix = agent["agents"]
-    matrix[0, INDEX_HP] = 0.0
-    alive = np.nonzero(matrix[:, INDEX_HP] > 0)[0]
-    _capture_death_snapshot_if_needed(0, agent, alive, matrix)
-    assert state.inspection_death_snapshot is not None
+    snapshot = _death_snapshot(0, 0)
+    state.record_death_snapshot(snapshot)
+    assert state.inspection_death_snapshot is snapshot
 
     state.set_inspection_selection(int(agents[1]["ids"][0]))
     assert state.inspection_death_snapshot is None

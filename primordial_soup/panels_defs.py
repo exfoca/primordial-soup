@@ -94,9 +94,10 @@ def _v_zones() -> str:
 
 
 def _v_zone_hp() -> str:
-    effect = state.runtime_rules.zone_hp_effect
-    sign = "+" if effect >= 0 else ""
-    return f"{sign}{effect}"
+    return world.format_zone_hp_effect(
+        state.runtime_rules.zone_hp_effect,
+        include_unit=True,
+    )
 
 
 def _v_base_decay() -> str:
@@ -180,6 +181,14 @@ def _v_save_slot() -> str:
 
 def _v_language() -> str:
     return state.language.upper()
+
+
+def _v_music() -> str:
+    return i18n.t("hud.on" if prefs.music_enabled else "hud.off")
+
+
+def _v_sfx() -> str:
+    return i18n.t("hud.on" if prefs.sfx_enabled else "hud.off")
 
 
 def _v_recording() -> str:
@@ -861,6 +870,32 @@ def _h_language(panel, item, direction: int) -> DispatchResult:
     return DispatchResult.continue_(redraw=True)
 
 
+def _h_music(panel, item, direction: int) -> DispatchResult:
+    if direction == 0:
+        target = not prefs.music_enabled
+    else:
+        target = not prefs.music_enabled
+
+    prefs.music_enabled = target
+    prefs.mark_dirty()
+    from . import audio
+    audio.set_music_enabled(target)
+    return DispatchResult.continue_(redraw=True)
+
+
+def _h_sfx(panel, item, direction: int) -> DispatchResult:
+    if direction == 0:
+        target = not prefs.sfx_enabled
+    else:
+        target = not prefs.sfx_enabled
+
+    prefs.sfx_enabled = target
+    prefs.mark_dirty()
+    from . import audio
+    audio.set_sfx_enabled(target)
+    return DispatchResult.continue_(redraw=True)
+
+
 def _h_recording(panel, item, direction: int) -> DispatchResult:
     if direction != 0:
         return DispatchResult.continue_(redraw=False)
@@ -1093,6 +1128,10 @@ def _build_tools() -> Panel:
         items=[
             Item("language", ItemKind.ENUM, "item.language",
                  value_fn=_v_language, handler=_h_language),
+            Item("music", ItemKind.TOGGLE, "item.music",
+                 value_fn=_v_music, handler=_h_music),
+            Item("sfx", ItemKind.TOGGLE, "item.sfx",
+                 value_fn=_v_sfx, handler=_h_sfx),
             Item("recording", ItemKind.TOGGLE, "item.recording",
                  value_fn=_v_recording, handler=_h_recording),
             Item("print_state", ItemKind.ACTION, "item.print_state",

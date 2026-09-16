@@ -38,7 +38,7 @@ from primordial_soup.state import agents
 
 
 def _valid_test_nests():
-    """Geometria deterministica de ninhos valida para o contrato v21."""
+    """Geometria deterministica de ninhos valida para o schema v22."""
     radius = cfg.NEST_RADIUS
     y = radius + 1
     stride = 2 * radius + 1
@@ -49,16 +49,29 @@ def _valid_test_nests():
     )
 
 
-def _install_checkpoint_geometry():
-    """Instala zones vazias e nests determinísticos.
-
-    Nao consome RNG: fixtures de persistence nao devem alterar a
-    sequencia aleatoria global so por preparar um checkpoint.
-    """
-    state.zones = np.zeros(
-        (layout.LAYOUT.world_width, layout.LAYOUT.world_height),
-        dtype=bool,
+def _valid_test_zone_centers():
+    """Centros de zona determinísticos, sem consumir RNG."""
+    center = (
+        layout.LAYOUT.world_width - cfg.ZONE_RADIUS - 1,
+        layout.LAYOUT.world_height - cfg.ZONE_RADIUS - 1,
     )
+    return tuple(
+        center
+        for _ in range(cfg.NUMBER_OF_ZONES)
+    )
+
+
+def _install_checkpoint_geometry():
+    """Instala geometry valida sob o schema v22 sem consumir RNG.
+
+    Sob v22, zone_centers e a autoridade geometrica: zones e derivada
+    por world.build_zone_mask() e nests e instalado explicitamente.
+    Nao consome RNG, para as fixtures de persistencia nao alterarem
+    a sequencia aleatoria global so por preparar um checkpoint.
+    """
+    centers = _valid_test_zone_centers()
+    state.zone_centers = centers
+    state.zones = world.build_zone_mask(centers)
     state.nests = _valid_test_nests()
 
 
@@ -76,7 +89,7 @@ def saved_payload(tmp_path):
     mutado.
 
     Geometry e instalada explicitamente para que o save seja valido
-    sob o contrato v21 sem depender de RNG.
+    sob o schema v22 sem depender de RNG.
     """
     state.reset_counters()
     world.seed_lineages()

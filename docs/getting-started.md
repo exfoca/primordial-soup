@@ -4,9 +4,9 @@ Install → run → unpause → watch → inspect → experiment.
 
 You can learn what everything means afterward.
 
-The interface separates **global commands** (always active), **panel
-activation** (each key focuses a panel), and **contextual navigation**
-(inside the focused panel). This guide uses that model.
+The interface separates **global commands** (always active), **panel activation** (each key focuses a panel), and **contextual navigation** (inside the focused panel). This guide uses that model.
+
+**This is a hands-on tutorial.** The complete contracts live in [User Interface](ui.md); the rules of the world in [World Rules](world-rules.md); the CLI in [Headless](headless.md).
 
 ---
 
@@ -64,8 +64,7 @@ SPACE
 
 Critters begin moving.
 
-You have created an ecosystem and immediately abandoned it to natural
-selection.
+You have created an ecosystem and immediately abandoned it to natural selection.
 
 ---
 
@@ -73,10 +72,7 @@ selection.
 
 For your first run, resist changing parameters.
 
-Let the simulation run for a while. Watch where populations concentrate,
-whether lineages spread or cluster, whether some regions become crowded,
-whether population sizes rise or fall, whether the charts begin
-developing trends.
+Let the simulation run for a while. Watch where populations concentrate, whether lineages spread or cluster, whether some regions become crowded, whether population sizes rise or fall, whether the charts begin developing trends.
 
 A useful first run is a few thousand ticks.
 
@@ -116,34 +112,26 @@ I
 
 to focus the Inspection panel.
 
-Focusing the panel does not automatically observe a critter. The panel
-shows the current Discovery candidate and lets you choose who to
-follow explicitly.
+Focusing the panel does not automatically observe a critter. The panel shows the current Discovery candidate and lets you choose who to follow explicitly.
 
-You can also click a critter with the mouse. A click on the world
-focuses Inspection as a side effect.
+You can also click a critter with the mouse. A click on the world focuses Inspection as a side effect.
 
-The panel lets you examine an individual rather than treating the
-population as anonymous colored pixels. Depending on its state, you can
-inspect identity, lineage, HP, age, generation, offspring, encounters,
-composite score, position, neural state, and local perception.
+The panel lets you examine an individual rather than treating the population as anonymous colored pixels. Depending on its state, you can inspect identity, lineage, HP, age, generation, offspring, encounters, composite score, position, neural state, and local perception.
+
+See [User Interface](ui.md) for the full Inspection model.
 
 ---
 
 ## 7. Discovery and observation
 
-**Discovery** decides which critter currently looks interesting.
-
-**Observation** decides which critter you are actually following.
+**Discovery** decides which critter currently looks interesting. **Observation** decides which critter you are actually following.
 
 Inside the Inspection panel:
 
-* **Criterion** is an ENUM. Select with **↑ / ↓** and change with
-  **← / →**.
+* **Criterion** is an ENUM. Select with **↑ / ↓** and change with **← / →**.
 * **Lineage filter** is an ENUM. Same.
 * **Candidate** shows the discovery candidate. Read-only.
-* **Observe candidate** is an ACTION. Select and press **Enter** to
-  make the candidate the observed critter.
+* **Observe candidate** is an ACTION. Select and press **Enter** to make the candidate the observed critter.
 
 Changing discovery does not silently replace your observation.
 
@@ -156,17 +144,14 @@ To end an observation, select **Clear observation** and press **Enter**.
 A good first experiment is following one critter:
 
 1. Pause the simulation.
-2. Press **I** to focus Inspection.
-3. Choose a criterion and lineage filter, then select **Observe
-   candidate** and press **Enter** (or click a critter directly).
-4. Resume with **SPACE**.
+2. Press `I` to focus Inspection.
+3. Choose a criterion and lineage filter, then select **Observe candidate** and press `Enter` — or click a critter directly.
+4. Resume with `SPACE`.
 5. Watch its trail and statistics.
 6. Pause occasionally.
-7. Advance individual ticks with **=**.
+7. Advance individual ticks with `=`.
 
-The observed individual has a stable identity. Its internal position may
-change as other critters die; its identity does not. If it dies, its
-final state remains available for inspection.
+The observed individual has a stable identity. Its internal position may change as other critters die; its identity does not. If it dies, its final state remains available for inspection.
 
 ---
 
@@ -180,9 +165,7 @@ M
 
 to focus the Metrics panel. Then select **Metric** and use **← / →**.
 
-Different metrics answer different questions. Population size is not
-the score of evolution. A small population can contain highly adapted
-individuals. A large one can be unremarkable.
+Different metrics answer different questions. Population size is not the score of evolution. A small population can contain highly adapted individuals. A large one can be unremarkable.
 
 ---
 
@@ -200,19 +183,11 @@ Configuration
 ← / → to adjust
 ```
 
-Available items:
+Available items include simulation speed, mutation rate, local mutation scale, environmental zones, zone HP effect, and heal all critters.
 
-```text
-Simulation speed
-Mutation rate
-Local mutation scale
-Environmental zones
-Zone HP effect
-Heal all critters
-```
+For your first experiment, change **only one parameter**. Otherwise, if something interesting happens, you will have no idea why.
 
-For your first experiment, change **only one parameter**. Otherwise, if
-something interesting happens, you will have no idea why.
+See [Runtime Configuration](runtime-config.md) for what each item does.
 
 ---
 
@@ -230,11 +205,9 @@ Configuration
 
 Try three different worlds: low, medium, high mutation.
 
-Watch for differences in survival, generation depth, behavioral
-stability, population volatility, composite score.
+Watch for differences in survival, generation depth, behavioral stability, population volatility, composite score.
 
-Do not assume more mutation means faster evolution. Mutation creates
-variation; selection decides whether it survives.
+Do not assume more mutation means faster evolution. Mutation creates variation; selection decides whether it survives.
 
 ---
 
@@ -250,16 +223,9 @@ Configuration
 ← / →
 ```
 
-Adjust until the zone effect becomes negative. The same regions that
-were beneficial become dangerous.
+Adjust until the zone effect becomes negative. The same regions that were beneficial become dangerous.
 
-Toggle zones on or off with:
-
-```text
-Z
-```
-
-or through **Configuration → Environmental zones**.
+Toggle zones on or off with `Z`, or through Configuration.
 
 ---
 
@@ -277,17 +243,7 @@ Enter
 
 The current world is saved to the active save slot.
 
-Cycle slots with the global:
-
-```text
-N
-```
-
-Load the active slot with the global:
-
-```text
-L
-```
+Cycle slots with the global `N`. Load the active slot with the global `L`.
 
 A simple experiment:
 
@@ -297,6 +253,8 @@ world_b → medium mutation
 world_c → high mutation
 ```
 
+See [Persistence](persistence.md) for what a checkpoint preserves.
+
 ---
 
 ## 14. Start over
@@ -305,8 +263,7 @@ world_c → high mutation
 R
 ```
 
-creates a fresh run. The current population is discarded. Operator
-tunings (mutation, speed, language, pause) are preserved.
+creates a fresh run. The current population is discarded. Operator tunings (mutation, speed, language, pause) are preserved.
 
 A useful habit:
 
@@ -328,7 +285,7 @@ record observations
 G
 ```
 
-starts GIF recording. Press **G** again to stop.
+starts GIF recording. Press `G` again to stop.
 
 Requires Pillow:
 
@@ -340,21 +297,9 @@ pip install .[recording]
 
 ## 16. Speed things up
 
-Speed is adjusted through the Configuration panel:
+Speed is adjusted through the Configuration panel under **Simulation speed**.
 
-```text
-C
-↓
-Configuration
-↓
-Simulation speed
-↓
-← / →
-```
-
-Fast execution is useful for long evolutionary periods. Slow execution
-is useful for observation. Single-step execution is useful when you
-have stopped trusting reality.
+Fast execution is useful for long evolutionary periods. Slow execution is useful for observation. Single-step execution is useful when you have stopped trusting reality.
 
 ---
 
@@ -362,54 +307,43 @@ have stopped trusting reality.
 
 ### Question
 
-Does mutation rate affect how quickly the population reaches deeper
-generations?
+Does mutation rate affect how quickly the population reaches deeper generations?
 
 ### Run A
 
-1. New run with **R**.
+1. New run with `R`.
 2. Set a low mutation rate via Configuration.
 3. Run for a fixed number of ticks.
 4. Record maximum generation and population.
 
 ### Run B
 
-1. New run with **R**.
+1. New run with `R`.
 2. Increase mutation.
 3. Run for the same number of ticks.
 4. Record the same metrics.
 
 ### Compare
 
-Ask which run reached deeper generations, which maintained a larger
-population, which had higher average scores, whether either lineage
-went extinct, whether behavior appeared more stable.
+Ask which run reached deeper generations, which maintained a larger population, which had higher average scores, whether either lineage went extinct, whether behavior appeared more stable.
 
-Do not draw strong conclusions from two runs. Random systems enjoy
-humiliating small sample sizes.
+Do not draw strong conclusions from two runs. Random systems enjoy humiliating small sample sizes.
 
-For reproducible experiments, use the headless mode with a fixed seed.
-
-See [Headless](headless.md).
-
----
-
-## 18. Headless mode in one minute
+For reproducible experiments, use headless mode with a fixed seed.
 
 ```bash
 python -m primordial_soup --new -d 10000 -s world_a --seed 42
 ```
 
-This creates a fresh world, uses random seed `42`, runs 10,000 ticks,
-saves to `world_a`, exits.
+This creates a fresh world, uses the given seed, runs the given number of ticks, saves, and exits.
 
 Load that world graphically later and inspect the population.
 
-See [Headless](headless.md) for the complete guide.
+See [Headless](headless.md) for the complete CLI, and [Experiments](experiments.md) for methodology.
 
 ---
 
-## 19. Controls you should remember
+## 18. Controls you should remember
 
 ### Global commands
 
@@ -449,23 +383,25 @@ See [Headless](headless.md) for the complete guide.
 
 ### Mouse
 
-| Input          | Remember this                       |
-| -------------- | ----------------------------------- |
+| Input          | Remember this                        |
+| -------------- | ------------------------------------ |
 | **Left click** | Observe the critter under the cursor |
-| **Wheel**      | Scroll the lateral panel            |
+| **Wheel**      | Scroll the lateral panel             |
 
-For every control and its exact behavior, see [Controls](controls.md).
+For every control and its exact behavior, see [User Interface](ui.md).
 
 ---
 
-## 20. Where to go next
+## 19. Where to go next
 
-→ [Simulation](simulation.md) — what the creatures are
+→ [World Rules](world-rules.md) — what the creatures are
+→ [Critters and Brains](critters-and-brains.md) — the organism and its neural network
 → [Evolution](evolution.md) — selection, reproduction, mutation
-→ [Inspection](inspection.md) — the inspection tools
+→ [User Interface](ui.md) — panels, inspection, controls
 → [Experiments](experiments.md) — proper experiments
-→ [Configuration](configuration.md) — laws of the universe
-→ [Architecture](architecture.md) — the NumPy machinery
+→ [Runtime Configuration](runtime-config.md) — laws of the universe
+→ [Headless](headless.md) — reproducible runs
+→ [Architecture](architecture.md) — the machinery
 
 ---
 

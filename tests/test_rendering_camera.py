@@ -424,6 +424,14 @@ def test_draw_scales_crop_to_constant_viewport_size(monkeypatch):
         "_draw_lateral_panel",
         lambda: None,
     )
+    # _draw_zone_labels usa rendering._font, que nao e inicializada
+    # neste teste (nao chamamos rendering.init()). O teste de escala
+    # nao pretende cobrir Zone HP labels; isolar e o correto.
+    monkeypatch.setattr(
+        rendering,
+        "_draw_zone_labels",
+        lambda: None,
+    )
     monkeypatch.setattr(
         pygame.display,
         "flip",

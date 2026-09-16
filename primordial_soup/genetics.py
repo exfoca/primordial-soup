@@ -300,11 +300,12 @@ def _mutate_two_scales(
     reposicao, entao a fracao efetiva e exatamente a configurada
     (arredondada para o numero inteiro de genes mais proximo).
 
-    `local_scale_fraction` chega em PORCENTAGEM INTEIRA (5 == 5%),
-    vinda de state.local_scale_fraction via caminho de chamada
-    explicito (genetics.py nao importa state). A conversao para
-    fracao (0, 1] acontece aqui, na fronteira da genetica, para
-    _apply_noise continuar recebendo fracao como sempre recebeu.
+    `local_scale_fraction` chega em PORCENTAGEM INTEIRA (5 == 5%).
+    O valor efetivo origina-se no RuntimeRules ativo e e passado
+    explicitamente pela orquestracao em evolution.py; genetics.py
+    nao importa nem consulta state. A conversao para fracao (0, 1]
+    acontece aqui, na fronteira da genetica, para _apply_noise
+    continuar recebendo fracao como sempre recebeu.
 
     Os quatro parametros especificos de two_scales chegam por argumento
     explicito; este hot path nao consulta cfg para parametrizacao do

@@ -405,13 +405,21 @@ def test_compute_does_not_mutate_populations():
 
 
 def test_apply_handles_simultaneous_deaths():
-    """Duas linhagens perdem individuos no mesmo tick."""
+    """Duas linhagens morrem e ambas viram snapshots completos."""
     _setup_world([[(10, 10)], [(20, 20)], [(30, 30)]])
     _reset_ecology_rules()
+    state.tick_count = 123
 
-    # Mata R e G por starvation direta.
+    # Torna os snapshots distinguiveis e mata R/G por starvation.
+    agents[0]["pool"][0, 0] = 1.25
+    agents[1]["pool"][0, 0] = -2.5
     agents[0]["agents"][0, INDEX_HP] = 0.0
     agents[1]["agents"][0, INDEX_HP] = 0.0
+    expected_ids = (int(agents[0]["ids"][0]), int(agents[1]["ids"][0]))
+    expected_agents = [agents[i]["agents"][0].copy() for i in (0, 1)]
+    for row in expected_agents:
+        row[INDEX_TIME] += 1.0
+    expected_genomes = [agents[i]["pool"][0].copy() for i in (0, 1)]
 
     res = ecology.compute_ecology_resolution()
     deaths_before = state.deaths
@@ -421,6 +429,16 @@ def test_apply_handles_simultaneous_deaths():
     assert agents[1]["agents"].shape[0] == 0
     assert agents[2]["agents"].shape[0] == 1
     assert state.deaths == deaths_before + 2
+
+    snapshots = state.get_recent_deaths()
+    assert len(snapshots) == 2
+    assert tuple(snapshot.critter_id for snapshot in snapshots) == expected_ids
+    assert tuple(snapshot.lineage_id for snapshot in snapshots) == ("R", "G")
+    assert all(snapshot.tick == 123 for snapshot in snapshots)
+    assert np.array_equal(snapshots[0].agent, expected_agents[0])
+    assert np.array_equal(snapshots[1].agent, expected_agents[1])
+    assert np.array_equal(snapshots[0].genome, expected_genomes[0])
+    assert np.array_equal(snapshots[1].genome, expected_genomes[1])
 
 
 def test_apply_keeps_lockstep():
@@ -460,3 +478,70 @@ def test_apply_does_not_cap_hp():
     ecology.apply_ecology_resolution(res)
 
     assert agents[0]["agents"][0, INDEX_HP] > float(cfg.INITIAL_HP)
+
+def test_apply_snapshot_arrays_are_defensive_copies():
+    _setup_world([[(10, 10), (11, 11)], [], []])
+    _reset_ecology_rules()
+    state.tick_count = 50
+    agents[0]["pool"][0, 0] = 3.5
+    agents[0]["agents"][0, INDEX_HP] = 0.0
+
+    res = ecology.compute_ecology_resolution()
+    ecology.apply_ecology_resolution(res)
+    snapshot = state.recent_deaths[-1]
+    expected_agent = snapshot.agent.copy()
+    expected_genome = snapshot.genome.copy()
+
+    # Compactacao ja substituiu os arrays; mutar o survivor nao pode
+    # alterar as copias do morto.
+    agents[0]["agents"][:] = 777.0
+    agents[0]["pool"][:] = 888.0
+
+    assert np.array_equal(snapshot.agent, expected_agent)
+    assert np.array_equal(snapshot.genome, expected_genome)
+
+
+def test_apply_observed_death_uses_general_archive_snapshot_instance():
+    _setup_world([[(10, 10)], [], []])
+    _reset_ecology_rules()
+    state.tick_count = 70
+    cid = int(agents[0]["ids"][0])
+    state.set_inspection_selection(cid)
+    state.inspected_trail.append((10, 10))
+    agents[0]["agents"][0, INDEX_HP] = 0.0
+
+    res = ecology.compute_ecology_resolution()
+    ecology.apply_ecology_resolution(res)
+
+    assert state.inspection_death_snapshot is state.recent_deaths[-1]
+    assert tuple(state.inspected_trail) == ((10, 10),)
+
+
+def test_apply_without_deaths_does_not_change_archive_or_death_counter():
+    _setup_world([[(10, 10)], [], []])
+    _reset_ecology_rules()
+    state.tick_count = 80
+    before_archive = state.get_recent_deaths()
+    before_deaths = state.deaths
+
+    res = ecology.compute_ecology_resolution()
+    ecology.apply_ecology_resolution(res)
+
+    assert state.get_recent_deaths() == before_archive
+    assert state.deaths == before_deaths
+
+
+def test_apply_captures_every_death_in_one_lineage():
+    _setup_world([[(10, 10), (20, 20), (30, 30)], [], []])
+    _reset_ecology_rules()
+    state.tick_count = 90
+    agents[0]["agents"][:, INDEX_HP] = 0.0
+    expected_ids = tuple(int(value) for value in agents[0]["ids"])
+
+    res = ecology.compute_ecology_resolution()
+    ecology.apply_ecology_resolution(res)
+
+    snapshots = state.get_recent_deaths()
+    assert len(snapshots) == 3
+    assert tuple(snapshot.critter_id for snapshot in snapshots) == expected_ids
+    assert all(snapshot.lineage_id == "R" for snapshot in snapshots)

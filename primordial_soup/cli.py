@@ -42,6 +42,7 @@ from __future__ import annotations
 import argparse
 import sys
 
+from . import __version__
 from . import config as cfg
 
 
@@ -126,7 +127,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "-v", "--version",
         action="version",
-        version=f"%(prog)s {cfg.WORLD_VERSION}",
+        version=f"%(prog)s {__version__}",
     )
     return parser
 

@@ -102,6 +102,16 @@ _ZONE_COLOR: tuple[int, int, int] = (24, 20, 8)
 # nem a config.
 _NEST_COLOR_SCALE = 0.35
 
+# Birth Waves: ondas concentricas emitidas pelo ninho quando a
+# linhagem produz descendentes. Deliberadamente mais sutis que o
+# ring permanente do ninho para nao competir visualmente com os
+# critters. Sao detalhes estaticos de apresentacao: nao pertencem
+# a RuntimeRules, nao persistem e nao alteram o mundo.
+_BIRTH_WAVE_COLOR_SCALE = 0.30
+_BIRTH_WAVE_RING_COUNT = 2
+_BIRTH_WAVE_MAX_RADIUS_MULTIPLIER = 1.5
+_BIRTH_WAVE_TRAILING_RING_SCALE = 0.55
+
 
 _HUD_BG = cfg.HUD_BG_COLOR
 _HUD_BORDER = cfg.HUD_BORDER_COLOR
@@ -1244,6 +1254,36 @@ def screen_to_world(pos: tuple[int, int]) -> tuple[int, int] | None:
     return world_x, world_y
 
 
+def _world_to_screen_float(
+    pos: tuple[float, float],
+) -> tuple[float, float] | None:
+    """Inverso de _screen_to_world_float. Retorna None se pos cair
+    fora da view atual da camera, ou se o viewport for degenerado.
+
+    Nao muta a camera. Nao aplica clamp. Nao aplica wrapping. A
+    camera nao e toroidal.
+    """
+    viewport = _viewport_rect
+    if viewport.width <= 0 or viewport.height <= 0:
+        return None
+
+    world_x, world_y = pos
+    view_w, view_h = _camera_view_size()
+
+    if view_w <= 0.0 or view_h <= 0.0:
+        return None
+
+    u = (world_x - _camera.view_x) / view_w
+    v = (world_y - _camera.view_y) / view_h
+
+    if u < 0.0 or u > 1.0 or v < 0.0 or v > 1.0:
+        return None
+
+    screen_x = viewport.left + u * viewport.width
+    screen_y = viewport.top + v * viewport.height
+    return float(screen_x), float(screen_y)
+
+
 def apply_zoom_at(
     screen_pos: tuple[int, int],
     notches: int,
@@ -1399,9 +1439,14 @@ def toggle_fullscreen() -> None:
 def _draw_nests(image: np.ndarray) -> None:
     """Pinta os rings dos ninhos no buffer da imagem.
 
-    Ordem: chamado depois de zones e antes do loop de agents em
-    _build_image(). Ninhos ficam sob os critters, sob trail,
-    highlights e inspection marker, e sobre background/zones.
+    Ordem: chamado depois de zones e antes de _draw_birth_waves() em
+    _build_image(). Sequencia completa:
+
+        zones -> nests -> birth waves -> critters -> trail ->
+        highlights -> inspection marker
+
+    Ninhos ficam sob critters, sob trail, highlights e inspection
+    marker, e sobre background/zones.
 
     Independe de state.zones_active: ninhos sao geometria permanente
     do mundo, nao participam do toggle de zona.
@@ -1443,6 +1488,150 @@ def _draw_nests(image: np.ndarray) -> None:
             )
 
 
+def _draw_birth_waves(image: np.ndarray) -> None:
+    """Pinta as Birth Waves ativas no raster logico do mundo.
+
+    Ordem em _build_image(): depois de nests, antes dos critters.
+    Portanto:
+
+        ring do ninho   <- mais baixo
+        birth wave      <- acima do ring
+        critter         <- acima da wave
+
+    Wave e world geometry: escala com zoom junto com o mapa. Nao e
+    screen-space (diferente dos zone HP labels do Patch 2).
+
+    Geometria: usa nest_geometry.nest_ring_offsets() (autoridade
+    canonica dos aneis discretos) e nest_geometry.wrapped_points()
+    (autoridade canonica do wrap toroidal). Nao reimplementa
+    distancia, sin/cos nem modulo manual.
+
+    Sem RNG, sem alocacao de Surface. Nao expira waves; a expiracao
+    temporal pertence a simulation.run() via
+    ui_state.expire_birth_waves_if_needed().
+    """
+    waves = ui_state.get_birth_waves()
+    if not waves:
+        return
+
+    if state.nests is None:
+        raise RuntimeError(
+            "_draw_birth_waves: birth_waves nao vazio mas "
+            "state.nests is None; runtime inconsistente."
+        )
+    if len(state.nests) != cfg.TOTAL_LINEAGES:
+        raise RuntimeError(
+            f"_draw_birth_waves: state.nests tem {len(state.nests)} "
+            f"centros; esperado {cfg.TOTAL_LINEAGES}."
+        )
+
+    max_radius = cfg.NEST_RADIUS * _BIRTH_WAVE_MAX_RADIUS_MULTIPLIER
+    ring_spacing = max(1, cfg.NEST_RADIUS // 4)
+
+    for wave in waves:
+        if not (0 <= wave.lineage_index < cfg.TOTAL_LINEAGES):
+            raise RuntimeError(
+                f"_draw_birth_waves: wave.lineage_index="
+                f"{wave.lineage_index} fora do intervalo "
+                f"[0, {cfg.TOTAL_LINEAGES})."
+            )
+
+        progress = ui_state.birth_wave_progress(wave)
+        if progress >= 1.0:
+            # Defensivo: expiracao normal remove a wave antes. Nao
+            # desenhar frame terminal evita ring degenerado.
+            continue
+
+        # Fade nao linear (^1.5): a wave e claramente visivel no
+        # inicio e some rapidamente. Linear manteria muita intensidade
+        # durante a maior parte da animacao.
+        fade = max(0.0, (1.0 - progress) ** 1.5)
+        scale = _BIRTH_WAVE_COLOR_SCALE * fade
+        if scale <= 0.0:
+            continue
+
+        color = cfg.LINEAGES[wave.lineage_index]["color"]
+
+        leading_radius = max(
+            1,
+            int(round(progress * max_radius)),
+        )
+
+        center = state.nests[wave.lineage_index]
+
+        for ring_index in range(_BIRTH_WAVE_RING_COUNT):
+            radius = leading_radius - ring_index * ring_spacing
+            if radius <= 0:
+                continue
+
+            ring_offsets = nest_geometry.nest_ring_offsets(radius)
+            if not ring_offsets:
+                continue
+
+            xs, ys = nest_geometry.wrapped_points(
+                center,
+                ring_offsets,
+                width=layout.LAYOUT.world_width,
+                height=layout.LAYOUT.world_height,
+            )
+
+            # Ring 0 e o anel principal; ring 1 e um eco mais fraco.
+            # Regra explicita, nao atenuacao acumulativa: o contrato
+            # visual e "principal + eco", nao uma progressao.
+            ring_scale = (
+                1.0
+                if ring_index == 0
+                else _BIRTH_WAVE_TRAILING_RING_SCALE
+            )
+
+            for channel, value in enumerate(color):
+                if value == 0:
+                    continue
+                wave_value = int(
+                    round(
+                        value
+                        * scale
+                        * ring_scale
+                    )
+                )
+                if wave_value <= 0:
+                    continue
+                channel_img = image[..., channel]
+                channel_img[xs, ys] = np.maximum(
+                    channel_img[xs, ys],
+                    wave_value,
+                )
+
+
+def _draw_death_markers(image: np.ndarray) -> None:
+    """Desenha todo DeathSnapshot recente como X na cor da linhagem."""
+    width = layout.LAYOUT.world_width
+    height = layout.LAYOUT.world_height
+    offsets = ((0, 0), (-1, -1), (1, 1), (-1, 1), (1, -1))
+
+    for snapshot in state.get_recent_deaths():
+        li = snapshot.lineage_index
+        if not (0 <= li < cfg.TOTAL_LINEAGES):
+            raise RuntimeError(
+                f"DeathSnapshot lineage_index invalido: {li}"
+            )
+        lineage = cfg.LINEAGES[li]
+        if lineage["id"] != snapshot.lineage_id:
+            raise RuntimeError(
+                "DeathSnapshot lineage_id inconsistente com "
+                f"lineage_index: {snapshot.lineage_id!r} != "
+                f"{lineage['id']!r}"
+            )
+
+        x = int(snapshot.agent[INDEX_X])
+        y = int(snapshot.agent[INDEX_Y])
+        color = lineage["color"]
+        for dx, dy in offsets:
+            px = (x + dx) % width
+            py = (y + dy) % height
+            image[px, py, :] = color
+
+
 def _build_image() -> np.ndarray:
     image = np.zeros(
         (layout.LAYOUT.world_width, layout.LAYOUT.world_height, 3),
@@ -1460,7 +1649,9 @@ def _build_image() -> np.ndarray:
             channel_img[state.zones] = np.maximum(channel_img[state.zones], value)
 
     # Ninhos: fora do if de zonas. Geometria permanente do mundo.
+    # Ordem visual: nests -> birth waves -> critters.
     _draw_nests(image)
+    _draw_birth_waves(image)
 
     for agent in agents:
         mask = agent["field"] > 0
@@ -1471,6 +1662,11 @@ def _build_image() -> np.ndarray:
                 continue
             current = image[..., channel]
             current[mask] = np.maximum(current[mask], value)
+
+    # Death markers sao world-space e ficam sobre critters. Trail,
+    # discovery e o marker especial da Inspection continuam acima.
+    _draw_death_markers(image)
+
     # Trail do bicho observado: sobre as linhagens, sob os
     # contornos. Ordem importa — ver docstring de _draw_trail.
     _draw_trail(image)
@@ -1890,7 +2086,9 @@ def _draw_telemetry_panel(x0: int, y0: int, width: int) -> pygame.Rect:
             (i18n.t("hud.label.zones"), _zone_summary()),
             (
                 i18n.t("hud.label.zone_hp"),
-                f"{state.runtime_rules.zone_hp_effect:+d}",
+                world.format_zone_hp_effect(
+                    state.runtime_rules.zone_hp_effect
+                ),
             ),
         ],
         inner_x,
@@ -2226,13 +2424,9 @@ def _draw_metrics_dashboard(x0: int, y0: int, width: int, height: int) -> int:
     padding = 10
     inner_w = max(80, width - 2 * padding)
 
-    # Cabecalho.
+    # O titulo do painel pertence a _draw_panel_viewport(); este helper
+    # desenha somente o conteudo especifico do dashboard.
     y = y0 + padding
-    title = _font_panel_title.render(
-        i18n.t("panel.metrics.title"), True, cfg.PANEL_TEXT_COLOR
-    )
-    _screen.blit(title, (x0 + padding, y))
-    y += title.get_height() + 6
 
     # Legenda unica (R G B), alinhada a esquerda. Uma linha so.
     legend_y = y
@@ -2245,7 +2439,7 @@ def _draw_metrics_dashboard(x0: int, y0: int, width: int, height: int) -> int:
         legend_x += 14 + text.get_width() + 14
     y += _font_chart.get_height() + 10
 
-    # Distribuicao vertical. Reserva cabecalho ja consumido.
+    # Distribuicao vertical a partir da legenda ja consumida.
     n_metrics = len(cfg.ADVANCED_METRICS)
     # Altura restante ate o fim do viewport.
     remaining = max(0, (y0 + height) - y - 4 * n_metrics)
@@ -2424,6 +2618,70 @@ def _draw_confirm_exit_modal() -> None:
     _screen.blit(cancel, (box_x + padding, y))
 
 
+def _draw_zone_labels() -> None:
+    """Desenha o efeito de HP no centro canonico de cada zona ativa.
+
+    Pre-condicoes e comportamento:
+      - _screen None            -> no-op (nao ha display).
+      - state.zones None        -> no-op (sem zonas).
+      - not state.zones_active  -> no-op (toggle operacional).
+      - state.zone_centers None enquanto zones existe -> RuntimeError
+        (estado estrutural inconsistente do v23).
+      - len(zone_centers) != NUMBER_OF_ZONES -> RuntimeError.
+
+    Um label por centro canonico. Centro fora da view atual nao    gera label (nao duplicamos em copias wrapped).
+
+    O texto tem tamanho fixo em screen-space, independente do zoom:
+    e renderizado por _font, nao escalado pela camera. O clip e
+    restaurado em finally, para nao vazar sobre sidebar/HUD.
+    """
+    if _screen is None:
+        return
+    if state.zones is None:
+        return
+    if not state.zones_active:
+        return
+    if state.zone_centers is None:
+        raise RuntimeError(
+            "_draw_zone_labels: state.zones existe mas "
+            "state.zone_centers e None; runtime inconsistente."
+        )
+    if len(state.zone_centers) != cfg.NUMBER_OF_ZONES:
+        raise RuntimeError(
+            f"_draw_zone_labels: zone_centers tem "
+            f"{len(state.zone_centers)} centros, esperado "
+            f"{cfg.NUMBER_OF_ZONES}."
+        )
+
+    label = world.format_zone_hp_effect(
+        state.runtime_rules.zone_hp_effect,
+        include_unit=True,
+    )
+
+    previous_clip = _screen.get_clip()
+    _screen.set_clip(_viewport_rect)
+    try:
+        for cx, cy in state.zone_centers:
+            screen_pos = _world_to_screen_float(
+                (float(cx) + 0.5, float(cy) + 0.5)
+            )
+            if screen_pos is None:
+                continue
+
+            screen_x, screen_y = screen_pos
+
+            text_surface = _font.render(label, True, _HUD_TEXT)
+            shadow_surface = _font.render(label, True, (0, 0, 0))
+
+            left = int(screen_x - text_surface.get_width() / 2)
+            top = int(screen_y - text_surface.get_height() / 2)
+
+            _screen.blit(shadow_surface, (left + 1, top + 1))
+            _screen.blit(text_surface, (left, top))
+    finally:
+        _screen.set_clip(previous_clip)
+
+
 def draw() -> None:
     image = _build_image()
 
@@ -2462,6 +2720,12 @@ def draw() -> None:
         surface = pygame.transform.scale(surface, viewport.size)
 
         _screen.blit(surface, viewport.topleft)
+
+    # Labels de zona: screen-space, ancorados no centro canonico de
+    # cada zona ativa. FORA do gate de floating_hud_visible: H nao
+    # controla os labels, apenas o toggle operacional (zones_active)
+    # controla. Um label por zona; centro fora da camera nao gera.
+    _draw_zone_labels()
 
     # Elementos flutuantes sobre o mundo: gate unico aqui, nao dentro
     # de _draw_hud/_draw_rps_tip. A autoridade de composicao e draw().

@@ -195,15 +195,17 @@ Advances exactly one simulation tick. Works even while paused.
 
 ## `R` — new run
 
-Creates a fresh run: new population, new genomes, new positions, new canonical zone centers and derived zone mask, fresh counters, fresh identity sequence, fresh reproductive cycle. Discards the current run.
+Creates a fresh run: new population, new genomes, new positions, new canonical zone centers and derived zone mask, new nests, fresh counters, fresh identity sequence, and a fresh reproductive cycle. Discards the current run.
 
-Cleared as part of the new-run lifecycle: recent death archive, active Observation, inspection trail, Birth Waves from the previous world.
+Cleared as part of the new-run lifecycle: recent death archive, active Observation, inspection trail, and Birth Waves from the previous world.
 
-Operator tunings (mutation rate, local scale, speed, language, pause state, zone HP effect) are preserved so experiments can be repeated without reconfiguring.
+`controls.recreate()` explicitly preserves the complete current `RuntimeRules`, simulation speed, and paused state. Operator/session preferences not owned by fresh-world bootstrap also remain in place, including language, active save slot, discovery settings, floating HUD, and audio preferences.
+
+`zones_active` is different: new-run counter reset restores it from the declarative `DEFAULT_ZONES_ACTIVE` OPERATOR baseline.
 
 ---
 
-## `L` — load active slot
+## `Ctrl+L` — load active slot
 
 Loads the currently active save slot. On success, the simulation is paused.
 
@@ -292,7 +294,7 @@ It is a query over the **living** population. Recent deaths do **not** participa
 
 There is exactly **one** discovery candidate at a time. Or none.
 
-Criteria include most evolved, oldest, youngest, most offspring, most encounters, most explored, highest HP, lowest HP, highest generation, and best score.
+Criteria include most evolved, oldest, youngest, most offspring, most encounters, most explored, highest HP, lowest HP, and highest generation.
 
 Lineage filter cycles through `all`, `R`, `G`, `B`.
 
@@ -445,9 +447,9 @@ you decide what to observe next
 
 Configuration contains live experiment controls. Its major sections are simulation speed, genetics, ecology, reproduction, and selection.
 
-Most changes become effective immediately. No restart is required.
+The panel edits active HOT `RuntimeRules` and also exposes selected operator/execution controls and actions. HOT changes become effective through validated rule replacement; operator controls follow their own state paths.
 
-The Configuration panel changes the environment and selection pressure. It does not manually steer individual critters.
+The Configuration panel does **not** edit NON_HOT `.env` values, replace `ConfigSnapshot`, or write the user configuration file. It changes the environment and selection pressure; it does not manually steer individual critters.
 
 The actual rules, defaults, ranges, and semantics are documented in [Runtime Configuration](runtime-config.md).
 

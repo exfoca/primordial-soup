@@ -17,10 +17,7 @@ from __future__ import annotations
 from . import config as cfg
 from . import state
 from .genetics import random_population
-from .runtime_rules import (
-    default_runtime_rules,
-    updated_runtime_rules,
-)
+from .runtime_rules import default_runtime_rules
 from .state import agents
 from .world import (
     fill_fields,
@@ -36,18 +33,15 @@ def bootstrap_new_world() -> None:
 
     Contrato de defaults:
 
-      - default_runtime_rules() e a autoridade dos valores iniciais;
-      - bootstrap NAO enumera fields de RuntimeRules;
-      - a UNICA excecao preservada entre recreates e zone_hp_effect,
-        preferencia HOT do operador;
-      - todos os outros parametros HOT voltam ao default.
+      - default_runtime_rules() e a autoridade dos 31 defaults HOT;
+      - bootstrap NAO enumera nenhum field de RuntimeRules;
+      - bootstrap fresh nao preserva regra HOT da run anterior;
+      - controls.recreate() preserva a RuntimeRules ativa fora desta funcao.
 
-    A captura de zone_hp_effect ocorre antes de qualquer reset, para
-    que uma futura mudanca em reset_counters() nao quebre a
-    preservacao em silencio.
+    Uma construcao de mundo novo tambem restaura os defaults declarativos
+    de execucao para simulation_speed e paused. A recriacao pela UI
+    preserva as escolhas vigentes do operador ao redor desta chamada.
     """
-    preserved_zone_hp_effect = state.runtime_rules.zone_hp_effect
-
     state.reset_counters()
 
     # Nests e centros de zonas sao geometria do mundo.
@@ -72,11 +66,9 @@ def bootstrap_new_world() -> None:
     state.nests = generate_nests(state.zones)
 
     rules = default_runtime_rules()
-    rules = updated_runtime_rules(
-        rules,
-        zone_hp_effect=preserved_zone_hp_effect,
-    )
     state.set_runtime_rules(rules)
 
-    state.simulation_speed = 1.0
-    state.active_param = cfg.PARAM_MUTATION
+    state.simulation_speed = (
+        cfg.CONFIG_SNAPSHOT.operator.default_simulation_speed
+    )
+    state.paused = cfg.CONFIG_SNAPSHOT.operator.default_paused

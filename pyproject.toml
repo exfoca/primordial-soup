@@ -27,6 +27,7 @@ where = ["."]
 include = ["primordial_soup*"]
 
 [tool.setuptools.package-data]
-# Recursos graficos/sonoros sao carregados por caminho relativo ao
-# pacote. Sem esta declaracao, `pip install .` nao os inclui no wheel.
-primordial_soup = ["icon.png", "sounds/*.wav"]
+# Runtime assets are loaded relative to the package, including the
+# packaged declarative .env baseline and graphical/audio resources.
+# Without this declaration, `pip install .` would omit them from the wheel.
+primordial_soup = [".env", "icon.png", "sounds/*.wav"]

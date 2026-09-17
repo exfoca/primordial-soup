@@ -133,13 +133,16 @@ For every serious experiment, record:
 
 ```text
 experiment name
-code version / commit
+application version / commit
+configuration source
+relevant effective configuration values
 random seed
 duration
+treatment
+checkpoint origin where applicable
 changed parameter
 control value
 experimental value
-relevant fixed configuration
 final populations
 maximum generations
 lifetimes
@@ -168,6 +171,26 @@ LIMITATIONS
 ```
 
 That last field prevents a surprising amount of nonsense.
+
+---
+
+## Declarative treatment files
+
+For repeatable headless treatments, use one **complete** configuration file per treatment and select it with `PRIMORDIAL_SOUP_CONFIG`. Keep the same seed set across treatments when the experimental design calls for paired stochastic histories.
+
+Conceptually:
+
+```text
+baseline.env
+mutation_20.env
+mutation_50.env
+```
+
+Each file must satisfy the full configuration contract. Record which source was used and the effective values relevant to the treatment.
+
+Checkpoint experiments need one additional warning: loading a checkpoint restores the checkpoint's own `RuntimeRules`. Merely changing HOT values in a declarative `.env` and then loading an existing checkpoint does **not** apply those HOT values to that world. Apply a live HOT intervention after load if that is the experiment you intend to perform.
+
+See [Runtime Configuration](runtime-config.md) and [Headless](headless.md).
 
 ---
 
@@ -471,7 +494,7 @@ Use recordings alongside metrics.
 
 ## Beware survivor bias
 
-Inspection naturally focuses attention on living individuals, especially oldest, highest generation, and best score. These are survivors by definition.
+Inspection naturally focuses attention on living individuals, especially oldest, highest generation, and most evolved. These are survivors by definition.
 
 If you study only them, you may miss the much larger collection of genomes that failed.
 

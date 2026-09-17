@@ -23,6 +23,8 @@ from . import prefs
 from . import state
 from . import ui_state
 from . import world
+from .config_schema import ConfigScope, get_field_spec_by_attr
+from .config_validation import resolve_constraints
 from .panels import (
     DispatchResult,
     Item,
@@ -30,6 +32,25 @@ from .panels import (
     Panel,
     register,
 )
+
+
+# --- Helpers do contrato declarativo ---------------------------------------
+
+
+def _schema_constraints(scope: ConfigScope, attr_name: str):
+    """Resolve metadata contra o snapshot declarativo carregado."""
+    spec = get_field_spec_by_attr(scope, attr_name)
+    return resolve_constraints(spec, cfg.CONFIG_SNAPSHOT)
+
+
+def _hot_constraints(attr_name: str):
+    """Resolve constraints de um campo RuntimeRules."""
+    return _schema_constraints(ConfigScope.HOT, attr_name)
+
+
+def _operator_constraints(attr_name: str):
+    """Resolve constraints de um default de operador."""
+    return _schema_constraints(ConfigScope.OPERATOR, attr_name)
 
 
 # --- Helpers de valor (value_fn) ------------------------------------------
@@ -203,82 +224,107 @@ def _v_lineage_filter() -> str:
     return i18n.t(f"lineage_filter.{state.discovery_lineage_filter}")
 
 
+# --- Helpers de edicao HOT -------------------------------------------------
+
+
+def _runtime_choices(field: str) -> tuple[object, ...]:
+    """Retorna o dominio fechado de um campo HOT."""
+    choices = _hot_constraints(field).choices
+    if choices is None:
+        raise RuntimeError(f"Campo HOT sem choices no schema: {field}.")
+    return choices
+
+
+def _adjust_runtime_int(field: str, direction: int) -> None:
+    """Ajusta um inteiro HOT usando step e bounds do schema."""
+    constraints = _hot_constraints(field)
+    if type(constraints.step) is not int:
+        raise RuntimeError(f"Campo HOT sem step inteiro no schema: {field}.")
+
+    current = getattr(state.runtime_rules, field)
+    candidate = current + direction * constraints.step
+    if constraints.minimum is not None:
+        candidate = max(int(constraints.minimum), candidate)
+    if constraints.maximum is not None:
+        candidate = min(int(constraints.maximum), candidate)
+    state.update_runtime_rules(**{field: candidate})
+
+
+def _adjust_runtime_float(
+    field: str,
+    direction: int,
+    *,
+    precision: int = 1,
+) -> None:
+    """Ajusta um float HOT usando step e bounds opcionais do schema."""
+    constraints = _hot_constraints(field)
+    if type(constraints.step) not in {int, float}:
+        raise RuntimeError(f"Campo HOT sem step numerico no schema: {field}.")
+
+    current = getattr(state.runtime_rules, field)
+    candidate = round(current + direction * float(constraints.step), precision)
+    if constraints.minimum is not None:
+        candidate = max(float(constraints.minimum), candidate)
+    if constraints.maximum is not None:
+        candidate = min(float(constraints.maximum), candidate)
+    state.update_runtime_rules(**{field: round(float(candidate), precision)})
+
+
+def _cycle_runtime_choice(field: str, direction: int) -> None:
+    """Aplica wrap circular ao dominio canonico de um campo HOT."""
+    order = _runtime_choices(field)
+    current = getattr(state.runtime_rules, field)
+    index = order.index(current)
+    state.update_runtime_rules(
+        **{field: order[(index + direction) % len(order)]}
+    )
+
+
 # --- Handlers: modos geneticos (ENUM) -------------------------------------
 
 
 def _h_crossover_mode(panel, item, direction: int) -> DispatchResult:
     if direction == 0:
         return DispatchResult.continue_(redraw=False)
-    order = cfg.CROSSOVER_MODES
-    current = state.runtime_rules.crossover_mode
-    index = order.index(current)
-    candidate = order[(index + direction) % len(order)]
-    state.update_runtime_rules(crossover_mode=candidate)
+    _cycle_runtime_choice("crossover_mode", direction)
     return DispatchResult.continue_(redraw=True)
 
 
 def _h_mutation_mode(panel, item, direction: int) -> DispatchResult:
     if direction == 0:
         return DispatchResult.continue_(redraw=False)
-    order = cfg.MUTATION_MODES
-    current = state.runtime_rules.mutation_mode
-    index = order.index(current)
-    candidate = order[(index + direction) % len(order)]
-    state.update_runtime_rules(mutation_mode=candidate)
+    _cycle_runtime_choice("mutation_mode", direction)
     return DispatchResult.continue_(redraw=True)
 
 
 def _h_crossover_probability(panel, item, direction: int) -> DispatchResult:
     if direction == 0:
         return DispatchResult.continue_(redraw=False)
-    _adjust_runtime_float(
-        "crossover_probability",
-        direction,
-        step=0.05,
-        minimum=cfg.MIN_CROSSOVER_PROBABILITY,
-        maximum=cfg.MAX_CROSSOVER_PROBABILITY,
-        precision=2,
-    )
+    _adjust_runtime_float("crossover_probability", direction, precision=2)
     return DispatchResult.continue_(redraw=True)
 
 
 def _h_block_size(panel, item, direction: int) -> DispatchResult:
     if direction == 0:
         return DispatchResult.continue_(redraw=False)
-    _adjust_runtime_int(
-        "block_size",
-        direction,
-        step=1,
-        minimum=cfg.MIN_BLOCK_SIZE,
-        maximum=cfg.MAX_BLOCK_SIZE,
-    )
+    _adjust_runtime_int("block_size", direction)
     return DispatchResult.continue_(redraw=True)
 
 
-# --- Handlers: mutacao (VALUE, em %) --------------------------------------
+# --- Handlers: mutacao -----------------------------------------------------
 
 
 def _h_mutation_rate(panel, item, direction: int) -> DispatchResult:
     if direction == 0:
         return DispatchResult.continue_(redraw=False)
-    current = state.runtime_rules.mutation_rate
-    new_value = max(
-        cfg.MIN_MUTATION_RATE,
-        min(cfg.MAX_MUTATION_RATE, current + direction),
-    )
-    state.update_runtime_rules(mutation_rate=new_value)
+    _adjust_runtime_int("mutation_rate", direction)
     return DispatchResult.continue_(redraw=True)
 
 
 def _h_local_scale(panel, item, direction: int) -> DispatchResult:
     if direction == 0:
         return DispatchResult.continue_(redraw=False)
-    current = state.runtime_rules.local_scale_fraction
-    new_value = max(
-        cfg.MIN_LOCAL_SCALE_FRACTION,
-        min(cfg.MAX_LOCAL_SCALE_FRACTION, current + direction),
-    )
-    state.update_runtime_rules(local_scale_fraction=new_value)
+    _adjust_runtime_int("local_scale_fraction", direction)
     return DispatchResult.continue_(redraw=True)
 
 
@@ -286,14 +332,7 @@ def _h_local_scale_sigma(panel, item, direction: int) -> DispatchResult:
     if direction == 0:
         return DispatchResult.continue_(redraw=False)
     before = state.runtime_rules
-    _adjust_runtime_float(
-        "local_scale_sigma",
-        direction,
-        step=0.01,
-        minimum=cfg.MIN_MUTATION_SIGMA,
-        maximum=cfg.MAX_MUTATION_SIGMA,
-        precision=2,
-    )
+    _adjust_runtime_float("local_scale_sigma", direction, precision=2)
     return DispatchResult.continue_(redraw=state.runtime_rules is not before)
 
 
@@ -301,13 +340,7 @@ def _h_global_probability(panel, item, direction: int) -> DispatchResult:
     if direction == 0:
         return DispatchResult.continue_(redraw=False)
     before = state.runtime_rules
-    _adjust_runtime_int(
-        "global_probability",
-        direction,
-        step=1,
-        minimum=cfg.MIN_GLOBAL_PROBABILITY,
-        maximum=cfg.MAX_GLOBAL_PROBABILITY,
-    )
+    _adjust_runtime_int("global_probability", direction)
     return DispatchResult.continue_(redraw=state.runtime_rules is not before)
 
 
@@ -315,13 +348,7 @@ def _h_global_scale_fraction(panel, item, direction: int) -> DispatchResult:
     if direction == 0:
         return DispatchResult.continue_(redraw=False)
     before = state.runtime_rules
-    _adjust_runtime_int(
-        "global_scale_fraction",
-        direction,
-        step=1,
-        minimum=cfg.MIN_GLOBAL_SCALE_FRACTION,
-        maximum=cfg.MAX_GLOBAL_SCALE_FRACTION,
-    )
+    _adjust_runtime_int("global_scale_fraction", direction)
     return DispatchResult.continue_(redraw=state.runtime_rules is not before)
 
 
@@ -329,115 +356,44 @@ def _h_global_scale_sigma(panel, item, direction: int) -> DispatchResult:
     if direction == 0:
         return DispatchResult.continue_(redraw=False)
     before = state.runtime_rules
-    _adjust_runtime_float(
-        "global_scale_sigma",
-        direction,
-        step=0.05,
-        minimum=cfg.MIN_MUTATION_SIGMA,
-        maximum=cfg.MAX_MUTATION_SIGMA,
-        precision=2,
-    )
+    _adjust_runtime_float("global_scale_sigma", direction, precision=2)
     return DispatchResult.continue_(redraw=state.runtime_rules is not before)
 
 
 def _h_stay_still_impulse(panel, item, direction: int) -> DispatchResult:
     if direction == 0:
         return DispatchResult.continue_(redraw=False)
-    current = state.runtime_rules.stay_still_impulse
-    candidate = round(current + direction * 0.1, 1)
     before = state.runtime_rules
-    state.update_runtime_rules(stay_still_impulse=float(candidate))
+    _adjust_runtime_float("stay_still_impulse", direction, precision=1)
     return DispatchResult.continue_(redraw=state.runtime_rules is not before)
 
 
-# --- Handler: speed (ENUM) ------------------------------------------------
-
-
-_SPEED_VALUES: tuple[float, ...] = (
-    0.25,
-    0.5,
-    1.0,
-    2.0,
-    4.0,
-    8.0,
-    16.0,
-    32.0,
-    64.0,
-    128.0,
-    256.0,
-)
+# --- Handler: velocidade --------------------------------------------------
 
 
 def _h_speed(panel, item, direction: int) -> DispatchResult:
     if direction == 0:
         return DispatchResult.continue_(redraw=False)
+    choices = _operator_constraints("default_simulation_speed").choices
+    if choices is None:
+        raise RuntimeError("DEFAULT_SIMULATION_SPEED sem choices no schema.")
     current = state.simulation_speed
-    if current in _SPEED_VALUES:
-        idx = _SPEED_VALUES.index(current)
+    if current in choices:
+        index = choices.index(current)
     else:
-        idx = 0
-    idx = max(0, min(len(_SPEED_VALUES) - 1, idx + direction))
-    state.simulation_speed = _SPEED_VALUES[idx]
+        index = 0
+    index = max(0, min(len(choices) - 1, index + direction))
+    state.simulation_speed = choices[index]
     return DispatchResult.continue_(redraw=True)
 
 
-# --- Helper: ajuste de inteiros runtime -----------------------------------
-
-
-def _adjust_runtime_int(
-    field: str,
-    direction: int,
-    *,
-    step: int,
-    minimum: int,
-    maximum: int,
-) -> None:
-    """Ajusta um campo int de state.runtime_rules com clamp.
-
-    Le o valor corrente, soma direction*step, aplica clamp em
-    [minimum, maximum] e comita via state.update_runtime_rules. Se o
-    valor clamped for igual ao corrente, update_runtime_rules e no-op
-    de identidade (ver runtime_rules.updated_runtime_rules).
-
-    Helper de UI: step e range pertencem a apresentacao; state nao
-    deve conhecer esses detalhes.
-    """
-    current = getattr(state.runtime_rules, field)
-    candidate = current + direction * step
-    clamped = max(minimum, min(maximum, candidate))
-    state.update_runtime_rules(**{field: clamped})
-
-
-def _adjust_runtime_float(
-    field: str,
-    direction: int,
-    *,
-    step: float,
-    minimum: float,
-    maximum: float,
-    precision: int = 1,
-) -> None:
-    """Ajusta um campo float runtime com round e clamp."""
-    current = getattr(state.runtime_rules, field)
-    candidate = round(current + direction * step, precision)
-    clamped = max(minimum, min(maximum, candidate))
-    clamped = round(float(clamped), precision)
-    state.update_runtime_rules(**{field: clamped})
-
-
-# --- Handlers: ecologia (VALUE, inteiros) --------------------------------
+# --- Handlers: ecologia ---------------------------------------------------
 
 
 def _h_base_decay(panel, item, direction: int) -> DispatchResult:
     if direction == 0:
         return DispatchResult.continue_(redraw=False)
-    _adjust_runtime_int(
-        "base_decay_per_tick",
-        direction,
-        step=1,
-        minimum=cfg.MIN_BASE_DECAY_PER_TICK,
-        maximum=cfg.MAX_BASE_DECAY_PER_TICK,
-    )
+    _adjust_runtime_int("base_decay_per_tick", direction)
     return DispatchResult.continue_(redraw=True)
 
 
@@ -445,13 +401,7 @@ def _h_low_hp_threshold(panel, item, direction: int) -> DispatchResult:
     if direction == 0:
         return DispatchResult.continue_(redraw=False)
     before = state.runtime_rules
-    _adjust_runtime_int(
-        "low_hp_threshold",
-        direction,
-        step=100,
-        minimum=cfg.MIN_LOW_HP_THRESHOLD,
-        maximum=cfg.MAX_LOW_HP_THRESHOLD,
-    )
+    _adjust_runtime_int("low_hp_threshold", direction)
     return DispatchResult.continue_(redraw=state.runtime_rules is not before)
 
 
@@ -459,13 +409,7 @@ def _h_death_hp_threshold(panel, item, direction: int) -> DispatchResult:
     if direction == 0:
         return DispatchResult.continue_(redraw=False)
     before = state.runtime_rules
-    _adjust_runtime_int(
-        "death_hp_threshold",
-        direction,
-        step=100,
-        minimum=cfg.MIN_DEATH_HP_THRESHOLD,
-        maximum=cfg.MAX_DEATH_HP_THRESHOLD,
-    )
+    _adjust_runtime_int("death_hp_threshold", direction)
     return DispatchResult.continue_(redraw=state.runtime_rules is not before)
 
 
@@ -473,73 +417,39 @@ def _h_predation_transfer(panel, item, direction: int) -> DispatchResult:
     if direction == 0:
         return DispatchResult.continue_(redraw=False)
     before = state.runtime_rules
-    _adjust_runtime_int(
-        "predation_transfer",
-        direction,
-        step=cfg.PREDATION_TRANSFER_STEP,
-        minimum=cfg.MIN_PREDATION_TRANSFER,
-        maximum=cfg.MAX_PREDATION_TRANSFER,
-    )
-    return DispatchResult.continue_(
-        redraw=state.runtime_rules is not before
-    )
+    _adjust_runtime_int("predation_transfer", direction)
+    return DispatchResult.continue_(redraw=state.runtime_rules is not before)
 
 
 def _h_overcrowding_factor(panel, item, direction: int) -> DispatchResult:
     if direction == 0:
         return DispatchResult.continue_(redraw=False)
     before = state.runtime_rules
-    _adjust_runtime_int(
-        "damage_per_own_overcrowding",
-        direction,
-        step=cfg.DAMAGE_PER_OWN_OVERCROWDING_STEP,
-        minimum=cfg.MIN_DAMAGE_PER_OWN_OVERCROWDING,
-        maximum=cfg.MAX_DAMAGE_PER_OWN_OVERCROWDING,
-    )
-    return DispatchResult.continue_(
-        redraw=state.runtime_rules is not before
-    )
+    _adjust_runtime_int("damage_per_own_overcrowding", direction)
+    return DispatchResult.continue_(redraw=state.runtime_rules is not before)
 
 
-# --- Handlers: reproducao (VALUE, inteiros) ------------------------------
+# --- Handlers: reproducao -------------------------------------------------
 
 
 def _h_reproduction_interval(panel, item, direction: int) -> DispatchResult:
     if direction == 0:
         return DispatchResult.continue_(redraw=False)
-    _adjust_runtime_int(
-        "reproduction_interval",
-        direction,
-        step=10,
-        minimum=cfg.MIN_REPRODUCTION_INTERVAL,
-        maximum=cfg.MAX_REPRODUCTION_INTERVAL,
-    )
+    _adjust_runtime_int("reproduction_interval", direction)
     return DispatchResult.continue_(redraw=True)
 
 
 def _h_reproduction_min_age(panel, item, direction: int) -> DispatchResult:
     if direction == 0:
         return DispatchResult.continue_(redraw=False)
-    _adjust_runtime_int(
-        "reproduction_min_age",
-        direction,
-        step=100,
-        minimum=cfg.MIN_REPRODUCTION_MIN_AGE,
-        maximum=cfg.MAX_REPRODUCTION_MIN_AGE,
-    )
+    _adjust_runtime_int("reproduction_min_age", direction)
     return DispatchResult.continue_(redraw=True)
 
 
 def _h_reproduction_hp_gate(panel, item, direction: int) -> DispatchResult:
     if direction == 0:
         return DispatchResult.continue_(redraw=False)
-    _adjust_runtime_int(
-        "reproduction_hp_gate",
-        direction,
-        step=100,
-        minimum=cfg.MIN_REPRODUCTION_HP_GATE,
-        maximum=cfg.MAX_REPRODUCTION_HP_GATE,
-    )
+    _adjust_runtime_int("reproduction_hp_gate", direction)
     return DispatchResult.continue_(redraw=True)
 
 
@@ -548,13 +458,7 @@ def _h_reproduction_min_encounters(
 ) -> DispatchResult:
     if direction == 0:
         return DispatchResult.continue_(redraw=False)
-    _adjust_runtime_int(
-        "reproduction_min_encounters",
-        direction,
-        step=1,
-        minimum=cfg.MIN_REPRODUCTION_MIN_ENCOUNTERS,
-        maximum=cfg.MAX_REPRODUCTION_MIN_ENCOUNTERS,
-    )
+    _adjust_runtime_int("reproduction_min_encounters", direction)
     return DispatchResult.continue_(redraw=True)
 
 
@@ -563,13 +467,7 @@ def _h_reproduction_parent_hp_bonus(
 ) -> DispatchResult:
     if direction == 0:
         return DispatchResult.continue_(redraw=False)
-    _adjust_runtime_int(
-        "reproduction_parent_hp_bonus",
-        direction,
-        step=10,
-        minimum=cfg.MIN_REPRODUCTION_PARENT_HP_BONUS,
-        maximum=cfg.MAX_REPRODUCTION_PARENT_HP_BONUS,
-    )
+    _adjust_runtime_int("reproduction_parent_hp_bonus", direction)
     return DispatchResult.continue_(redraw=True)
 
 
@@ -586,12 +484,7 @@ def _h_zones_toggle(panel, item, direction: int) -> DispatchResult:
 def _h_zone_hp(panel, item, direction: int) -> DispatchResult:
     if direction == 0:
         return DispatchResult.continue_(redraw=False)
-    current = state.runtime_rules.zone_hp_effect
-    new_value = max(
-        cfg.MIN_ZONE_HP_EFFECT,
-        min(cfg.MAX_ZONE_HP_EFFECT, current + direction),
-    )
-    state.update_runtime_rules(zone_hp_effect=new_value)
+    _adjust_runtime_int("zone_hp_effect", direction)
     return DispatchResult.continue_(redraw=True)
 
 
@@ -615,7 +508,7 @@ def _h_criterion(panel, item, direction: int) -> DispatchResult:
     if direction == 0:
         return DispatchResult.continue_(redraw=False)
     before = state.discovery_criterion
-    order = cfg.CRITERIA_ORDER
+    order = _operator_constraints("default_discovery_criterion").choices
     try:
         i = order.index(state.discovery_criterion)
     except ValueError:
@@ -631,7 +524,7 @@ def _h_lineage_filter(panel, item, direction: int) -> DispatchResult:
     if direction == 0:
         return DispatchResult.continue_(redraw=False)
     before = state.discovery_lineage_filter
-    order = cfg.LINEAGE_FILTER_ORDER
+    order = _operator_constraints("default_discovery_lineage_filter").choices
     try:
         i = order.index(state.discovery_lineage_filter)
     except ValueError:
@@ -705,12 +598,7 @@ def _h_clear_observation(panel, item, direction: int) -> DispatchResult:
 def _h_reproduction_criterion(panel, item, direction: int) -> DispatchResult:
     if direction == 0:
         return DispatchResult.continue_(redraw=False)
-
-    order = cfg.REPRODUCTION_CRITERIA
-    current = state.runtime_rules.reproduction_criterion
-    index = order.index(current)
-    candidate = order[(index + direction) % len(order)]
-    state.update_runtime_rules(reproduction_criterion=candidate)
+    _cycle_runtime_choice("reproduction_criterion", direction)
     return DispatchResult.continue_(redraw=True)
 
 
@@ -719,14 +607,7 @@ def _h_reproduction_pool_fraction(
 ) -> DispatchResult:
     if direction == 0:
         return DispatchResult.continue_(redraw=False)
-    _adjust_runtime_float(
-        "reproduction_pool_fraction",
-        direction,
-        step=0.01,
-        minimum=cfg.MIN_REPRODUCTION_POOL_FRACTION,
-        maximum=cfg.MAX_REPRODUCTION_POOL_FRACTION,
-        precision=2,
-    )
+    _adjust_runtime_float("reproduction_pool_fraction", direction, precision=2)
     return DispatchResult.continue_(redraw=True)
 
 
@@ -735,69 +616,42 @@ def _h_reproduction_attempts_divisor(
 ) -> DispatchResult:
     if direction == 0:
         return DispatchResult.continue_(redraw=False)
-    _adjust_runtime_int(
-        "reproduction_attempts_divisor",
-        direction,
-        step=1,
-        minimum=cfg.MIN_REPRODUCTION_ATTEMPTS_DIVISOR,
-        maximum=cfg.MAX_REPRODUCTION_ATTEMPTS_DIVISOR,
-    )
+    _adjust_runtime_int("reproduction_attempts_divisor", direction)
     return DispatchResult.continue_(redraw=True)
-
-
-# --- Handlers: score de selecao (VALUE, floats) ---------------------------
 
 
 def _h_reproduction_min_score(panel, item, direction: int) -> DispatchResult:
     if direction == 0:
         return DispatchResult.continue_(redraw=False)
-    _adjust_runtime_float(
-        "reproduction_min_score",
-        direction,
-        step=0.1,
-        minimum=cfg.MIN_REPRODUCTION_MIN_SCORE,
-        maximum=cfg.MAX_REPRODUCTION_MIN_SCORE,
-    )
+    _adjust_runtime_float("reproduction_min_score", direction, precision=1)
     return DispatchResult.continue_(redraw=True)
 
 
 def _h_longevity_weight(panel, item, direction: int) -> DispatchResult:
     if direction == 0:
         return DispatchResult.continue_(redraw=False)
-    _adjust_runtime_float(
-        "longevity_weight", direction, step=0.1,
-        minimum=cfg.MIN_SELECTION_WEIGHT, maximum=cfg.MAX_SELECTION_WEIGHT,
-    )
+    _adjust_runtime_float("longevity_weight", direction, precision=1)
     return DispatchResult.continue_(redraw=True)
 
 
 def _h_exploration_weight(panel, item, direction: int) -> DispatchResult:
     if direction == 0:
         return DispatchResult.continue_(redraw=False)
-    _adjust_runtime_float(
-        "exploration_weight", direction, step=0.1,
-        minimum=cfg.MIN_SELECTION_WEIGHT, maximum=cfg.MAX_SELECTION_WEIGHT,
-    )
+    _adjust_runtime_float("exploration_weight", direction, precision=1)
     return DispatchResult.continue_(redraw=True)
 
 
 def _h_interaction_weight(panel, item, direction: int) -> DispatchResult:
     if direction == 0:
         return DispatchResult.continue_(redraw=False)
-    _adjust_runtime_float(
-        "interaction_weight", direction, step=0.1,
-        minimum=cfg.MIN_SELECTION_WEIGHT, maximum=cfg.MAX_SELECTION_WEIGHT,
-    )
+    _adjust_runtime_float("interaction_weight", direction, precision=1)
     return DispatchResult.continue_(redraw=True)
 
 
 def _h_reproduction_weight(panel, item, direction: int) -> DispatchResult:
     if direction == 0:
         return DispatchResult.continue_(redraw=False)
-    _adjust_runtime_float(
-        "reproduction_weight", direction, step=0.1,
-        minimum=cfg.MIN_SELECTION_WEIGHT, maximum=cfg.MAX_SELECTION_WEIGHT,
-    )
+    _adjust_runtime_float("reproduction_weight", direction, precision=1)
     return DispatchResult.continue_(redraw=True)
 
 

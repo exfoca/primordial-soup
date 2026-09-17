@@ -50,8 +50,12 @@ _disabled = False
 _sounds: dict[str, Any] = {}
 _last_played_at: dict[str, float] = {}
 
-_music_enabled = True
-_sfx_enabled = True
+_music_enabled = (
+    cfg.CONFIG_SNAPSHOT.operator.default_music_enabled
+)
+_sfx_enabled = (
+    cfg.CONFIG_SNAPSHOT.operator.default_sfx_enabled
+)
 
 _music_available = False
 _music_started = False
@@ -412,8 +416,12 @@ def shutdown() -> None:
     # Reset da copia operacional. A preferencia persistente vive em
     # prefs.py; numa nova sessao grafica ela e reaplicada por
     # simulation.run().
-    _music_enabled = True
-    _sfx_enabled = True
+    _music_enabled = (
+        cfg.CONFIG_SNAPSHOT.operator.default_music_enabled
+    )
+    _sfx_enabled = (
+        cfg.CONFIG_SNAPSHOT.operator.default_sfx_enabled
+    )
 
 
 def play_shutdown_sound() -> None:

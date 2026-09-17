@@ -1,4 +1,4 @@
-"""Testes de continuidade exata do checkpoint (SAVE_VERSION 11).
+"""Testes de continuidade exata do contrato corrente de checkpoint.
 
 A propriedade central que estes testes definem:
 

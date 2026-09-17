@@ -187,7 +187,7 @@ Available items include simulation speed, mutation rate, local mutation scale, e
 
 For your first experiment, change **only one parameter**. Otherwise, if something interesting happens, you will have no idea why.
 
-See [Runtime Configuration](runtime-config.md) for what each item does.
+See [Runtime Configuration](runtime-config.md) for what each item does. The application ships a packaged declarative baseline; a complete custom config can be selected for a new process with `PRIMORDIAL_SOUP_CONFIG`. The Configuration panel handles live HOT interventions rather than editing that file.
 
 ---
 
@@ -243,7 +243,7 @@ Enter
 
 The current world is saved to the active save slot.
 
-Cycle slots with the global `N`. Load the active slot with the global `L`.
+Cycle slots with the global `N`. Load the active slot with `Ctrl+L`.
 
 A simple experiment:
 
@@ -263,7 +263,7 @@ See [Persistence](persistence.md) for what a checkpoint preserves.
 R
 ```
 
-creates a fresh run. The current population is discarded. Operator tunings (mutation, speed, language, pause) are preserved.
+creates a fresh run. The current population is discarded and replaced with new genomes, positions, zones, nests, counters, identity sequence, and reproductive cycle. The complete current `RuntimeRules`, simulation speed, and paused state are preserved. Operator/session preferences not owned by fresh-world bootstrap remain in place, while `zones_active` returns to the declarative `DEFAULT_ZONES_ACTIVE` baseline.
 
 A useful habit:
 
@@ -352,7 +352,7 @@ See [Headless](headless.md) for the complete CLI, and [Experiments](experiments.
 | **SPACE** | Start / stop time          |
 | **= / +** | One tick                   |
 | **R**     | New world                  |
-| **L**     | Load the active save slot  |
+| **Ctrl+L** | Load the active save slot |
 | **N**     | Change save slot           |
 | **P**     | Print state                |
 | **Z**     | Toggle zones               |

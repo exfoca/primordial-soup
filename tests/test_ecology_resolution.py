@@ -1,4 +1,4 @@
-"""Contratos do resolver ecologico (Patch 3).
+"""Contratos do resolver ecologico bifasico.
 
 Cobre a semantica de compute_ecology_resolution() em isolamento:
 deltas de HP e de encounter sob predation, overkill, multiplos
@@ -16,6 +16,8 @@ import numpy as np
 import pytest
 
 from primordial_soup import config as cfg
+from primordial_soup.config_schema import ConfigScope, get_field_spec_by_attr
+from primordial_soup.config_validation import resolve_constraints
 from primordial_soup import ecology
 from primordial_soup import state
 from primordial_soup import world
@@ -26,6 +28,12 @@ from primordial_soup.world import (
     INDEX_X,
     INDEX_Y,
 )
+
+
+def _hot_constraints(attr_name: str):
+    """Resolve constraints HOT contra o snapshot canonico."""
+    spec = get_field_spec_by_attr(ConfigScope.HOT, attr_name)
+    return resolve_constraints(spec, cfg.CONFIG_SNAPSHOT)
 
 
 # ---------------------------------------------------------------------------
@@ -86,7 +94,7 @@ def _reset_ecology_rules():
     state.nests = None
     state.update_runtime_rules(
         base_decay_per_tick=0,
-        predation_transfer=cfg.MIN_PREDATION_TRANSFER,
+        predation_transfer=_hot_constraints("predation_transfer").minimum,
     )
 
 
@@ -179,7 +187,7 @@ def test_floor_division_discards_remainder():
     _reset_ecology_rules()
     state.update_runtime_rules(
         predation_transfer=100,
-        damage_per_own_overcrowding=cfg.MIN_DAMAGE_PER_OWN_OVERCROWDING,
+        damage_per_own_overcrowding=_hot_constraints("damage_per_own_overcrowding").minimum,
     )
 
     res = ecology.compute_ecology_resolution()
@@ -205,7 +213,7 @@ def test_multiple_preys_accumulate_reward():
     _reset_ecology_rules()
     state.update_runtime_rules(
         predation_transfer=100,
-        damage_per_own_overcrowding=cfg.MIN_DAMAGE_PER_OWN_OVERCROWDING,
+        damage_per_own_overcrowding=_hot_constraints("damage_per_own_overcrowding").minimum,
     )
 
     res = ecology.compute_ecology_resolution()
@@ -291,7 +299,7 @@ def test_triad_selects_exactly_one_relation():
     _reset_ecology_rules()
     state.update_runtime_rules(
         predation_transfer=100,
-        damage_per_own_overcrowding=cfg.MIN_DAMAGE_PER_OWN_OVERCROWDING,
+        damage_per_own_overcrowding=_hot_constraints("damage_per_own_overcrowding").minimum,
     )
 
     # Base_decay = 0, sem overcrowding. Vamos olhar so predation:

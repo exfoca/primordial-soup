@@ -139,56 +139,39 @@ def _internal_state_batch(
 def sense_batch(
     xs: np.ndarray,
     ys: np.ndarray,
-    matrix: np.ndarray | None = None,
+    matrix: np.ndarray,
     index: int | None = None,
     *,
-    low_hp_threshold: int | None = None,
+    low_hp_threshold: int,
 ) -> np.ndarray:
     """Vetor float [N, NETWORK_INPUTS].
 
     Concatena:
       [ vision SIDE×SIDE×3 | estado interno (4) ]
 
-    Contrato de `matrix`:
-        - Se fornecida, o flag low-HP e recalculado e ESCRITO em
-          `matrix[:, INDEX_LOW_HP]` para a coluna refletir o que a
-          rede consumiu neste tick. Esta e a UNICA mutacao in-place
-          da funcao, feita explicitamente aqui.
-        - Se None, o estado interno e zerado (fallback de
-          compatibilidade com chamadas antigas de `sense`) e NENHUMA
-          mutacao ocorre.
+    `matrix` e `low_hp_threshold` sao obrigatorios: toda percepcao
+    produtiva inclui o estado interno real do organismo. O flag low-HP
+    e recalculado e escrito em `matrix[:, INDEX_LOW_HP]` para manter a
+    coluna sincronizada com o valor efetivamente consumido pela rede.
 
     Contrato de `index`:
         - Se for um indice valido (0..TOTAL_LINEAGES-1) E n <=
           MAX_POPULATION_PER_LINEAGE, o resultado e escrito num
           scratch buffer por linhagem e uma VIEW das primeiras n
           linhas e retornada. O chamador DEVE consumir o resultado
-          antes da proxima chamada com o mesmo `index` — senao ela
-          sobrescreve. Na pratica o unico chamador e
-          evolution.evaluate_and_move, que consome imediatamente.
+          antes da proxima chamada com o mesmo `index`.
         - Se None, ou n excede o teto, cai no caminho de alocacao
-          normal. Mantem `sense(x, y)` (sem index) e qualquer chamada
-          fora da invariante corretos.
+          normal. Esse caminho alternativo e operacional e nao altera a semantica
+          dos inputs internos.
 
-    Contrato de `low_hp_threshold`:
-        - E obrigatorio quando `matrix` e fornecida, porque o estado
-          interno real inclui o flag low-HP.
-        - E irrelevante quando `matrix` e None; `sense()` permanece
-          independente de RuntimeRules.
-
-    O caminho com buffer e o hot path: elimina ~105 MB/s de churn de
-    alocacao da implementacao anterior baseada em concatenate.
+    O caminho com buffer e o caminho critico: elimina churn de alocacao da
+    implementacao anterior baseada em concatenate.
     """
-    if matrix is not None and low_hp_threshold is None:
-        raise ValueError(
-            "low_hp_threshold e obrigatorio quando matrix e fornecida."
-        )
-
     xs = np.asarray(xs, dtype=np.int64)
     ys = np.asarray(ys, dtype=np.int64)
+    matrix = np.asarray(matrix)
     n = xs.shape[0]
 
-    # Decide se o caminho com buffer esta disponivel nesta chamada.
     use_buffer = (
         index is not None
         and 0 <= index < cfg.TOTAL_LINEAGES
@@ -197,42 +180,21 @@ def sense_batch(
 
     if use_buffer:
         out = _get_input_buffer(index)[:n]
-        vision = _vision_batch(xs, ys, out=out)
-        if matrix is None:
-            out[:, cfg.VISION_INPUTS :] = 0.0
-        else:
-            matrix = np.asarray(matrix)
-            internal, low_hp = _internal_state_batch(
-                matrix,
-                low_hp_threshold=low_hp_threshold,
-            )
-            out[:, cfg.VISION_INPUTS :] = internal
-            matrix[:, INDEX_LOW_HP] = low_hp.astype(matrix.dtype, copy=False)
-        # `out` ja contem [vision | internal] nas colunas certas.
-        # `vision` era uma view de out[:, :VISION_INPUTS], entao
-        # escrever o bloco interno acima nao a perturbou.
-        return out
-
-    # Fallback: caminho de alocacao original. Usado por sense(x, y) e
-    # por qualquer chamada sem index ou acima do teto.
-    vision = _vision_batch(xs, ys)
-    if matrix is None:
-        internal = np.zeros((n, cfg.INTERNAL_STATE_INPUTS), dtype=np.float32)
-    else:
-        matrix = np.asarray(matrix)
+        _vision_batch(xs, ys, out=out)
         internal, low_hp = _internal_state_batch(
             matrix,
             low_hp_threshold=low_hp_threshold,
         )
+        out[:, cfg.VISION_INPUTS :] = internal
         matrix[:, INDEX_LOW_HP] = low_hp.astype(matrix.dtype, copy=False)
+        return out
+
+    # Caminho alternativo de alocacao: usado quando nao ha indice de scratch ou
+    # quando um chamador viola o teto operacional do buffer.
+    vision = _vision_batch(xs, ys)
+    internal, low_hp = _internal_state_batch(
+        matrix,
+        low_hp_threshold=low_hp_threshold,
+    )
+    matrix[:, INDEX_LOW_HP] = low_hp.astype(matrix.dtype, copy=False)
     return np.concatenate([vision, internal], axis=1)
-
-
-def sense(x: int, y: int) -> np.ndarray:
-    """Compatibilidade: um unico bicho, sem estado interno (zeros).
-
-    Para chamadores que so precisam do vetor de visao e nao tem uma
-    matriz de agentes em maos. O bloco interno vai zerado e nenhuma
-    mutacao ocorre.
-    """
-    return sense_batch(np.array([x], dtype=np.int64), np.array([y], dtype=np.int64))[0]

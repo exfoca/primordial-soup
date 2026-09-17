@@ -28,6 +28,8 @@ Death handles optimization.
 
 **This is the single authority for selection, reproduction, crossover, and mutation.** The ecological pressures that feed into selection are defined in [World Rules](world-rules.md).
 
+Whenever this document says **default** or **current default**, it refers to the packaged declarative baseline. Active HOT values may differ in a running world; see [Runtime Configuration](runtime-config.md).
+
 ---
 
 # The evolutionary cycle
@@ -717,7 +719,7 @@ Every death in the simulation is captured before the population arrays are compa
 every death → DeathSnapshot → recent_deaths (chronological archive)
 ```
 
-The snapshot preserves the critter's stable ID, lineage, death tick, final agent row, and final genome. It remains discoverable for a bounded retention window and is persisted in save version 23.
+The snapshot preserves the critter's stable ID, lineage, death tick, final agent row, and final genome. It remains discoverable for a bounded retention window and is part of the current checkpoint contract; persistent recent-death history was introduced in v23 and remains present in current v25.
 
 If the dead individual was the one currently being observed, the same snapshot is installed on Inspection. There is no second snapshot for the observed case: the archive is the source of truth, and Inspection references the appropriate record.
 

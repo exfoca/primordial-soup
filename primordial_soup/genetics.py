@@ -249,7 +249,7 @@ def _mutate_batch(
         )
 
 
-# Modo legado: mutacao cirurgica
+# Modo surgical: substituicao pontual de genes.
 
 
 def _mutate_surgical(brood: np.ndarray, probability: float, mutated_genes: int) -> None:

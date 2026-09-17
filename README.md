@@ -5,7 +5,7 @@
 </p>
 
 <p align="center">
-  <img alt="Version" src="https://img.shields.io/badge/version-0.7.0-blue">
+  <img alt="Version" src="https://img.shields.io/badge/version-0.8.0-blue">
   <img alt="License: MIT" src="https://img.shields.io/badge/License-MIT-yellow.svg">
   <img alt="Python" src="https://img.shields.io/badge/python-3.12%2B-3776AB?logo=python&logoColor=white">
   <img alt="UI" src="https://img.shields.io/badge/UI-English%20%7C%20PT--BR-555555">
@@ -56,7 +56,7 @@ This README is the quick introduction. The actual rules of the universe live in 
 | [World Rules](docs/world-rules.md) | Ecology, predation, overcrowding, nests, zones, death, reproduction and genetic rules |
 | [Critters and Brains](docs/critters-and-brains.md) | Perception, recurrent neural network, genome, movement and stable identity |
 | [Evolution](docs/evolution.md) | Selection, reproductive gates, crossover, mutation and the composite score |
-| [Runtime Configuration](docs/runtime-config.md) | HOT rules, defaults, limits and live experimental controls |
+| [Runtime Configuration](docs/runtime-config.md) | Declarative sources, NON-HOT / OPERATOR / HOT scopes, validation, defaults and live rules |
 | [Persistence](docs/persistence.md) | Checkpoints, deterministic continuation, stable IDs, RNG state and compatibility |
 | [User Interface](docs/ui.md) | Panels, navigation, Inspection, controls and operator interaction |
 | [Headless](docs/headless.md) | CLI, reproducible runs, seed semantics and batch experiments |
@@ -93,11 +93,11 @@ If you want to modify the code without accidentally inventing a second universe,
 
 ## 🧠 The critter brain
 
-Each critter sees an **11×11 local window** with one perception channel for each lineage (Red, Green, Blue), plus four inputs describing its own internal state.
+With the packaged declarative baseline, each critter sees an **11×11 local window** with one perception channel for each lineage (Red, Green, Blue), plus four inputs describing its own internal state.
 
 That produces **367 neural inputs**.
 
-The brain is a small recurrent network:
+The packaged-baseline brain is:
 
 ```text
 367 inputs → 25 hidden → 12 hidden → 9 movement outputs
@@ -105,7 +105,7 @@ The brain is a small recurrent network:
 
 The nine outputs correspond to the Moore neighborhood: eight directions plus staying in place.
 
-All neural weights, biases, and recurrent weights live inside the critter's genome: **10,245 genes**.
+With that same baseline, all neural weights, biases, and recurrent weights occupy a genome of **10,245 genes**. Vision radius and hidden-layer dimensions are NON_HOT declarative configuration; valid alternative values derive a correspondingly different network input count and genome size.
 
 The network is evaluated during life. It is **not trained during life**. What changes across generations is the genome.
 
@@ -208,11 +208,11 @@ For exact reproduction, mutation and ecological rules, see [World Rules](docs/wo
 
 A large part of the experiment can be modified without restarting the simulation. The **Configuration** panel exposes HOT rules for genetics, mutation, behavior, metabolism, predation, overcrowding, environmental zones, reproduction, parent selection, and fitness scoring.
 
-Runtime changes are validated before replacing the active rule set.
+Runtime changes are validated before replacing the active rule set. Live HOT laws are distinct from the declarative NON_HOT / OPERATOR / HOT baselines loaded when the process starts.
 
 The point is not to discover one sacred configuration. The point is to create different selection pressures and see what survives them.
 
-Defaults, ranges and exact semantics are documented in [Runtime Configuration](docs/runtime-config.md).
+Sources, lifecycle scopes, defaults, ranges and exact semantics are documented in [Runtime Configuration](docs/runtime-config.md).
 
 ---
 
@@ -230,7 +230,7 @@ Primordial Soup is designed to be observed, not merely watched. The interface co
 
 Inspection tracks critters using stable IDs rather than array positions. You can inspect HP, age, generation, encounters, offspring, score, position, vision, neural weights, and trajectory.
 
-Every death is snapshotted before the population is compacted. Recent deaths remain discoverable on the map for 2000 simulation ticks as lineage-colored X markers.
+Every death is snapshotted before the population is compacted. With the packaged baseline, recent deaths remain discoverable on the map for 2000 simulation ticks as lineage-colored X markers; the retention window is NON_HOT configuration.
 
 If the observed critter dies, its final inspection state is preserved. Death terminates the organism. It does not invalidate the paperwork.
 
@@ -336,7 +336,7 @@ This is deliberate. A checkpoint is supposed to continue the same universe — n
 >
 > **The universe that comes back is the same universe that went in.**
 
-The current checkpoint contract is **save version 23**.
+The current checkpoint contract is **save version 25**. Checkpoints also carry compatibility metadata for the NON_HOT values that affect continuation.
 
 For validation, compatibility and atomic load/save behavior, see [Persistence](docs/persistence.md).
 
@@ -357,6 +357,8 @@ evolution    → reproduction
 genetics     → crossover and mutation
 world        → population and spatial representation
 state        → active universe state
+config_*     → declarative config contracts / loading / validation
+runtime_rules → live HOT laws
 persistence  → checkpoints
 rendering    → pixels
 feedback     → semantic presentation events

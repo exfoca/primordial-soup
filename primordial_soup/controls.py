@@ -52,14 +52,18 @@ def recreate() -> None:
     # reproducao, selecao, pesos). set_runtime_rules valida e apenas
     # rebinda a referencia global, sem reconstruir.
     #
-    # simulation_speed tambem e preferencia do operador: bootstrap fresh
-    # reaplica o default 1.0x, e recreate precisa restaurar a escolha
-    # vigente para a nova run comecar na velocidade que o operador ve.
+    # O bootstrap de um mundo novo reaplica os defaults declarativos de
+    # velocidade e pausa; recreate restaura as escolhas vigentes na
+    # sessao grafica.
     preserved_rules = state.runtime_rules
     preserved_speed = state.simulation_speed
+    preserved_paused = state.paused
+
     bootstrap_new_world()
+
     state.set_runtime_rules(preserved_rules)
     state.simulation_speed = preserved_speed
+    state.paused = preserved_paused
     print(i18n.t("log.recreate"))
 
 
@@ -79,7 +83,7 @@ def print_state() -> None:
             gg=state.runtime_rules.global_probability,
             gf=state.runtime_rules.global_scale_fraction,
             genes=state.runtime_rules.mutated_genes,
-            a=cfg.ENVIRONMENTAL_MODIFIERS,
+            a=i18n.t("hud.value.environment.zonas"),
             z=zones_txt,
             slot=state.active_save_slot,
         )

@@ -1499,7 +1499,7 @@ def _draw_birth_waves(image: np.ndarray) -> None:
         critter         <- acima da wave
 
     Wave e world geometry: escala com zoom junto com o mapa. Nao e
-    screen-space (diferente dos zone HP labels do Patch 2).
+    screen-space (diferente dos zone HP labels renderizados em overlay).
 
     Geometria: usa nest_geometry.nest_ring_offsets() (autoridade
     canonica dos aneis discretos) e nest_geometry.wrapped_points()
@@ -1689,7 +1689,7 @@ def _draw_highlights(image: np.ndarray) -> None:
       - Painel OFF -> nada.
       - Painel ON  -> resolve UM candidato via
         world.discovery_candidate(criterion, lineage_filter), com a
-        semantica de filtro de cfg.LINEAGE_FILTER_ORDER:
+        semantica do filtro de linhagem do ConfigSchema:
             all -> melhor global entre todas as linhagens
             R/G/B -> melhor daquela linhagem
         Sem candidato (populacao vazia, linhagem filtrada extinta,
@@ -2078,7 +2078,7 @@ def _draw_telemetry_panel(x0: int, y0: int, width: int) -> pygame.Rect:
         inner_x,
         y,
     )
-    environment = i18n.t(f"hud.value.environment.{cfg.ENVIRONMENTAL_MODIFIERS}")
+    environment = i18n.t("hud.value.environment.zonas")
     y = _draw_hud_kv_inline(
         _screen,
         [
@@ -2626,7 +2626,7 @@ def _draw_zone_labels() -> None:
       - state.zones None        -> no-op (sem zonas).
       - not state.zones_active  -> no-op (toggle operacional).
       - state.zone_centers None enquanto zones existe -> RuntimeError
-        (estado estrutural inconsistente do v23).
+        (estado estrutural inconsistente do checkpoint atual).
       - len(zone_centers) != NUMBER_OF_ZONES -> RuntimeError.
 
     Um label por centro canonico. Centro fora da view atual nao    gera label (nao duplicamos em copias wrapped).

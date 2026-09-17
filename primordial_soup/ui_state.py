@@ -8,7 +8,7 @@ modulo representa a APRESENTACAO/NAVEGACAO da aplicacao grafica
 sobre ele. Nada daqui vai para o savegame; nada daqui influencia a
 simulacao.
 
-Fronteira real (pos-Patch 3):
+Fronteira arquitetural:
 
   - O simulation core (simulation.step, evolution, ecology,
     senses, brain, genetics, world, movement, persistence) NAO
@@ -25,6 +25,8 @@ nem simulation.py.
 from __future__ import annotations
 import time
 from dataclasses import dataclass, field
+
+from . import config as cfg
 
 
 # Identificadores canonicos de paineis. Usados como chave em
@@ -55,7 +57,9 @@ active_panel: str = PANEL_WORLD
 # Command Dock, RPS tip). A lateral direita NAO participa: ela ocupa
 # faixa estrutural reservada. Preferencia de UI, como language:
 # sobrevive a R/new world, mas nao vai para savegame.
-floating_hud_visible: bool = True
+floating_hud_visible: bool = (
+    cfg.CONFIG_SNAPSHOT.operator.default_floating_hud_visible
+)
 
 # Ultimo painel real que recebeu foco. Enquanto active_panel for
 # "world", o rendering desenha ESTE painel no viewport, porem sem
@@ -78,7 +82,7 @@ panel_cursors: dict[str, str | None] = {
 
 # Offset vertical (em pixels) de cada painel. So o rendering escreve
 # aqui; so o rendering le para desenhar. O input de wheel entra no
-# Patch 2. UI-only: nunca vai para state.py nem para persistence.
+# UI-only: nunca vai para state.py nem para persistence.
 panel_scroll_offsets: dict[str, int] = {
     PANEL_INSPECTION: 0,
     PANEL_CONFIGURATION: 0,
@@ -161,7 +165,7 @@ def toggle_floating_hud() -> bool:
 
 
 def reset() -> None:
-    """Restaura o estado de UI para o default.
+    """Restaura o estado de UI para seus baselines declarativos.
 
     Chamado apenas em testes e no bootstrap da aplicacao. Nao e
     chamado por recreate() nem por reset_counters(): a navegacao do
@@ -176,7 +180,9 @@ def reset() -> None:
     modal_cursor = 0
     panel_before_modal = PANEL_WORLD
     pause_before_modal = False
-    floating_hud_visible = True
+    floating_hud_visible = (
+        cfg.CONFIG_SNAPSHOT.operator.default_floating_hud_visible
+    )
     notice = None
     for key in panel_cursors:
         panel_cursors[key] = None

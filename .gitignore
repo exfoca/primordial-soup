@@ -3,10 +3,10 @@ __pycache__/
 *.py[codz]
 *$py.class
 
-# C extensions
+# Extensões C
 *.so
 
-# Distribution / packaging
+# Distribuição / empacotamento
 .Python
 build/
 develop-eggs/
@@ -27,16 +27,16 @@ share/python-wheels/
 MANIFEST
 
 # PyInstaller
-#   Usually these files are written by a python script from a template
-#   before PyInstaller builds the exe, so as to inject date/other infos into it.
+#   Normalmente esses arquivos são escritos por um script Python a partir de um template
+#   antes do PyInstaller compilar o exe, para injetar data/outras informações nele.
 *.manifest
 *.spec
 
-# Installer logs
+# Logs de instaladores
 pip-log.txt
 pip-delete-this-directory.txt
 
-# Unit test / coverage reports
+# Relatórios de testes unitários / cobertura
 htmlcov/
 .tox/
 .nox/
@@ -51,24 +51,24 @@ coverage.xml
 .pytest_cache/
 cover/
 
-# Translations
+# Traduções
 *.mo
 *.pot
 
-# Django stuff:
+# Django:
 *.log
 local_settings.py
 db.sqlite3
 db.sqlite3-journal
 
-# Flask stuff:
+# Flask:
 instance/
 .webassets-cache
 
-# Scrapy stuff:
+# Scrapy:
 .scrapy
 
-# Sphinx documentation
+# Documentação do Sphinx
 docs/_build/
 
 # PyBuilder
@@ -83,34 +83,34 @@ profile_default/
 ipython_config.py
 
 # pyenv
-#   For a library or package, you might want to ignore these files since the code is
-#   intended to run in multiple environments; otherwise, check them in:
+#   Para uma biblioteca ou pacote, talvez você queira ignorar esses arquivos, já que o código
+#   foi feito para rodar em múltiplos ambientes; caso contrário, faça o check-in deles:
 # .python-version
 
 # pipenv
-#   According to pypa/pipenv#598, it is recommended to include Pipfile.lock in version control.
-#   However, in case of collaboration, if having platform-specific dependencies or dependencies
-#   having no cross-platform support, pipenv may install dependencies that don't work, or not
-#   install all needed dependencies.
+#   De acordo com pypa/pipenv#598, é recomendado incluir Pipfile.lock no controle de versão.
+#   Porém, em caso de colaboração, se houver dependências específicas de plataforma ou dependências
+#   sem suporte multiplataforma, o pipenv pode instalar dependências que não funcionam, ou não
+#   instalar todas as dependências necessárias.
 # Pipfile.lock
 
 # UV
-#   Similar to Pipfile.lock, it is generally recommended to include uv.lock in version control.
-#   This is especially recommended for binary packages to ensure reproducibility, and is more
-#   commonly ignored for libraries.
+#   Semelhante ao Pipfile.lock, geralmente é recomendado incluir uv.lock no controle de versão.
+#   Isso é especialmente recomendado para pacotes binários, para garantir reprodutibilidade, e é mais
+#   comumente ignorado para bibliotecas.
 # uv.lock
 
 # poetry
-#   Similar to Pipfile.lock, it is generally recommended to include poetry.lock in version control.
-#   This is especially recommended for binary packages to ensure reproducibility, and is more
-#   commonly ignored for libraries.
+#   Semelhante ao Pipfile.lock, geralmente é recomendado incluir poetry.lock no controle de versão.
+#   Isso é especialmente recomendado para pacotes binários, para garantir reprodutibilidade, e é mais
+#   comumente ignorado para bibliotecas.
 #   https://python-poetry.org/docs/basic-usage/#commit-your-poetrylock-file-to-version-control
 # poetry.lock
 # poetry.toml
 
 # pdm
-#   Similar to Pipfile.lock, it is generally recommended to include pdm.lock in version control.
-#   pdm recommends including project-wide configuration in pdm.toml, but excluding .pdm-python.
+#   Semelhante ao Pipfile.lock, geralmente é recomendado incluir pdm.lock no controle de versão.
+#   O pdm recomenda incluir a configuração do projeto em pdm.toml, mas excluir .pdm-python.
 #   https://pdm-project.org/en/latest/usage/project/#working-with-version-control
 # pdm.lock
 # pdm.toml
@@ -118,16 +118,16 @@ ipython_config.py
 .pdm-build/
 
 # pixi
-#   Similar to Pipfile.lock, it is generally recommended to include pixi.lock in version control.
+#   Semelhante ao Pipfile.lock, geralmente é recomendado incluir pixi.lock no controle de versão.
 # pixi.lock
-#   Pixi creates a virtual environment in the .pixi directory, just like venv module creates one
-#   in the .venv directory. It is recommended not to include this directory in version control.
+#   O Pixi cria um ambiente virtual no diretório .pixi, assim como o módulo venv cria um
+#   no diretório .venv. É recomendado não incluir esse diretório no controle de versão.
 .pixi
 
-# PEP 582; used by e.g. github.com/David-OConnor/pyflow and github.com/pdm-project/pdm
+# PEP 582; usado por ex.: github.com/David-OConnor/pyflow e github.com/pdm-project/pdm
 __pypackages__/
 
-# Celery stuff
+# Celery
 celerybeat-schedule
 celerybeat.pid
 
@@ -144,11 +144,10 @@ rabbitmq-data/
 # ActiveMQ
 activemq-data/
 
-# SageMath parsed files
+# Arquivos analisados pelo SageMath
 *.sage.py
 
-# Environments
-.env
+# Ambientes
 .envrc
 .venv
 env/
@@ -157,14 +156,14 @@ ENV/
 env.bak/
 venv.bak/
 
-# Spyder project settings
+# Configurações de projeto do Spyder
 .spyderproject
 .spyproject
 
-# Rope project settings
+# Configurações de projeto do Rope
 .ropeproject
 
-# mkdocs documentation
+# Documentação do mkdocs
 /site
 
 # mypy
@@ -172,41 +171,41 @@ venv.bak/
 .dmypy.json
 dmypy.json
 
-# Pyre type checker
+# Verificador de tipos Pyre
 .pyre/
 
-# pytype static type analyzer
+# Analisador estático de tipos pytype
 .pytype/
 
-# Cython debug symbols
+# Símbolos de depuração do Cython
 cython_debug/
 
 # PyCharm
-#   JetBrains specific template is maintained in a separate JetBrains.gitignore that can
-#   be found at https://github.com/github/gitignore/blob/main/Global/JetBrains.gitignore
-#   and can be added to the global gitignore or merged into this file.  For a more nuclear
-#   option (not recommended) you can uncomment the following to ignore the entire idea folder.
+#   O template específico do JetBrains é mantido em um arquivo JetBrains.gitignore separado que pode
+#   ser encontrado em https://github.com/github/gitignore/blob/main/Global/JetBrains.gitignore
+#   e pode ser adicionado ao gitignore global ou mesclado neste arquivo. Para uma opção mais radical
+#   (não recomendada), você pode descomentar o seguinte para ignorar a pasta idea inteira.
 # .idea/
 
 # Abstra
-#   Abstra is an AI-powered process automation framework.
-#   Ignore directories containing user credentials, local state, and settings.
-#   Learn more at https://abstra.io/docs
+#   Abstra é um framework de automação de processos com IA.
+#   Ignore diretórios contendo credenciais de usuário, estado local e configurações.
+#   Saiba mais em https://abstra.io/docs
 .abstra/
 
 # Visual Studio Code
-#   Visual Studio Code specific template is maintained in a separate VisualStudioCode.gitignore
-#   that can be found at https://github.com/github/gitignore/blob/main/Global/VisualStudioCode.gitignore
-#   and can be added to the global gitignore or merged into this file. However, if you prefer,
-#   you could uncomment the following to ignore the entire vscode folder
+#   O template específico do Visual Studio Code é mantido em um VisualStudioCode.gitignore separado
+#   que pode ser encontrado em https://github.com/github/gitignore/blob/main/Global/VisualStudioCode.gitignore
+#   e pode ser adicionado ao gitignore global ou mesclado neste arquivo. Porém, se você preferir,
+#   você pode descomentar o seguinte para ignorar a pasta vscode inteira
 # .vscode/
-# Temporary file for partial code execution
+# Arquivo temporário para execução parcial de código
 tempCodeRunnerFile.py
 
-# Ruff stuff:
+# Ruff:
 .ruff_cache/
 
-# PyPI configuration file
+# Arquivo de configuração do PyPI
 .pypirc
 
 # Marimo
@@ -217,5 +216,5 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 
-# Data
+# Savegame Primordial Soup
 genome*.*

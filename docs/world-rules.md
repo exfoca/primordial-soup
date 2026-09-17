@@ -30,7 +30,7 @@ Only consequences.
 
 ## 2. Population
 
-A new world starts with 50 critters per lineage. Each lineage has its own population ceiling.
+With the packaged baseline, a fresh world starts with 50 critters per lineage. The fresh-world population is NON_HOT configuration. Each lineage has its own population ceiling.
 
 Founders are placed randomly across the world. Every living critter has a stable ID, a lineage, a genome, HP, age, generation, position, neural state, and lifetime counters.
 
@@ -314,7 +314,7 @@ final agent row
 final genome
 ```
 
-The snapshot enters the recent-death archive, where it remains discoverable for 2000 simulation ticks. When the dead individual was the one currently being observed, the same snapshot is used by Inspection; there is no separate parallel snapshot.
+The snapshot enters the recent-death archive. With the packaged baseline, it remains discoverable for 2000 simulation ticks; `DEATH_MARKER_TTL_TICKS` is NON_HOT and checkpoint-relevant. When the dead individual was the one currently being observed, the same snapshot is used by Inspection; there is no separate parallel snapshot.
 
 Dead critters are then removed from agent records, genome pools, and stable-ID arrays in lockstep.
 

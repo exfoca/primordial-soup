@@ -137,8 +137,8 @@ def test_exit_has_precedence(monkeypatch):
     Contrato estrutural do dispatcher: Flow.EXIT interrompe a fila
     sem rollback; eventos posteriores na fila nao sao processados.
 
-    O gatilho de EXIT hoje e Enter com o modal confirm_exit aberto
-    (Patch 2). QUIT nao encerra direto mais: abre o mesmo modal.
+    O gatilho de EXIT e Enter com o modal confirm_exit aberto. QUIT nao
+    encerra diretamente: abre o mesmo modal.
     Este teste dispara EXIT pelo caminho canonico.
 
     Nota: com modal ativo, SPACE e engolido por _handle_modal_event

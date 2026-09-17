@@ -7,12 +7,13 @@ Chaves canonicas sao neutras de idioma (ex: "hud.tick_speed").
 Valores sao por idioma. Ingles e o default e o fallback.
 
 NAO traduzido aqui (deliberado):
-  - Chaves do savegame (sempre portugues; ver persistence.py).
-  - Cabecalhos do CSV e chaves de metrica (sempre portugues; ver
-    config.py).
+  - Identificadores canonicos de persistencia, que podem ter grafias
+    historicas em portugues ou ingles (ver persistence.py).
+  - Cabecalhos do CSV e chaves de metrica (identificadores canonicos;
+    ver config.py).
   - IDs de linhagem "R", "G", "B" (identificadores, nao exibicao).
   - Nomes de coluna do agente / constantes de indice (internos).
-  - Nomes de arquivo (genome_pool.pkl, _metricas.csv).
+  - Nomes de arquivo e templates de slot definidos pela camada de persistencia.
 
 Valores canonicos de config NAO sao alterados nem localizados
 internamente. Quando um valor canonico e exibido ao usuario, a
@@ -33,7 +34,9 @@ da simulacao e NAO e resetado por state.reset_counters().
 """
 
 from __future__ import annotations
+
 from . import state
+from .config_schema import get_field_spec
 
 TRANSLATIONS: dict[str, dict[str, str]] = {
     "en": {
@@ -70,7 +73,7 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "command.slot": "slot",
         "command.zones": "zones",
         "command.record": "record",
-        # --- Telemetry HUD: labels atomicos (Patch 2) ---
+        # --- Telemetry HUD: labels atomicos ---
         "hud.label.tick": "TICK",
         "hud.label.speed": "SPEED",
         "hud.label.zoom": "ZOOM",
@@ -106,7 +109,6 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "criterion.highest_hp": "highest hp",
         "criterion.lowest_hp": "lowest hp",
         "criterion.highest_generation": "highest generation",
-        "criterion.best_score": "best score",
         "lineage_filter.all": "all",
         "lineage_filter.R": "R",
         "lineage_filter.G": "G",
@@ -250,16 +252,8 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "log.inspection_no_match": "[inspection] no match for criterion={criterion} lineage={lineage}",
         "log.inspection_observe": "[inspection] observing {desc}",
         "log.heal_all": "[heal] {n} critters restored to full HP",
-        "log.mut": "[mut] {v}%",
-        "log.local_scale": "[local scale] {v}%",
-        "log.zone_hp_effect": "[zone hp effect] {v}",
-        "log.param_selected": "[param] {name} active (up/down to adjust)",
-        "log.param_name.mutation": "mutation rate",
-        "log.param_name.local_scale": "local scale",
-        "log.param_name.zone_hp_effect": "zone HP effect",
         "log.lang": "[lang] {v}",
         "log.load_not_found": "[load] {path} not found.",
-        "log.load_legacy_fallback": "[load] {slot_path} not found; falling back to legacy {legacy}.",
         "log.save_slot": "[slot] {slot}",
         "log.load_corrupted": "[load] {path} corrupted or unreadable ({e}). Ignoring.",
         "log.load_invalid_dict": "[load] {path} does not contain a valid save dictionary.",
@@ -318,7 +312,7 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "command.slot": "slot",
         "command.zones": "zonas",
         "command.record": "grava",
-        # --- Telemetry HUD: labels atomicos (Patch 2) ---
+        # --- Telemetry HUD: labels atomicos ---
         "hud.label.tick": "PASSO",
         "hud.label.speed": "VEL",
         "hud.label.zoom": "ZOOM",
@@ -354,7 +348,6 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "criterion.highest_hp": "maior hp",
         "criterion.lowest_hp": "menor hp",
         "criterion.highest_generation": "maior geração",
-        "criterion.best_score": "melhor score",
         "lineage_filter.all": "todas",
         "lineage_filter.R": "R",
         "lineage_filter.G": "G",
@@ -498,16 +491,8 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "log.inspection_no_match": "[inspecao] sem correspondencia para criterio={criterion} linhagem={lineage}",
         "log.inspection_observe": "[inspecao] observando {desc}",
         "log.heal_all": "[cura] {n} bichos restaurados ao HP cheio",
-        "log.mut": "[mut] {v}%",
-        "log.local_scale": "[escala local] {v}%",
-        "log.zone_hp_effect": "[efeito HP das zonas] {v}",
-        "log.param_selected": "[param] {name} ativo (↑/↓ para ajustar)",
-        "log.param_name.mutation": "taxa de mutacao",
-        "log.param_name.local_scale": "escala local",
-        "log.param_name.zone_hp_effect": "efeito HP das zonas",
         "log.lang": "[idioma] {v}",
         "log.load_not_found": "[load] {path} não encontrado.",
-        "log.load_legacy_fallback": "[load] {slot_path} não encontrado; usando o legado {legacy}.",
         "log.save_slot": "[slot] {slot}",
         "log.load_corrupted": "[load] {path} corrompido ou ilegível ({e}). Ignorando.",
         "log.load_invalid_dict": "[load] {path} não contém um dicionário de save válido.",
@@ -535,7 +520,14 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
 }
 
 DEFAULT_LANGUAGE = "en"
-AVAILABLE_LANGUAGES = tuple(TRANSLATIONS.keys())
+_LANGUAGE_CHOICES = get_field_spec("DEFAULT_LANGUAGE").constraints.choices
+if not isinstance(_LANGUAGE_CHOICES, tuple):
+    raise RuntimeError("DEFAULT_LANGUAGE deve declarar choices estaticos no schema.")
+AVAILABLE_LANGUAGES = _LANGUAGE_CHOICES
+if set(TRANSLATIONS) != set(AVAILABLE_LANGUAGES):
+    raise RuntimeError(
+        "TRANSLATIONS deve cobrir exatamente os idiomas declarados no schema."
+    )
 
 
 def t(key: str, **kwargs) -> str:

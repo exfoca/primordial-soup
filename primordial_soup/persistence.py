@@ -15,6 +15,11 @@ from . import layout
 from . import nest_geometry
 from . import state
 from . import i18n
+from .config_compatibility import (
+    checkpoint_non_hot_payload,
+    validate_checkpoint_non_hot_payload,
+)
+from .config_errors import ConfigError
 from .runtime_rules import RuntimeRules, validate_runtime_rules
 from .state import agents
 from .world import (
@@ -41,17 +46,12 @@ def metrics_path(slot: str | None = None) -> str:
     return cfg.METRICS_SLOT_TEMPLATE.format(slot=slot)
 
 
-# Compatibilidade de chaves
+# Identificadores canonicos do checkpoint
 #
-# O formato canonico do savegame usa chaves em portugues. `_read_key`
-# aceita a grafia em ingles como fallback (para arquivos legados ou
-# editados a mao), mas a chave canonica e sempre a portuguesa e DEVE
-# ser a escrita por `save()`.
-#
-# Nada neste modulo e traduzido em runtime. As chaves do savegame, o
-# cabecalho do CSV e os nomes de metrica sao identificadores canonicos
-# e DEVEM permanecer estaveis. So as mensagens de log impressas
-# durante save/load sao traduzidas (ver i18n.t("log.*")).
+# O formato corrente possui identificadores estaveis: alguns sao
+# historicamente portugueses e outros ingleses. Eles nao seguem o
+# idioma da UI. O loader v25 aceita somente a grafia canonica atual.
+# Apenas mensagens de log de save/load passam por i18n.
 
 
 # Sentinelas privadas do parser.
@@ -113,42 +113,15 @@ def _coerce_int(value):
 
 def _parse_int_field(
     record: dict,
-    pt_key: str,
-    en_key: str,
+    key: str,
     *,
-    default=_MISSING,
     minimum: int | None = None,
     maximum: int | None = None,
 ):
-    """Le, coage e valida um campo inteiro escalar do payload.
-
-    Retorna o int validado, ou `default` (que pode ser `_MISSING`), ou
-    `_INVALID`. Nunca levanta. O chamador so precisa comparar com
-    `_INVALID`.
-
-    Contrato:
-      - ausente (nenhum dos dois aliases): retorna `default`. Com
-        `default=_MISSING` (o padrao), um campo obrigatorio sem
-        chave cai em `_INVALID`.
-      - presente mas nao coerccivel para int: `_INVALID`. Usa
-        `_coerce_int`, que ja distingue `None`, `bool`, NaN/inf,
-        floats nao-integrais, strings nao-numericas.
-      - coerccivel mas fora de [minimum, maximum] (quando
-        fornecidos): `_INVALID`. Sem clamp.
-
-    Aliases PT/EN preservados via `_read_key_strict`: uma chave
-    presente com valor `None` e "presente", nao "ausente", e cai em
-    `_coerce_int(None) == _INVALID`. Distincao que o loader explora
-    em outros campos e que este helper mantem.
-    """
-    raw = _read_key(record, pt_key, en_key)
+    """Le, coage e valida um campo inteiro escalar obrigatorio."""
+    raw = record.get(key, _MISSING)
     if raw is _MISSING:
-        # Campo obrigatorio: ausencia e indistinguivel de invalidez
-        # no contrato do helper. Com default=_MISSING (o padrao),
-        # ausencia cai em _INVALID. Com default concreto, ausencia
-        # cai no default (caminho de campo opcional, hoje nao usado
-        # no loader v11 estrito).
-        return _INVALID if default is _MISSING else default
+        return _INVALID
     value = _coerce_int(raw)
     if value is _INVALID:
         return _INVALID
@@ -184,17 +157,15 @@ def _coerce_float(value):
 
 def _parse_float_field(
     record: dict,
-    pt_key: str,
-    en_key: str,
+    key: str,
     *,
-    default=_MISSING,
     minimum: float | None = None,
     maximum: float | None = None,
 ):
-    """Le, coage e valida um float escalar sem clamp/arredondamento."""
-    raw = _read_key(record, pt_key, en_key)
+    """Le, coage e valida um float escalar obrigatorio."""
+    raw = record.get(key, _MISSING)
     if raw is _MISSING:
-        return _INVALID if default is _MISSING else default
+        return _INVALID
     value = _coerce_float(raw)
     if value is _INVALID:
         return _INVALID
@@ -205,26 +176,10 @@ def _parse_float_field(
     return value
 
 
-def _parse_choice_field(
-    record: dict,
-    pt_key: str,
-    en_key: str,
-    *,
-    allowed,
-    default=_MISSING,
-):
-    """Le uma string canonica pertencente estritamente a `allowed`.
-
-    Nao normaliza, nao coage e nao fabrica fallback. Campos ausentes
-    obrigatorios e qualquer valor nao-str/fora do dominio retornam
-    `_INVALID`.
-    """
-    raw = _read_key(record, pt_key, en_key)
-    if raw is _MISSING:
-        return _INVALID if default is _MISSING else default
-    if type(raw) is not str:
-        return _INVALID
-    if raw not in allowed:
+def _parse_string_field(record: dict, key: str):
+    """Le uma string obrigatoria do payload sem normalizacao."""
+    raw = record.get(key, _MISSING)
+    if raw is _MISSING or type(raw) is not str:
         return _INVALID
     return raw
 
@@ -295,75 +250,22 @@ def _coerce_int_array(value, ndim: int | None = None):
     return arr
 
 
-def _read_key(record: dict, pt_key: str, en_key: str, default=_MISSING):
-    """Le uma chave aceitando PT (canonica) e EN (fallback legado).
-
-    Retorna o valor quando ao menos uma das grafias esta no dict —
-    MESMO se o valor for None. Retorna `default` quando nenhuma esta
-    presente. O default padrao e `_MISSING`, que preserva a distincao
-    entre "ausente" e "presente com valor None":
-
-        ausente              -> retorna `default` (por padrao _MISSING)
-        presente com None    -> retorna None
-        presente com valor X -> retorna X
-
-    Saves canonicos sao sempre escritos em portugues (ver `save`), mas
-    aceitamos a grafia em ingles no load para saves legados
-    continuarem carregando. Codigo novo deve sempre passar a chave PT
-    primeiro.
-
-    Chamadores que precisam distinguir ausente de presente-None
-    comparam o retorno com `_MISSING`. Chamadores que so querem um
-    default simples passam `default=<valor>`. Chamadores que precisam
-    aceitar `None` como valor legitimo (ex: `zonas`) passam
-    `default=None` explicitamente.
-    """
-    if pt_key in record:
-        return record[pt_key]
-    if en_key in record:
-        return record[en_key]
-    return default
-
-
-# Migracao de formato
+# Validacao do formato corrente
 
 
 def _validate_save_compatibility(data: dict) -> dict | None:
-    """Valida compatibilidade estrita com a versao atual do savegame.
+    """Valida os metadados estritos do contrato atual de checkpoint.
 
-    NAO migra. NAO normaliza. NAO reconstroi. Sob o contrato v11
-    estrito, esta funcao apenas decide se o payload pode ou nao ser
-    carregado; qualquer payload compativel ja e byte-a-byte o
-    contrato atual.
+    Nao migra, normaliza nem reconstroi estado. A versao do save, a
+    familia estrutural do cerebro, o layout do genoma e o payload
+    NON-HOT de compatibilidade devem coincidir exatamente com este
+    processo. Quando compativel, retorna o mesmo dict; caso contrario,
+    retorna None. Esta funcao nao toca em `state`.
 
-    Recebe o dict cru do pickle e retorna o mesmo dict quando
-    compativel, ou None quando irrecuperavel.
-
-    Regras v11:
-      - `versao` ausente       -> rejeita.
-      - `versao` invalida      -> rejeita.
-      - `versao` != atual      -> rejeita (nem mais novo, nem mais
-        antigo; politica P1: mudancas semanticas em topologia,
-        recombinacao, mutacao ou selecao nao podem ser migradas sem
-        sintetizar estado que nunca existiu).
-      - `arquitetura` ausente  -> rejeita.
-      - `arquitetura` != atual -> rejeita.
-      - `genoma` ausente       -> rejeita.
-      - `genoma` != atual      -> rejeita.
-
-    Aceita chaves em portugues (canonico) e em ingles (grafia
-    historica), mas ambas precisam estar presentes E corretas. A
-    tolerancia de idioma e apenas lexical; a semantica e estrita.
-
-    NOTA: sob A1, `nascimentos` / `mortes` / `zonas` / `zonas_ativas`
-    / `efeito_hp_zonas` / `reproduction_*` / `rng_*` passaram a ser
-    campos obrigatorios do schema v11. Eles nao sao validados aqui
-    (a funcao so cuida dos metadados de versao); cada um tem sua
-    checagem em load(). Esta funcao apenas garante que o payload se
-    identifica como exatamente v11 antes que load() comece a tocar
-    no restante.
+    O loader v25 aceita somente os identificadores canonicos atuais,
+    inclusive para os metadados historicos.
     """
-    raw_version = _read_key(data, "versao", "version")
+    raw_version = data.get("versao", _MISSING)
     if raw_version is _MISSING:
         # Metadado obrigatorio ausente: rejeita. Usa None para nao
         # deixar _MISSING vazar para a interpolacao da mensagem.
@@ -385,7 +287,7 @@ def _validate_save_compatibility(data: dict) -> dict | None:
 
     # Version == SAVE_VERSION a partir daqui.
 
-    raw_arch = _read_key(data, "arquitetura", "architecture")
+    raw_arch = data.get("arquitetura", _MISSING)
     if raw_arch is _MISSING:
         print(
             i18n.t(
@@ -405,7 +307,7 @@ def _validate_save_compatibility(data: dict) -> dict | None:
         )
         return None
 
-    raw_genome = _read_key(data, "genoma", "genome")
+    raw_genome = data.get("genoma", _MISSING)
     if raw_genome is _MISSING:
         print(
             i18n.t(
@@ -423,6 +325,18 @@ def _validate_save_compatibility(data: dict) -> dict | None:
                 cur=cfg.GENOME_VERSION,
             )
         )
+        return None
+
+    if "config_non_hot" not in data:
+        print("[load] config_non_hot ausente; checkpoint atual invalido.")
+        return None
+    try:
+        validate_checkpoint_non_hot_payload(
+            data["config_non_hot"],
+            cfg.CONFIG_SNAPSHOT,
+        )
+    except ConfigError as exc:
+        print(f"[load] incompatible NON-HOT configuration: {exc}")
         return None
 
     return data
@@ -720,9 +634,7 @@ def _zone_centers_payload() -> list[list[int]] | None:
 def _parse_zone_centers(data) -> tuple[tuple[int, int], ...] | object:
     """Parser estrito de "centros_zonas" para o load v22.
 
-    Aceita chave canonica "centros_zonas"; alias EN "zone_centers"
-    permitido pela uniformidade do _read_key, mas save sempre escreve
-    a canonica.
+    Aceita somente a chave canonica "centros_zonas" do schema v25.
 
     Para NUMBER_OF_ZONES <= 0: aceita somente []; devolve ().
     Caso normal: aceita list com exatamente NUMBER_OF_ZONES
@@ -731,7 +643,7 @@ def _parse_zone_centers(data) -> tuple[tuple[int, int], ...] | object:
     Rejeita bool, float, np.int64, str, None, bounds fora do mundo,
     sub-listas com len != 2. Retorna _INVALID em qualquer falha.
     """
-    raw = _read_key(data, "centros_zonas", "zone_centers")
+    raw = data.get("centros_zonas", _MISSING)
     if raw is _MISSING:
         return _INVALID
 
@@ -985,7 +897,7 @@ def _parse_recent_deaths(
 
 
 def save(path: str | None = None) -> bool:
-    """Escreve o payload no formato canonico em portugues.
+    """Escreve o payload no formato canônico do checkpoint.
 
     Retorna True se o .pkl foi gravado com sucesso; False caso
     contrario. O CSV de metricas e sidecar analitico: falha nele
@@ -1002,30 +914,34 @@ def save(path: str | None = None) -> bool:
     metrics_path() do mesmo slot: os dois templates sao independentes,
     nao derivamos um do outro.
 
-    As chaves do savegame sao sempre as canonicas em portugues.
-    Strings de exibicao (HUD, charts) sao traduzidas em render time e
-    nunca tocam o savegame.
+    Os identificadores do checkpoint são canônicos e estáveis; alguns são
+    historicamente em português e outros em inglês. Strings de exibição
+    (HUD e gráficos) são traduzidas apenas na apresentação e nunca alteram
+    o formato persistido.
 
-    Sob o contrato v11, todos os campos do payload sao obrigatorios.
-    Ausencia de qualquer um deles e rejeicao no load, nao fallback:
-    um checkpoint so e continuacao exata se todo o estado de
-    continuacao estiver presente. Os campos cuja ausencia era tratada
-    como estado legitimo em versoes anteriores ("zonas_ativas",
-    "nascimentos", "mortes", "efeito_hp_zonas") passaram a ser
-    obrigatorios em v11. Ver _validate_save_compatibility e load().
+    No contrato estrito atual, campos obrigatórios ausentes são rejeitados
+    no load, sem fallback ou síntese de estado. Desde a v24,
+    `config_non_hot` é materializado a partir do snapshot efetivamente usado
+    pelo processo. Ver _validate_save_compatibility e load().
     """
     if path is None:
         path = save_path()
 
+    try:
+        config_non_hot_payload = checkpoint_non_hot_payload(cfg.CONFIG_SNAPSHOT)
+    except ConfigError as exc:
+        print(f"[save] invalid NON-HOT configuration: {exc}")
+        return False
+
     # Geometria de zonas: validada ANTES de qualquer escrita.
-    # Sob v23, mask e centers continuam um contrato unico; uma divergencia
+    # No checkpoint atual, mask e centers continuam um contrato unico; uma divergencia
     # invalida o checkpoint, e o loader o rejeitaria de qualquer forma.
     zone_centers_payload = _zone_centers_payload()
     if zone_centers_payload is None:
         return False
 
     # Geometria de ninhos: validada ANTES de qualquer escrita.
-    # Um checkpoint sem geometria nao e v23 valido; o loader o
+    # Um checkpoint sem geometria nao e valido no contrato atual; o loader o
     # rejeitaria. Falhar aqui evita produzir um arquivo que o proprio
     # codigo recusaria.
     try:
@@ -1055,6 +971,7 @@ def save(path: str | None = None) -> bool:
         "versao": cfg.SAVE_VERSION,
         "arquitetura": cfg.ARCHITECTURE_VERSION,
         "genoma": cfg.GENOME_VERSION,
+        "config_non_hot": config_non_hot_payload,
         "mutation": state.runtime_rules.mutation_rate,
         "mutategen": state.runtime_rules.mutated_genes,
         # --- v17/v18: operadores geneticos runtime -----------------
@@ -1109,14 +1026,12 @@ def save(path: str | None = None) -> bool:
         "rng_python_state": random.getstate(),
         "rng_numpy_state": np.random.get_state(),
         # --- fim v11 ----------------------------------------------
-        "modificadores_ambientais": cfg.ENVIRONMENTAL_MODIFIERS,
         "zonas": state.zones,
         "centros_zonas": zone_centers_payload,
         "zonas_ativas": state.zones_active,
-        # Efeito de HP das zonas em runtime. Opcional no load
-        # (default cfg.HP_EFFECT_IN_ZONE); ausente em saves
-        # pre-chave, estado legitimo. NAO faz parte do contrato de
-        # SAVE_VERSION.
+        # O checkpoint armazena o zone_hp_effect ativo. Na versao de
+        # save estrita atual, a chave e restaurada do proprio checkpoint,
+        # nao do baseline declarativo de um mundo fresh.
         "efeito_hp_zonas": state.runtime_rules.zone_hp_effect,
         # v21: nests integra a geometria persistente do mundo.
         # Dict {lineage_id: [x, y]} na ordem canonica. Sem raio,
@@ -1159,15 +1074,12 @@ def save(path: str | None = None) -> bool:
         "linhagens": [
             {
                 "id": ag["id"],
-                "cor": ag["color"],
                 # pool e ndarray [N, GENOME_SIZE] float32 em
-                # memoria, mas o savegame mantem o formato historico
-                # list[list[float]]: .tolist() produz os mesmos bytes
-                # do caminho antigo com lista de arrays. Saves antigos
-                # carregam sem mudanca.
+                # memoria; a fronteira de persistencia materializa
+                # list[list[float]] como representacao canonica v25.
                 "pools": ag["pool"].tolist(),
-                # agents e ndarray [N, AGENT_COLUMNS]; o savegame
-                # mantem o formato historico list[list[float]].
+                # `agents` e um ndarray [N, AGENT_COLUMNS]; o checkpoint
+                # materializa list[list[float]].
                 "agentes": ag["agents"].tolist(),
                 # Identidade estavel. Chave canonica "ids".
                 "ids": ag["ids"].tolist(),
@@ -1232,19 +1144,15 @@ def save(path: str | None = None) -> bool:
 def load(path: str | None = None) -> bool:
     """Carrega do slot ativo (ou de um path explicito).
 
-    Se `path` for None, tenta o arquivo do slot ativo primeiro. Se
-    nao existir E o slot ativo for o default, tenta o PATH legado
-    single-file (cfg.GENOME_FILE) como fallback, com aviso impresso.
-    E fallback de NOME DE ARQUIVO, nao promessa de compatibilidade de
-    formato: v23 rejeita qualquer save com `versao` abaixo de
-    SAVE_VERSION (politica P1), entao um arquivo legado encontrado
-    sera rejeitado no check de versao, nao carregado em silencio. O
-    fallback e limitado ao slot default.
+    Se `path` for None, resolve exclusivamente o arquivo do slot ativo.
+    Nenhum nome historico e descoberto implicitamente. Um caminho
+    explicito continua podendo apontar para qualquer filename.
 
-    Contrato v23 estrito: um save valido contem exatamente
-    cfg.TOTAL_LINEAGES linhagens, cada uma com tres arrays paralelos
-    em lockstep, todos os metadados de versao exatamente iguais aos
-    atuais, todos os escalares de estado obrigatorios, zona valida
+    Contrato v25 estrito: um save valido contem `config_non_hot`
+    compativel com cfg.CONFIG_SNAPSHOT, exatamente cfg.TOTAL_LINEAGES
+    linhagens, cada uma com tres arrays paralelos em lockstep, todos os
+    metadados de versao exatamente iguais aos atuais, todos os escalares
+    de estado obrigatorios, zona valida
     com shape derivado do mundo atual, geometria de ninhos valida
     (exatamente um centro por linhagem, sem interseccao com zonas e
     sem sobreposicao entre discos), toggle de zonas obrigatorio,
@@ -1287,16 +1195,6 @@ def load(path: str | None = None) -> bool:
     """
     if path is None:
         path = save_path()
-        if not os.path.exists(path) and state.active_save_slot == cfg.DEFAULT_SAVE_SLOT:
-            if os.path.exists(cfg.GENOME_FILE):
-                print(
-                    i18n.t(
-                        "log.load_legacy_fallback",
-                        slot_path=path,
-                        legacy=cfg.GENOME_FILE,
-                    )
-                )
-                path = cfg.GENOME_FILE
 
     if not os.path.exists(path):
         print(i18n.t("log.load_not_found", path=path))
@@ -1332,9 +1230,6 @@ def load(path: str | None = None) -> bool:
     parsed_reproduction_interval = _parse_int_field(
         data,
         "reproduction_interval",
-        "reproduction_interval",
-        minimum=cfg.MIN_REPRODUCTION_INTERVAL,
-        maximum=cfg.MAX_REPRODUCTION_INTERVAL,
     )
     if parsed_reproduction_interval is _INVALID:
         print(
@@ -1350,16 +1245,14 @@ def load(path: str | None = None) -> bool:
     # scheduler for conhecida. Os defaults de bootstrap (cooldown=0,
     # turn=0) NAO sao usados aqui; usá-los seria inventar estado que
     # o save nao contem.
-    # Obrigatorios: default=_MISSING faz chave ausente cair em
-    # _INVALID, indistinguivel de valor corrompido no contrato do
-    # helper. Mensagem unica cobre os dois casos.
+    # Campos obrigatórios: chave ausente produz _INVALID, assim como um
+    # valor inválido. A mensagem única abaixo cobre os dois casos.
     #
     # v13: o range maximo do cooldown vem do reproduction_interval
-    # salvo, nao de cfg.REPRODUCTION_INTERVAL. Um cooldown > interval
-    # salvo e rejeitado.
+    # salvo no checkpoint, nao do baseline declarativo fresh atual.
+    # Um cooldown > interval salvo e rejeitado.
     parsed_reproduction_cooldown = _parse_int_field(
         data,
-        "reproduction_cooldown",
         "reproduction_cooldown",
         minimum=0,
         maximum=parsed_reproduction_interval,
@@ -1374,7 +1267,6 @@ def load(path: str | None = None) -> bool:
     parsed_reproduction_turn = _parse_int_field(
         data,
         "reproduction_turn",
-        "reproduction_turn",
         minimum=0,
         maximum=cfg.TOTAL_LINEAGES - 1,
     )
@@ -1388,7 +1280,7 @@ def load(path: str | None = None) -> bool:
     # np.random) NAO sao tocados aqui: a restauracao acontece so no
     # COMMIT, depois de toda validacao ter passado. Isso preserva o
     # invariante "load rejeitado nao altera RNG global".
-    raw_rng_py = _read_key(data, "rng_python_state", "rng_python_state")
+    raw_rng_py = data.get("rng_python_state", _MISSING)
     if raw_rng_py is _MISSING:
         print("[load] rng_python_state ausente; save v11 invalido.")
         return False
@@ -1400,7 +1292,7 @@ def load(path: str | None = None) -> bool:
         return False
     parsed_rng_py = raw_rng_py
 
-    raw_rng_np = _read_key(data, "rng_numpy_state", "rng_numpy_state")
+    raw_rng_np = data.get("rng_numpy_state", _MISSING)
     if raw_rng_np is _MISSING:
         print("[load] rng_numpy_state ausente; save v11 invalido.")
         return False
@@ -1414,15 +1306,12 @@ def load(path: str | None = None) -> bool:
 
     # --- Campos escalares (parseados para locais) ---
     #
-    # Politica (centralizada em _parse_int_field):
-    #   ausente        -> default (decidido por cada campo)
-    #   presente None  -> _coerce_int(None) == _INVALID -> rejeita
-    #   presente X     -> coerccao lossless + range check
+    # Politica (centralizada nos helpers de parse):
+    #   ausente        -> _INVALID
+    #   presente None  -> _INVALID
+    #   presente X     -> coercao lossless + bounds estruturais
     #
-    # Campos com default historico usam um literal ou o valor atual
-    # de `state`. Campos obrigatorios usam default=_MISSING (o
-    # proprio sentinel): chave ausente e rejeitada como se invalida
-    # fosse, o que e o contrato certo para v11.
+    # No schema corrente todos esses campos sao obrigatorios.
     #
     # Mensagens: cada campo tem um log dedicado. Os dois
     # obrigatorios (reproduction_*) usam "ausente ou invalido"
@@ -1430,11 +1319,9 @@ def load(path: str | None = None) -> bool:
     # de "presente mas corrompido" exigiria ampliar o protocolo do
     # helper sem ganho diagnostico proporcional.
     # --- v17: modos de operadores geneticos runtime ---------------
-    parsed_crossover_mode = _parse_choice_field(
+    parsed_crossover_mode = _parse_string_field(
         data,
         "crossover_mode",
-        "crossover_mode",
-        allowed=cfg.CROSSOVER_MODES,
     )
     if parsed_crossover_mode is _INVALID:
         print("[load] crossover_mode ausente ou invalido; save invalido.")
@@ -1444,9 +1331,6 @@ def load(path: str | None = None) -> bool:
     parsed_crossover_probability = _parse_float_field(
         data,
         "crossover_probability",
-        "crossover_probability",
-        minimum=cfg.MIN_CROSSOVER_PROBABILITY,
-        maximum=cfg.MAX_CROSSOVER_PROBABILITY,
     )
     if parsed_crossover_probability is _INVALID:
         print(
@@ -1458,19 +1342,14 @@ def load(path: str | None = None) -> bool:
     parsed_block_size = _parse_int_field(
         data,
         "block_size",
-        "block_size",
-        minimum=cfg.MIN_BLOCK_SIZE,
-        maximum=cfg.MAX_BLOCK_SIZE,
     )
     if parsed_block_size is _INVALID:
         print("[load] block_size ausente ou invalido; save invalido.")
         return False
 
-    parsed_mutation_mode = _parse_choice_field(
+    parsed_mutation_mode = _parse_string_field(
         data,
         "mutation_mode",
-        "mutation_mode",
-        allowed=cfg.MUTATION_MODES,
     )
     if parsed_mutation_mode is _INVALID:
         print("[load] mutation_mode ausente ou invalido; save invalido.")
@@ -1479,9 +1358,6 @@ def load(path: str | None = None) -> bool:
     parsed_mutation = _parse_int_field(
         data,
         "mutation",
-        "mutation",
-        minimum=cfg.MIN_MUTATION_RATE,
-        maximum=cfg.MAX_MUTATION_RATE,
     )
     if parsed_mutation is _INVALID:
         print("[load] mutation ausente ou invalido; save invalido.")
@@ -1490,9 +1366,6 @@ def load(path: str | None = None) -> bool:
     parsed_mutated_genes = _parse_int_field(
         data,
         "mutategen",
-        "mutategen",
-        minimum=cfg.MIN_MUTATED_GENES,
-        maximum=cfg.MAX_MUTATED_GENES,
     )
     if parsed_mutated_genes is _INVALID:
         print("[load] mutategen ausente ou invalido; save invalido.")
@@ -1501,9 +1374,6 @@ def load(path: str | None = None) -> bool:
     parsed_local_scale = _parse_int_field(
         data,
         "escala_local",
-        "local_scale",
-        minimum=cfg.MIN_LOCAL_SCALE_FRACTION,
-        maximum=cfg.MAX_LOCAL_SCALE_FRACTION,
     )
     if parsed_local_scale is _INVALID:
         print("[load] escala_local ausente ou invalida; save invalido.")
@@ -1513,9 +1383,6 @@ def load(path: str | None = None) -> bool:
     parsed_local_scale_sigma = _parse_float_field(
         data,
         "local_scale_sigma",
-        "local_scale_sigma",
-        minimum=cfg.MIN_MUTATION_SIGMA,
-        maximum=cfg.MAX_MUTATION_SIGMA,
     )
     if parsed_local_scale_sigma is _INVALID:
         print("[load] local_scale_sigma ausente ou invalido; save invalido.")
@@ -1524,9 +1391,6 @@ def load(path: str | None = None) -> bool:
     parsed_global_probability = _parse_int_field(
         data,
         "global_probability",
-        "global_probability",
-        minimum=cfg.MIN_GLOBAL_PROBABILITY,
-        maximum=cfg.MAX_GLOBAL_PROBABILITY,
     )
     if parsed_global_probability is _INVALID:
         print("[load] global_probability ausente ou invalido; save invalido.")
@@ -1535,9 +1399,6 @@ def load(path: str | None = None) -> bool:
     parsed_global_scale_fraction = _parse_int_field(
         data,
         "global_scale_fraction",
-        "global_scale_fraction",
-        minimum=cfg.MIN_GLOBAL_SCALE_FRACTION,
-        maximum=cfg.MAX_GLOBAL_SCALE_FRACTION,
     )
     if parsed_global_scale_fraction is _INVALID:
         print("[load] global_scale_fraction ausente ou invalido; save invalido.")
@@ -1546,9 +1407,6 @@ def load(path: str | None = None) -> bool:
     parsed_global_scale_sigma = _parse_float_field(
         data,
         "global_scale_sigma",
-        "global_scale_sigma",
-        minimum=cfg.MIN_MUTATION_SIGMA,
-        maximum=cfg.MAX_MUTATION_SIGMA,
     )
     if parsed_global_scale_sigma is _INVALID:
         print("[load] global_scale_sigma ausente ou invalido; save invalido.")
@@ -1558,9 +1416,6 @@ def load(path: str | None = None) -> bool:
     parsed_low_hp_threshold = _parse_int_field(
         data,
         "low_hp_threshold",
-        "low_hp_threshold",
-        minimum=cfg.MIN_LOW_HP_THRESHOLD,
-        maximum=cfg.MAX_LOW_HP_THRESHOLD,
     )
     if parsed_low_hp_threshold is _INVALID:
         print("[load] low_hp_threshold ausente ou invalido; save invalido.")
@@ -1568,7 +1423,6 @@ def load(path: str | None = None) -> bool:
 
     parsed_stay_still_impulse = _parse_float_field(
         data,
-        "stay_still_impulse",
         "stay_still_impulse",
     )
     if parsed_stay_still_impulse is _INVALID:
@@ -1578,9 +1432,6 @@ def load(path: str | None = None) -> bool:
     parsed_death_hp_threshold = _parse_int_field(
         data,
         "death_hp_threshold",
-        "death_hp_threshold",
-        minimum=cfg.MIN_DEATH_HP_THRESHOLD,
-        maximum=cfg.MAX_DEATH_HP_THRESHOLD,
     )
     if parsed_death_hp_threshold is _INVALID:
         print("[load] death_hp_threshold ausente ou invalido; save invalido.")
@@ -1588,7 +1439,6 @@ def load(path: str | None = None) -> bool:
 
     parsed_tick = _parse_int_field(
         data,
-        "tick",
         "tick",
         minimum=0,
     )
@@ -1599,7 +1449,6 @@ def load(path: str | None = None) -> bool:
     parsed_births = _parse_int_field(
         data,
         "nascimentos",
-        "births",
         minimum=0,
     )
     if parsed_births is _INVALID:
@@ -1609,7 +1458,6 @@ def load(path: str | None = None) -> bool:
     parsed_deaths = _parse_int_field(
         data,
         "mortes",
-        "deaths",
         minimum=0,
     )
     if parsed_deaths is _INVALID:
@@ -1626,7 +1474,7 @@ def load(path: str | None = None) -> bool:
     # load rejeitado nunca consome RNG, e um load aceito restaura
     # exatamente a mascara salva. A propriedade "checkpoint =
     # continuacao exata" depende disso.
-    raw_zones = _read_key(data, "zonas", "zones")
+    raw_zones = data.get("zonas", _MISSING)
     if raw_zones is _MISSING:
         print("[load] zonas ausente; save invalido.")
         return False
@@ -1711,7 +1559,7 @@ def load(path: str | None = None) -> bool:
     # delegada a _validate_nest_centers, a MESMA autoridade usada por
     # save(). load NUNCA regenera ninhos: payload incompleto ou
     # invalido e rejeitado.
-    raw_nests = _read_key(data, "nests", "nests")
+    raw_nests = data.get("nests", _MISSING)
     if raw_nests is _MISSING:
         print("[load] nests ausente; save invalido.")
         return False
@@ -1751,7 +1599,7 @@ def load(path: str | None = None) -> bool:
     #
     # Ausencia e rejeicao. Saves pre-toggle nao existem mais no
     # contrato v11 (que rejeita versoes anteriores).
-    raw_zones_active = _read_key(data, "zonas_ativas", "zones_active")
+    raw_zones_active = data.get("zonas_ativas", _MISSING)
     if raw_zones_active is _MISSING:
         print("[load] zonas_ativas ausente; save invalido.")
         return False
@@ -1768,25 +1616,15 @@ def load(path: str | None = None) -> bool:
     parsed_zone_hp_effect = _parse_int_field(
         data,
         "efeito_hp_zonas",
-        "zone_hp_effect",
-        minimum=cfg.MIN_ZONE_HP_EFFECT,
-        maximum=cfg.MAX_ZONE_HP_EFFECT,
     )
     if parsed_zone_hp_effect is _INVALID:
         print("[load] efeito_hp_zonas ausente ou invalido; save invalido.")
         return False
 
     # --- v12: regras ecologicas runtime ---------------------------
-    # PT e EN coincidem nesses nomes tecnicos; passar a mesma chave
-    # nos dois argumentos e aceitavel porque _read_key so consulta o
-    # segundo alias se o primeiro estiver ausente. Nao alteramos o
-    # helper por isso.
     parsed_base_decay = _parse_int_field(
         data,
         "base_decay_per_tick",
-        "base_decay_per_tick",
-        minimum=cfg.MIN_BASE_DECAY_PER_TICK,
-        maximum=cfg.MAX_BASE_DECAY_PER_TICK,
     )
     if parsed_base_decay is _INVALID:
         print("[load] base_decay_per_tick ausente ou invalido; save invalido.")
@@ -1795,9 +1633,6 @@ def load(path: str | None = None) -> bool:
     parsed_predation_transfer = _parse_int_field(
         data,
         "predation_transfer",
-        "predation_transfer",
-        minimum=cfg.MIN_PREDATION_TRANSFER,
-        maximum=cfg.MAX_PREDATION_TRANSFER,
     )
     if parsed_predation_transfer is _INVALID:
         print(
@@ -1809,9 +1644,6 @@ def load(path: str | None = None) -> bool:
     parsed_overcrowding_damage = _parse_int_field(
         data,
         "damage_per_own_overcrowding",
-        "damage_per_own_overcrowding",
-        minimum=cfg.MIN_DAMAGE_PER_OWN_OVERCROWDING,
-        maximum=cfg.MAX_DAMAGE_PER_OWN_OVERCROWDING,
     )
     if parsed_overcrowding_damage is _INVALID:
         print(
@@ -1821,15 +1653,9 @@ def load(path: str | None = None) -> bool:
         return False
 
     # --- v13: regras reprodutivas runtime ------------------------
-    # PT e EN coincidem nesses nomes tecnicos; passar a mesma chave
-    # nos dois argumentos e aceitavel porque _read_key so consulta o
-    # segundo alias se o primeiro estiver ausente.
     parsed_reproduction_min_age = _parse_int_field(
         data,
         "reproduction_min_age",
-        "reproduction_min_age",
-        minimum=cfg.MIN_REPRODUCTION_MIN_AGE,
-        maximum=cfg.MAX_REPRODUCTION_MIN_AGE,
     )
     if parsed_reproduction_min_age is _INVALID:
         print(
@@ -1841,9 +1667,6 @@ def load(path: str | None = None) -> bool:
     parsed_reproduction_hp_gate = _parse_int_field(
         data,
         "reproduction_hp_gate",
-        "reproduction_hp_gate",
-        minimum=cfg.MIN_REPRODUCTION_HP_GATE,
-        maximum=cfg.MAX_REPRODUCTION_HP_GATE,
     )
     if parsed_reproduction_hp_gate is _INVALID:
         print(
@@ -1855,9 +1678,6 @@ def load(path: str | None = None) -> bool:
     parsed_reproduction_min_encounters = _parse_int_field(
         data,
         "reproduction_min_encounters",
-        "reproduction_min_encounters",
-        minimum=cfg.MIN_REPRODUCTION_MIN_ENCOUNTERS,
-        maximum=cfg.MAX_REPRODUCTION_MIN_ENCOUNTERS,
     )
     if parsed_reproduction_min_encounters is _INVALID:
         print(
@@ -1869,9 +1689,6 @@ def load(path: str | None = None) -> bool:
     parsed_reproduction_parent_hp_bonus = _parse_int_field(
         data,
         "reproduction_parent_hp_bonus",
-        "reproduction_parent_hp_bonus",
-        minimum=cfg.MIN_REPRODUCTION_PARENT_HP_BONUS,
-        maximum=cfg.MAX_REPRODUCTION_PARENT_HP_BONUS,
     )
     if parsed_reproduction_parent_hp_bonus is _INVALID:
         print(
@@ -1881,11 +1698,9 @@ def load(path: str | None = None) -> bool:
         return False
 
     # --- v15: criterio de selecao runtime ------------------------
-    parsed_reproduction_criterion = _parse_choice_field(
+    parsed_reproduction_criterion = _parse_string_field(
         data,
         "reproduction_criterion",
-        "reproduction_criterion",
-        allowed=cfg.REPRODUCTION_CRITERIA,
     )
     if parsed_reproduction_criterion is _INVALID:
         print(
@@ -1898,9 +1713,6 @@ def load(path: str | None = None) -> bool:
     parsed_reproduction_pool_fraction = _parse_float_field(
         data,
         "reproduction_pool_fraction",
-        "reproduction_pool_fraction",
-        minimum=cfg.MIN_REPRODUCTION_POOL_FRACTION,
-        maximum=cfg.MAX_REPRODUCTION_POOL_FRACTION,
     )
     if parsed_reproduction_pool_fraction is _INVALID:
         print(
@@ -1912,9 +1724,6 @@ def load(path: str | None = None) -> bool:
     parsed_reproduction_attempts_divisor = _parse_int_field(
         data,
         "reproduction_attempts_divisor",
-        "reproduction_attempts_divisor",
-        minimum=cfg.MIN_REPRODUCTION_ATTEMPTS_DIVISOR,
-        maximum=cfg.MAX_REPRODUCTION_ATTEMPTS_DIVISOR,
     )
     if parsed_reproduction_attempts_divisor is _INVALID:
         print(
@@ -1927,9 +1736,6 @@ def load(path: str | None = None) -> bool:
     parsed_reproduction_min_score = _parse_float_field(
         data,
         "reproduction_min_score",
-        "reproduction_min_score",
-        minimum=cfg.MIN_REPRODUCTION_MIN_SCORE,
-        maximum=cfg.MAX_REPRODUCTION_MIN_SCORE,
     )
     if parsed_reproduction_min_score is _INVALID:
         print("[load] reproduction_min_score ausente ou invalido; save invalido.")
@@ -1945,9 +1751,6 @@ def load(path: str | None = None) -> bool:
         parsed = _parse_float_field(
             data,
             field_name,
-            field_name,
-            minimum=cfg.MIN_SELECTION_WEIGHT,
-            maximum=cfg.MAX_SELECTION_WEIGHT,
         )
         if parsed is _INVALID:
             print(f"[load] {field_name} ausente ou invalido; save invalido.")
@@ -2003,7 +1806,7 @@ def load(path: str | None = None) -> bool:
         return False
 
     # --- Linhagens (validacao estrutural, tudo para `loaded`) ---
-    lineages = _read_key(data, "linhagens", "lineages")
+    lineages = data.get("linhagens", _MISSING)
 
     if not isinstance(lineages, list):
         print(
@@ -2023,7 +1826,7 @@ def load(path: str | None = None) -> bool:
         return False
 
     # proximo_id e obrigatorio em v11.
-    raw_next_id = _read_key(data, "proximo_id", "proximo_id")
+    raw_next_id = data.get("proximo_id", _MISSING)
     if raw_next_id is _MISSING or raw_next_id is None:
         print("[load] proximo_id ausente; save invalido.")
         return False
@@ -2070,8 +1873,8 @@ def load(path: str | None = None) -> bool:
             )
             return False
 
-        pool = _read_key(record, "pools", "pool")
-        if pool is None:
+        pool = record.get("pools", _MISSING)
+        if pool is _MISSING or pool is None:
             print(
                 f"[load] pool ausente para linhagem {expected_id}; save invalido."
             )
@@ -2084,8 +1887,8 @@ def load(path: str | None = None) -> bool:
             )
             return False
 
-        agents_raw = _read_key(record, "agentes", "agents")
-        if agents_raw is None:
+        agents_raw = record.get("agentes", _MISSING)
+        if agents_raw is _MISSING or agents_raw is None:
             print(
                 f"[load] agents ausente para linhagem {expected_id}; save invalido."
             )
@@ -2206,13 +2009,9 @@ def load(path: str | None = None) -> bool:
     # O archive depende da identidade viva ja validada, do proximo ID,
     # do tick salvo e do contador historico de mortes. Parseia tudo em
     # locais e somente instala no COMMIT POINT.
-    raw_recent_deaths = _read_key(
-        data,
-        "mortes_recentes",
-        "recent_deaths",
-    )
+    raw_recent_deaths = data.get("mortes_recentes", _MISSING)
     if raw_recent_deaths is _MISSING:
-        print("[load] mortes_recentes ausente; save v23 invalido.")
+        print("[load] mortes_recentes ausente; checkpoint atual invalido.")
         return False
 
     live_ids = {
@@ -2228,7 +2027,7 @@ def load(path: str | None = None) -> bool:
         total_deaths=parsed_deaths,
     )
     if parsed_recent_deaths is _INVALID:
-        print("[load] mortes_recentes invalido; save v23 invalido.")
+        print("[load] mortes_recentes invalido; checkpoint atual invalido.")
         return False
 
     # ------------------------------------------------------------------
@@ -2277,7 +2076,7 @@ def load(path: str | None = None) -> bool:
     random.setstate(parsed_rng_py)
     np.random.set_state(parsed_rng_np)
 
-    # Zonas: restauracao direta. Sob v23 estrito, `parsed_zones` e
+    # Zonas: restauracao direta. No contrato atual, `parsed_zones` e
     # `parsed_zone_centers` ja foram validados e provaram-se
     # coerentes; nao ha caminho de regeneracao, nao ha consumo de
     # RNG no commit.

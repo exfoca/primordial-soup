@@ -1,4 +1,4 @@
-"""Semantica hot das cinco regras reprodutivas (Patch 3).
+"""Semantica HOT das regras reprodutivas vigentes.
 
 Cobre:
 
@@ -16,6 +16,8 @@ import numpy as np
 import pytest
 
 from primordial_soup import config as cfg
+from primordial_soup.config_schema import ConfigScope, get_field_spec_by_attr
+from primordial_soup.config_validation import resolve_constraints
 from primordial_soup import evolution
 from primordial_soup import layout
 from primordial_soup import nest_geometry
@@ -35,7 +37,7 @@ from primordial_soup.world import (
 
 
 def _valid_test_nests():
-    """Geometria deterministica de ninhos valida para o contrato v22."""
+    """Geometria deterministica de ninhos valida para o contrato atual."""
     radius = cfg.NEST_RADIUS
     y = radius + 1
     stride = 2 * radius + 1
@@ -56,15 +58,21 @@ def _valid_test_zone_centers():
 
 
 def _install_checkpoint_geometry():
-    """Instala geometry valida sob o contrato v22.
+    """Instala geometry valida sob o contrato atual.
 
     Nao consome RNG. Fixtures de persistence/step precisam de
-    geometry valida sob v22.
+    geometry valida sob o contrato atual.
     """
     centers = _valid_test_zone_centers()
     state.zone_centers = centers
     state.zones = world.build_zone_mask(centers)
     state.nests = _valid_test_nests()
+
+
+def _hot_constraints(attr_name: str):
+    """Resolve constraints HOT contra o snapshot canonico."""
+    spec = get_field_spec_by_attr(ConfigScope.HOT, attr_name)
+    return resolve_constraints(spec, cfg.CONFIG_SNAPSHOT)
 
 
 @pytest.fixture(autouse=True)
@@ -101,7 +109,7 @@ def _cleanup():
 
 def test_step_uses_runtime_interval_when_reloading_cooldown():
     """Depois de consumir um turno, o cooldown e
-    runtime_rules.reproduction_interval, nao cfg.REPRODUCTION_INTERVAL.
+    runtime_rules.reproduction_interval, nao o baseline HOT declarativo.
     """
     state.reset_counters()
     world.seed_lineages()
@@ -123,7 +131,7 @@ def test_step_uses_runtime_interval_when_reloading_cooldown():
     # O tick consumiu o turno disponivel (cooldown==0) e recarregou
     # com o runtime interval.
     assert state.reproduction_cooldown == 17, (
-        "step() recarregou o cooldown com cfg.REPRODUCTION_INTERVAL "
+        "step() recarregou o cooldown com o baseline HOT declarativo "
         "em vez de runtime_rules.reproduction_interval."
     )
 
@@ -194,7 +202,7 @@ def _minimal_population(n: int = 4):
       - place_initially() cria agents/ids com
         INITIAL_POPULATION_PER_LINEAGE linhas; reduzir para n para
         preservar o lockstep com pool.
-      - HP default (INITIAL_HP) == MAX_REPRODUCTION_HP_GATE == gate
+      - HP default (INITIAL_HP) == teto canonico do gate reprodutivo
         default; como o gate usa comparacao estrita (<), definir HP
         abaixo do gate e obrigatorio para os individuos serem
         elegiveis por HP neste cenario.
@@ -220,11 +228,13 @@ def _minimal_population(n: int = 4):
     # Todos os individuos aptos por padrao.
     for ag in agents:
         m = ag["agents"]
-        m[:, INDEX_HP] = float(cfg.MAX_REPRODUCTION_HP_GATE - 1)
-        m[:, INDEX_COMPOSITE_SCORE] = cfg.REPRODUCTION_MIN_SCORE + 0.5
+        m[:, INDEX_HP] = float(_hot_constraints("reproduction_hp_gate").maximum - 1)
+        m[:, INDEX_COMPOSITE_SCORE] = (
+            state.runtime_rules.reproduction_min_score + 0.5
+        )
     state.update_runtime_rules(
         reproduction_min_age=0,
-        reproduction_hp_gate=cfg.MAX_REPRODUCTION_HP_GATE,
+        reproduction_hp_gate=_hot_constraints("reproduction_hp_gate").maximum,
         reproduction_min_encounters=0,
     )
 
@@ -325,11 +335,12 @@ def _prepare_breeding_pair(lineage_index: int = 0):
         ag["ids"] = ag["ids"][:n].copy()
 
     m = agents[lineage_index]["agents"]
+    rules = state.runtime_rules
     for i in (0, 1):
-        m[i, INDEX_TIME] = cfg.REPRODUCTION_MIN_AGE + 100
-        m[i, INDEX_HP] = cfg.REPRODUCTION_HP_GATE - 1000
-        m[i, INDEX_ENCOUNTERS] = cfg.REPRODUCTION_MIN_ENCOUNTERS + 10
-        m[i, INDEX_COMPOSITE_SCORE] = cfg.REPRODUCTION_MIN_SCORE + 0.5
+        m[i, INDEX_TIME] = rules.reproduction_min_age + 100
+        m[i, INDEX_HP] = rules.reproduction_hp_gate - 1000
+        m[i, INDEX_ENCOUNTERS] = rules.reproduction_min_encounters + 10
+        m[i, INDEX_COMPOSITE_SCORE] = rules.reproduction_min_score + 0.5
 
     state.nests = _valid_test_nests()
 
@@ -347,7 +358,7 @@ def test_parent_bonus_runtime_value():
         agents[0],
         mutation_rate=0,
         mutated_genes=1,
-        local_scale_fraction=cfg.MIN_LOCAL_SCALE_FRACTION,
+        local_scale_fraction=_hot_constraints("local_scale_fraction").minimum,
         lineage_index=0,
         crossover_mode=state.runtime_rules.crossover_mode,
         crossover_probability=state.runtime_rules.crossover_probability,
@@ -383,7 +394,7 @@ def test_parent_bonus_hot_change():
         agents[0],
         mutation_rate=0,
         mutated_genes=1,
-        local_scale_fraction=cfg.MIN_LOCAL_SCALE_FRACTION,
+        local_scale_fraction=_hot_constraints("local_scale_fraction").minimum,
         lineage_index=0,
         crossover_mode=state.runtime_rules.crossover_mode,
         crossover_probability=state.runtime_rules.crossover_probability,
@@ -409,7 +420,7 @@ def test_parent_bonus_hot_change():
         agents[0],
         mutation_rate=0,
         mutated_genes=1,
-        local_scale_fraction=cfg.MIN_LOCAL_SCALE_FRACTION,
+        local_scale_fraction=_hot_constraints("local_scale_fraction").minimum,
         lineage_index=0,
         crossover_mode=state.runtime_rules.crossover_mode,
         crossover_probability=state.runtime_rules.crossover_probability,
@@ -455,7 +466,7 @@ def test_load_restores_cooldown_without_hot_clamp(tmp_path):
     world.place_initially()
     world.fill_fields()
 
-    # Geometry precisa existir explicitamente: o save v22 exige
+    # Geometry precisa existir explicitamente: o contrato atual exige
     # zones e nests validos. Instalacao deterministica, sem RNG.
     _install_checkpoint_geometry()
 
@@ -468,7 +479,9 @@ def test_load_restores_cooldown_without_hot_clamp(tmp_path):
 
     # Suja o runtime.
     state.update_runtime_rules(
-        reproduction_interval=int(cfg.REPRODUCTION_INTERVAL)
+        reproduction_interval=(
+            cfg.CONFIG_SNAPSHOT.hot.reproduction_interval
+        )
     )
     state.reproduction_cooldown = 999
     state.reproduction_turn = 0
@@ -536,7 +549,7 @@ def test_newborns_spawn_in_own_nest_disk(monkeypatch):
         agents[0],
         mutation_rate=0,
         mutated_genes=1,
-        local_scale_fraction=cfg.MIN_LOCAL_SCALE_FRACTION,
+        local_scale_fraction=_hot_constraints("local_scale_fraction").minimum,
         lineage_index=0,
         crossover_mode=state.runtime_rules.crossover_mode,
         crossover_probability=state.runtime_rules.crossover_probability,
@@ -580,7 +593,7 @@ def test_newborns_use_the_given_lineage_nest(monkeypatch):
         agents[1],
         mutation_rate=0,
         mutated_genes=1,
-        local_scale_fraction=cfg.MIN_LOCAL_SCALE_FRACTION,
+        local_scale_fraction=_hot_constraints("local_scale_fraction").minimum,
         lineage_index=1,
         crossover_mode=state.runtime_rules.crossover_mode,
         crossover_probability=state.runtime_rules.crossover_probability,
@@ -631,7 +644,7 @@ def test_sibling_offsets_may_coincide(monkeypatch):
         agents[0],
         mutation_rate=0,
         mutated_genes=1,
-        local_scale_fraction=cfg.MIN_LOCAL_SCALE_FRACTION,
+        local_scale_fraction=_hot_constraints("local_scale_fraction").minimum,
         lineage_index=0,
         crossover_mode=state.runtime_rules.crossover_mode,
         crossover_probability=state.runtime_rules.crossover_probability,
@@ -678,7 +691,7 @@ def test_spawn_wraps_across_world_border(monkeypatch):
         agents[0],
         mutation_rate=0,
         mutated_genes=1,
-        local_scale_fraction=cfg.MIN_LOCAL_SCALE_FRACTION,
+        local_scale_fraction=_hot_constraints("local_scale_fraction").minimum,
         lineage_index=0,
         crossover_mode=state.runtime_rules.crossover_mode,
         crossover_probability=state.runtime_rules.crossover_probability,

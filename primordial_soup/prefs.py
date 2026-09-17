@@ -26,14 +26,20 @@ from pathlib import Path
 from . import config as cfg
 from . import state
 from . import ui_state
+from .config_schema import ConfigScope, get_field_spec_by_attr
+from .config_validation import resolve_constraints
 
 
 PREFS_VERSION = 1
 PREFS_FILENAME = "prefs.json"
 
 # Preferencias de audio do operador. Nao pertencem ao savegame.
-music_enabled: bool = True
-sfx_enabled: bool = True
+music_enabled: bool = (
+    cfg.CONFIG_SNAPSHOT.operator.default_music_enabled
+)
+sfx_enabled: bool = (
+    cfg.CONFIG_SNAPSHOT.operator.default_sfx_enabled
+)
 
 
 # --- Localizacao --------------------------------------------------------
@@ -65,6 +71,15 @@ def prefs_path() -> Path:
     return _prefs_dir() / PREFS_FILENAME
 
 
+def _operator_choices(attr_name: str) -> tuple[object, ...]:
+    """Resolve o dominio canonico de uma preferencia OPERATOR."""
+    spec = get_field_spec_by_attr(ConfigScope.OPERATOR, attr_name)
+    constraints = resolve_constraints(spec, cfg.CONFIG_SNAPSHOT)
+    if constraints.choices is None:
+        raise RuntimeError(f"Campo OPERATOR sem choices: {attr_name}.")
+    return constraints.choices
+
+
 # --- Validadores por campo ---------------------------------------------
 
 def _validate_language(value):
@@ -81,13 +96,13 @@ def _validate_save_slot(value):
 
 
 def _validate_criterion(value):
-    if isinstance(value, str) and value in cfg.CRITERIA_ORDER:
+    if isinstance(value, str) and value in _operator_choices("default_discovery_criterion"):
         return value
     return None
 
 
 def _validate_lineage_filter(value):
-    if isinstance(value, str) and value in cfg.LINEAGE_FILTER_ORDER:
+    if isinstance(value, str) and value in _operator_choices("default_discovery_lineage_filter"):
         return value
     return None
 
@@ -291,8 +306,18 @@ def save_if_dirty(force: bool = False) -> bool:
 # --- Test helper ---------------------------------------------------------
 
 def reset_for_tests() -> None:
-    """Restaura o estado interno. Path continua via monkeypatch."""
+    """Restaura estado interno e baselines de Music/SFX para testes.
+
+    O path continua sendo controlado via monkeypatch.
+    """
     global _dirty, _write_allowed, _save_failure_suppressed
+    global music_enabled, sfx_enabled
     _dirty = False
     _write_allowed = True
     _save_failure_suppressed = False
+    music_enabled = (
+        cfg.CONFIG_SNAPSHOT.operator.default_music_enabled
+    )
+    sfx_enabled = (
+        cfg.CONFIG_SNAPSHOT.operator.default_sfx_enabled
+    )

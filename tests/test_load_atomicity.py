@@ -10,6 +10,9 @@ import numpy as np
 import pytest
 
 from primordial_soup import config as cfg
+from primordial_soup.config_compatibility import checkpoint_non_hot_payload
+from primordial_soup.config_schema import ConfigScope, get_field_spec_by_attr
+from primordial_soup.config_validation import resolve_constraints
 from primordial_soup import layout
 from primordial_soup import state
 from primordial_soup import world
@@ -22,7 +25,7 @@ from primordial_soup.state import agents
 
 
 def _valid_test_nests():
-    """Geometria deterministica de ninhos valida para o schema v23."""
+    """Geometria deterministica de ninhos valida para o checkpoint atual."""
     radius = cfg.NEST_RADIUS
     y = radius + 1
     stride = 2 * radius + 1
@@ -46,7 +49,7 @@ def _valid_test_zone_centers():
 
 
 def _install_checkpoint_geometry():
-    """Instala geometry valida sob o schema v23 sem consumir RNG.
+    """Instala geometry valida para o checkpoint atual sem consumir RNG.
 
     zone_centers e a autoridade geometrica; zones e derivada por
     world.build_zone_mask(). Nao consome RNG.
@@ -65,7 +68,7 @@ def fresh_world():
     aqui criaria um estado impossivel no runtime (agents=50, ids=50,
     pool=0) e quebraria os testes de compactacao e de save/load.
 
-    Geometry e instalada explicitamente: o checkpoint v23 exige
+    Geometry e instalada explicitamente: o checkpoint atual exige
     zone_centers, zones e nests validos. Fixtures que salvam mundo
     manual precisam de um runtime checkpointavel deterministico.
     """
@@ -101,7 +104,7 @@ def _isolate_state():
 
 
 # ---------------------------------------------------------------------------
-# Structural validation of the v23 contract: lineage count, per-array
+# Structural validation of the current contract: lineage count, per-array
 # rank, and cross-array lockstep. Each test corrupts exactly one aspect of
 # a valid save and asserts that load() rejects it with False.
 # ---------------------------------------------------------------------------
@@ -512,7 +515,7 @@ def test_failed_load_does_not_mutate_runtime_state(fresh_world, tmp_path):
     cid = int(agents[0]["ids"][0])
     state.set_inspection_selection(cid)
     state.inspected_trail.append((11, 22))
-    state.discovery_criterion = cfg.CRITERION_OLDEST
+    state.discovery_criterion = "oldest"
     state.discovery_lineage_filter = "G"
 
     # Metrica sintetica no historico.
@@ -683,14 +686,14 @@ def test_failed_load_does_not_consume_rng(fresh_world, tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# Patch 4: v23 behavior/lifecycle runtime persistence
+# Behavior/lifecycle runtime persistence in the current checkpoint schema
 # ---------------------------------------------------------------------------
 
 
-def test_v23_runtime_rules_world_geometry_and_death_history_round_trip(
+def test_current_runtime_rules_world_geometry_and_death_history_round_trip(
     fresh_world, tmp_path
 ):
-    """Roundtrip v23: RuntimeRules + geometry + recent deaths.
+    """Roundtrip atual: RuntimeRules + geometry + recent deaths.
 
     Roundtrip do contrato atual: campos behavior, RuntimeRules
     completo e TODA a geometria persistente (zone centers, mascara de
@@ -734,7 +737,7 @@ def test_v23_runtime_rules_world_geometry_and_death_history_round_trip(
     with open(path, "rb") as f:
         data = pickle.load(f)
     assert data["versao"] == cfg.SAVE_VERSION
-    assert data["versao"] == 23
+    assert cfg.SAVE_VERSION == 25
     assert data["low_hp_threshold"] == 3500
     assert data["stay_still_impulse"] == -0.5
     assert data["death_hp_threshold"] == 500
@@ -784,7 +787,7 @@ def test_v23_runtime_rules_world_geometry_and_death_history_round_trip(
         "death_hp_threshold",
     ],
 )
-def test_v23_rejects_missing_lifecycle_runtime_field_atomically(
+def test_current_schema_rejects_missing_lifecycle_runtime_field_atomically(
     fresh_world, tmp_path, field
 ):
     from primordial_soup import persistence
@@ -802,11 +805,11 @@ def test_v23_rejects_missing_lifecycle_runtime_field_atomically(
     assert state.runtime_rules is before
 
 
-def test_v22_is_rejected_without_migration(fresh_world, tmp_path):
-    """v22 e predecessor direto do schema atual; sem migration.
+def test_v24_is_rejected_without_migration(fresh_world, tmp_path):
+    """v24 e predecessor direto do schema atual; sem migracao.
 
     A politica do projeto e rejeitar tudo abaixo de SAVE_VERSION. Um
-    v22 encontrado em disco deve ser recusado de forma limpa, sem
+    v24 encontrado em disco deve ser recusado de forma limpa, sem
     tocar no runtime.
     """
     from primordial_soup import persistence
@@ -815,10 +818,388 @@ def test_v22_is_rejected_without_migration(fresh_world, tmp_path):
     assert persistence.save(str(path)) is True
     with open(path, "rb") as f:
         data = pickle.load(f)
-    data["versao"] = 22
+    data["versao"] = 24
     with open(path, "wb") as f:
         pickle.dump(data, f)
 
     before = state.runtime_rules
     assert persistence.load(str(path)) is False
     assert state.runtime_rules is before
+
+
+# ---------------------------------------------------------------------------
+# Metadados NON-HOT de compatibilidade do checkpoint no schema corrente
+# ---------------------------------------------------------------------------
+
+
+def _rewrite_checkpoint(path, mutate):
+    with open(path, "rb") as handle:
+        data = pickle.load(handle)
+    mutate(data)
+    with open(path, "wb") as handle:
+        pickle.dump(data, handle)
+    return data
+
+
+def test_save_writes_canonical_non_hot_compatibility_payload(fresh_world, tmp_path):
+    from primordial_soup import persistence
+
+    path = tmp_path / "save.pkl"
+    assert persistence.save(str(path)) is True
+    with open(path, "rb") as handle:
+        data = pickle.load(handle)
+
+    assert data["versao"] == cfg.SAVE_VERSION == 25
+    assert data["config_non_hot"] == checkpoint_non_hot_payload(cfg.CONFIG_SNAPSHOT)
+
+
+def test_load_rejects_missing_non_hot_compatibility_payload_atomically(
+    fresh_world, tmp_path
+):
+    from primordial_soup import persistence
+
+    path = tmp_path / "save.pkl"
+    assert persistence.save(str(path)) is True
+    _rewrite_checkpoint(path, lambda data: data.pop("config_non_hot"))
+
+    rules_before = state.runtime_rules
+    tick_before = state.tick_count
+    assert persistence.load(str(path)) is False
+    assert state.runtime_rules is rules_before
+    assert state.tick_count == tick_before
+
+
+def test_load_rejects_non_hot_compatibility_payload_with_wrong_shape(
+    fresh_world, tmp_path
+):
+    from primordial_soup import persistence
+
+    path = tmp_path / "save.pkl"
+    assert persistence.save(str(path)) is True
+    _rewrite_checkpoint(path, lambda data: data.__setitem__("config_non_hot", []))
+
+    assert persistence.load(str(path)) is False
+
+
+def test_load_rejects_non_hot_compatibility_payload_missing_subfield(
+    fresh_world, tmp_path
+):
+    from primordial_soup import persistence
+
+    path = tmp_path / "save.pkl"
+    assert persistence.save(str(path)) is True
+
+    def corrupt(data):
+        del data["config_non_hot"]["INITIAL_HP"]
+
+    _rewrite_checkpoint(path, corrupt)
+    assert persistence.load(str(path)) is False
+
+
+def test_load_rejects_non_hot_compatibility_payload_extra_subfield(
+    fresh_world, tmp_path
+):
+    from primordial_soup import persistence
+
+    path = tmp_path / "save.pkl"
+    assert persistence.save(str(path)) is True
+
+    def corrupt(data):
+        data["config_non_hot"]["FUTURE_NON_HOT"] = 1
+
+    _rewrite_checkpoint(path, corrupt)
+    assert persistence.load(str(path)) is False
+
+
+@pytest.mark.parametrize(
+    "env_key",
+    [
+        "NEST_RADIUS",
+        "HIDDEN_NEURONS",
+        "MAX_POPULATION_PER_LINEAGE",
+        "SCREEN_WIDTH",
+    ],
+)
+def test_load_rejects_non_hot_value_mismatch_before_main_parse(
+    fresh_world, tmp_path, env_key
+):
+    from primordial_soup import persistence
+
+    path = tmp_path / "save.pkl"
+    assert persistence.save(str(path)) is True
+
+    def corrupt(data):
+        data["config_non_hot"][env_key] += 1
+
+    _rewrite_checkpoint(path, corrupt)
+    assert persistence.load(str(path)) is False
+
+
+def test_non_hot_mismatch_preserves_runtime_state_and_object_identity(
+    fresh_world, tmp_path
+):
+    from primordial_soup import persistence
+
+    path = tmp_path / "save.pkl"
+    assert persistence.save(str(path)) is True
+
+    def corrupt(data):
+        data["config_non_hot"]["NEST_RADIUS"] += 1
+
+    _rewrite_checkpoint(path, corrupt)
+
+    rules_before = state.runtime_rules
+    tick_before = state.tick_count
+    births_before = state.births
+    deaths_before = state.deaths
+    cooldown_before = state.reproduction_cooldown
+    turn_before = state.reproduction_turn
+    agents_ref = agents
+    lineage_refs = tuple(agents)
+    pool_refs = tuple(lineage["pool"] for lineage in agents)
+    agent_refs = tuple(lineage["agents"] for lineage in agents)
+    ids_refs = tuple(lineage["ids"] for lineage in agents)
+    field_refs = tuple(lineage["field"] for lineage in agents)
+    zones_ref = state.zones
+    zone_centers_ref = state.zone_centers
+    nests_ref = state.nests
+    recent_deaths_ref = state.recent_deaths
+    recent_deaths_before = tuple(state.recent_deaths)
+
+    assert persistence.load(str(path)) is False
+
+    assert state.runtime_rules is rules_before
+    assert state.tick_count == tick_before
+    assert state.births == births_before
+    assert state.deaths == deaths_before
+    assert state.reproduction_cooldown == cooldown_before
+    assert state.reproduction_turn == turn_before
+    assert agents is agents_ref
+    assert all(current is expected for current, expected in zip(agents, lineage_refs))
+    assert all(
+        lineage["pool"] is expected for lineage, expected in zip(agents, pool_refs)
+    )
+    assert all(
+        lineage["agents"] is expected for lineage, expected in zip(agents, agent_refs)
+    )
+    assert all(
+        lineage["ids"] is expected for lineage, expected in zip(agents, ids_refs)
+    )
+    assert all(
+        lineage["field"] is expected for lineage, expected in zip(agents, field_refs)
+    )
+    assert state.zones is zones_ref
+    assert state.zone_centers is zone_centers_ref
+    assert state.nests is nests_ref
+    assert state.recent_deaths is recent_deaths_ref
+    assert tuple(state.recent_deaths) == recent_deaths_before
+
+
+def test_non_hot_mismatch_does_not_consume_python_or_numpy_rng(
+    fresh_world, tmp_path
+):
+    from primordial_soup import persistence
+
+    path = tmp_path / "save.pkl"
+    assert persistence.save(str(path)) is True
+
+    def corrupt(data):
+        data["config_non_hot"]["NEST_RADIUS"] += 1
+
+    _rewrite_checkpoint(path, corrupt)
+
+    _random.seed(12345)
+    np.random.seed(54321)
+    expected_python = [_random.random() for _ in range(5)]
+    expected_numpy = np.random.random(5)
+
+    _random.seed(12345)
+    np.random.seed(54321)
+    assert persistence.load(str(path)) is False
+    actual_python = [_random.random() for _ in range(5)]
+    actual_numpy = np.random.random(5)
+
+    assert actual_python == expected_python
+    assert np.array_equal(actual_numpy, expected_numpy)
+
+
+_EXPECTED_V25_TOP_LEVEL_KEYS = {
+    "versao",
+    "arquitetura",
+    "genoma",
+    "config_non_hot",
+    "mutation",
+    "mutategen",
+    "crossover_mode",
+    "crossover_probability",
+    "block_size",
+    "mutation_mode",
+    "escala_local",
+    "local_scale_sigma",
+    "global_probability",
+    "global_scale_fraction",
+    "global_scale_sigma",
+    "low_hp_threshold",
+    "stay_still_impulse",
+    "death_hp_threshold",
+    "tick",
+    "proximo_id",
+    "nascimentos",
+    "mortes",
+    "mortes_recentes",
+    "reproduction_cooldown",
+    "reproduction_turn",
+    "rng_python_state",
+    "rng_numpy_state",
+    "zonas",
+    "centros_zonas",
+    "zonas_ativas",
+    "efeito_hp_zonas",
+    "nests",
+    "base_decay_per_tick",
+    "predation_transfer",
+    "damage_per_own_overcrowding",
+    "reproduction_interval",
+    "reproduction_min_age",
+    "reproduction_hp_gate",
+    "reproduction_min_encounters",
+    "reproduction_parent_hp_bonus",
+    "reproduction_criterion",
+    "reproduction_pool_fraction",
+    "reproduction_attempts_divisor",
+    "reproduction_min_score",
+    "longevity_weight",
+    "exploration_weight",
+    "interaction_weight",
+    "reproduction_weight",
+    "linhagens",
+}
+
+
+_TOP_LEVEL_HISTORICAL_ALIASES = (
+    ("versao", "version"),
+    ("arquitetura", "architecture"),
+    ("genoma", "genome"),
+    ("centros_zonas", "zone_centers"),
+    ("escala_local", "local_scale"),
+    ("nascimentos", "births"),
+    ("mortes", "deaths"),
+    ("zonas", "zones"),
+    ("zonas_ativas", "zones_active"),
+    ("efeito_hp_zonas", "zone_hp_effect"),
+    ("linhagens", "lineages"),
+    ("mortes_recentes", "recent_deaths"),
+)
+
+
+def test_v25_writer_has_exact_canonical_top_level_and_lineage_shape(
+    fresh_world, tmp_path
+):
+    from primordial_soup import persistence
+
+    path = tmp_path / "v25.pkl"
+    assert persistence.save(str(path)) is True
+    with open(path, "rb") as handle:
+        data = pickle.load(handle)
+
+    assert cfg.SAVE_VERSION == 25
+    assert len(_EXPECTED_V25_TOP_LEVEL_KEYS) == 49
+    assert set(data) == _EXPECTED_V25_TOP_LEVEL_KEYS
+    assert "modificadores_ambientais" not in data
+    for record in data["linhagens"]:
+        assert set(record) == {"id", "pools", "agentes", "ids"}
+        assert "cor" not in record
+        assert "color" not in record
+
+
+@pytest.mark.parametrize(
+    "canonical,alias",
+    _TOP_LEVEL_HISTORICAL_ALIASES,
+    ids=[f"{canonical}-not-{alias}" for canonical, alias in _TOP_LEVEL_HISTORICAL_ALIASES],
+)
+def test_v25_rejects_top_level_historical_key_aliases(
+    fresh_world, tmp_path, canonical, alias
+):
+    from primordial_soup import persistence
+
+    path = tmp_path / f"alias-{alias}.pkl"
+    assert persistence.save(str(path)) is True
+
+    def corrupt(data):
+        data[alias] = data.pop(canonical)
+
+    _rewrite_checkpoint(path, corrupt)
+    assert persistence.load(str(path)) is False
+
+
+@pytest.mark.parametrize(
+    "canonical,alias",
+    (("pools", "pool"), ("agentes", "agents")),
+)
+def test_v25_rejects_nested_lineage_historical_key_aliases(
+    fresh_world, tmp_path, canonical, alias
+):
+    from primordial_soup import persistence
+
+    path = tmp_path / f"nested-{alias}.pkl"
+    assert persistence.save(str(path)) is True
+
+    def corrupt(data):
+        record = data["linhagens"][0]
+        record[alias] = record.pop(canonical)
+
+    _rewrite_checkpoint(path, corrupt)
+    assert persistence.load(str(path)) is False
+
+
+def test_historical_alias_failure_preserves_runtime_atomically(fresh_world, tmp_path):
+    from primordial_soup import persistence
+
+    path = tmp_path / "alias-atomicity.pkl"
+    assert persistence.save(str(path)) is True
+
+    def corrupt(data):
+        data["version"] = data.pop("versao")
+
+    _rewrite_checkpoint(path, corrupt)
+    rules_before = state.runtime_rules
+    tick_before = state.tick_count
+    agents_before = tuple(agents)
+
+    assert persistence.load(str(path)) is False
+    assert state.runtime_rules is rules_before
+    assert state.tick_count == tick_before
+    assert tuple(agents) == agents_before
+
+
+def test_implicit_load_does_not_discover_legacy_single_file(
+    fresh_world, tmp_path, monkeypatch
+):
+    from primordial_soup import persistence
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(state, "active_save_slot", cfg.DEFAULT_SAVE_SLOT)
+    legacy = tmp_path / "genome_pool.pkl"
+    assert persistence.save(str(legacy)) is True
+    assert not (tmp_path / "genome_pool_default.pkl").exists()
+
+    state.tick_count = 987654
+    rules_before = state.runtime_rules
+    assert persistence.load() is False
+    assert state.tick_count == 987654
+    assert state.runtime_rules is rules_before
+
+
+def test_explicit_legacy_filename_is_not_blacklisted(
+    fresh_world, tmp_path, monkeypatch
+):
+    from primordial_soup import persistence
+
+    monkeypatch.chdir(tmp_path)
+    legacy = tmp_path / "genome_pool.pkl"
+    state.tick_count = 321
+    assert persistence.save(str(legacy)) is True
+
+    state.tick_count = 999
+    assert persistence.load(str(legacy)) is True
+    assert state.tick_count == 321

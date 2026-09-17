@@ -25,6 +25,8 @@ headless → automation and reproducibility
 
 **This is the single authority for the CLI and headless execution.** The checkpoint format is defined in [Persistence](persistence.md); the simulation rules themselves are in [World Rules](world-rules.md).
 
+Headless execution uses the same `CONFIG_SNAPSHOT`, `ConfigSchema`, and `RuntimeRules` contract as graphical execution, but it does **not** load `prefs.json`. Declarative configuration therefore affects fresh headless worlds directly; operator preferences do not.
+
 ---
 
 # Quick start
@@ -80,7 +82,7 @@ Your evolutionary experiment does not need a monitor watching it back.
 
 Constructs a completely fresh simulation before executing the requested ticks.
 
-A fresh world initializes founder populations, random genomes, random positions, environmental zones, nest geometry, the tick counter, birth/death counters, the stable-ID sequence, reproductive-turn state, and runtime parameters.
+A fresh world initializes founder populations, random genomes, random positions, environmental zones, nest geometry, the tick counter, birth/death counters, the stable-ID sequence, reproductive-turn state, and runtime parameters. For `--new`, HOT defaults come from the active `ConfigSnapshot`.
 
 This is the usual starting point for controlled experiments.
 
@@ -181,6 +183,27 @@ when you really mean to replace the slot with a fresh experiment.
 
 ---
 
+## Custom declarative configuration
+
+Use `PRIMORDIAL_SOUP_CONFIG` to select one complete configuration file for a headless process:
+
+```bash
+PRIMORDIAL_SOUP_CONFIG=/path/to/treatment.env \
+python -m primordial_soup \
+  --new \
+  --duration 50000 \
+  --seed 42 \
+  --save treatment_seed_42
+```
+
+The selected file must satisfy the full 107-field configuration contract. There is no `--config`, `--set`, or per-rule configuration CLI.
+
+For `--new`, the selected snapshot supplies fresh HOT defaults. For `--load`, the checkpoint restores its own saved `RuntimeRules`; current HOT `.env` defaults do not overwrite them. The current process must still match all 17 checkpoint-relevant NON_HOT values.
+
+See [Runtime Configuration](runtime-config.md) for source precedence and scope semantics.
+
+---
+
 ## `--seed` — reproducible randomness
 
 Primordial Soup uses two random-number sources: Python's standard `random` and NumPy's global RNG. The CLI seeds both.
@@ -231,7 +254,7 @@ If the load fails, no seed is applied and the process aborts. A failed load neve
 
 ### Reproducibility has boundaries
 
-A seed is necessary for reproducibility. It is not magic.
+A seed is necessary for reproducibility. It is not sufficient by itself. Code version, effective configuration, starting checkpoint, duration, and execution path also matter. It is not magic.
 
 A reproducible comparison should also keep constant: Primordial Soup version, configuration, save format, world geometry, starting state, duration, and execution path.
 
@@ -327,7 +350,7 @@ python -m primordial_soup \
   --quiet
 ```
 
-Record alongside it: commit, configuration, seed, duration, and treatment. Now the run has a reasonably clear provenance.
+Record alongside it: application version/commit, configuration source, relevant effective configuration values, seed, duration, treatment, and checkpoint origin where applicable. Now the run has a reasonably clear provenance.
 
 ## Continue an experiment
 

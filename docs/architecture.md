@@ -322,7 +322,7 @@ That keeps the tick boundary explicit.
 
 `genetics.py` owns transformations of genomes: random genome generation, random population generation, crossover, and mutation.
 
-It knows genetic layout through structural configuration. It does not know HP, age, fitness gates, nests, population scheduling, UI, or persistence.
+It consumes the derived genetic layout exposed by configuration/model contracts. It does not know HP, age, fitness gates, nests, population scheduling, UI, or persistence.
 
 Those decisions belong to higher-level orchestration.
 
@@ -361,35 +361,148 @@ Boring geometry prevents exciting persistence bugs.
 
 # ⚙️ Configuration architecture
 
-Configuration has three distinct levels:
+Configuration is declarative first and lifecycle-specific second.
+
+The ownership model is:
 
 ```text
-config.py → runtime_rules.py → state.runtime_rules
+                       packaged/user/override .env
+                                │
+                                ▼
+                         config_source
+                                │
+                                ▼
+                          config_loader
+                                │
+                                ▼
+                         ConfigSnapshot
+                                │
+                    ┌───────────┴───────────┐
+                    │                       │
+                    ▼                       ▼
+              config_schema           config.py facade
+                    │
+                    ▼
+             config_validation
+                    │
+          ┌─────────┼─────────┐
+          ▼         ▼         ▼
+ config_service RuntimeRules config_compatibility
+                    │              │
+                    ▼              ▼
+           state.runtime_rules   persistence
 ```
+
+This diagram describes ownership, not rigid import layering. The exact import graph is intentionally constrained by dependency tests, but the architectural point is simpler: declarative values, semantic metadata, live HOT laws, and checkpoint compatibility have distinct authorities.
+
+The three declarative scopes are `NON_HOT`, `OPERATOR`, and `HOT`.
+
+```text
+NON_HOT   → process/model/presentation values; restart required
+OPERATOR  → startup defaults for mutable operator/application state
+HOT       → startup defaults used to construct RuntimeRules
+```
+
+## `config_source.py`
+
+Resolves the selected declarative file and the writable destination. Precedence is explicit override (`PRIMORDIAL_SOUP_CONFIG`), existing user config, then the packaged `primordial_soup/.env` baseline.
+
+The packaged file is a versioned application asset. Falling back to it does not implicitly create a user file.
+
+## `config_loader.py`
+
+Parses one complete declarative file into a typed `ConfigSnapshot`. The grammar is intentionally small: comments, blank lines, and canonical `KEY=value` assignments. Unknown, missing, duplicate, malformed, or interpolated values are rejected.
+
+## `config_contract.py`
+
+Defines the frozen materialized value objects:
+
+```text
+ConfigSnapshot
+├── NonHotConfig
+├── OperatorDefaults
+└── HotDefaults
+```
+
+The snapshot represents declarative values effective for the process. It is not the complete live application state.
+
+## `config_schema.py`
+
+`CONFIG_SCHEMA` is the canonical authority for configuration metadata, lifecycle, constraints, choices, UI steps, and checkpoint relevance.
+
+A field spec owns semantics such as:
+
+```text
+env key
+scope
+section
+type
+runtime editability
+restart requirement
+checkpoint relevance
+constraints
+```
+
+The schema does not own default values. The selected `.env` owns baseline values.
+
+## `config_validation.py`
+
+Validates a candidate `ConfigSnapshot` without consulting live `state` or `config.py` as a shadow authority. Cross-field and derived constraints are resolved against the candidate itself.
+
+This matters for constraints such as `HOT_BLOCK_SIZE <= GENOME_SIZE`, where the maximum depends on neural dimensions in that same candidate snapshot.
+
+## `model_contract.py`
+
+Owns the fixed neural/genetic structural contract and the single canonical layout derivation:
+
+```text
+model_contract
+    ↓
+derive_neural_layout
+    ↓
+config.py
+config_validation
+```
+
+`derive_neural_layout()` is the only formula authority for vision/input dimensions, neural weight counts, recurrence size, and `GENOME_SIZE`.
+
+That separation prevents two modules from independently deriving two slightly different genomes. One universe is enough.
 
 ## `config.py`
 
-Structural constants, defaults, and validation limits: neural dimensions, genome size, population ceilings, nest radius, world structure, default runtime values, min/max limits, save format versions.
+`config.py` is the **materialized runtime facade**, not a second schema.
 
-Changing a structural constant may change the model itself.
+It exposes NON_HOT aliases consumed by existing runtime modules, derived model dimensions, and application/model persistence identifiers. It does not own HOT ranges, HOT choices, or HOT UI steps.
+
+## `config_service.py`
+
+Provides immutable programmatic edits, canonical serialization, and an atomic declarative writer. A write validates a candidate, serializes it, writes a same-directory temporary file, flushes and `fsync`s the file, reloads it through the canonical loader, checks round-trip equality, and only then uses `os.replace()`.
+
+Writing configuration does not mutate the current process:
+
+```text
+write_config does not rebind CONFIG_SNAPSHOT
+write_config does not mutate state.runtime_rules
+write_config does not hot-apply configuration
+```
+
+No Setup UI currently calls this service.
+
+## `config_compatibility.py`
+
+Materializes and validates the checkpoint-relevant NON_HOT identity. Membership comes from `ConfigFieldSpec.checkpoint_relevant`, not from a second hard-coded compatibility table in persistence.
 
 ## `runtime_rules.py`
 
-Defines the immutable `RuntimeRules` contract. It does not import state, does not know the UI, does not know Pygame, and does not own global state.
-
-A rule update follows: current rules → create candidate → validate candidate → return candidate.
-
-Invalid candidates never mutate the original object.
+Defines the immutable live HOT-law contract. Candidate rules are validated against the shared configuration semantics before becoming active.
 
 ## `state.runtime_rules`
 
 `state.py` owns the currently active `RuntimeRules` reference.
 
-Replacing active laws follows: validate → commit reference.
+Once a world exists, this object is the authority for HOT laws. Declarative HOT values remain startup baselines; editing the `.env` does not silently rewrite the current world.
 
-Consumers read the current object. They do not maintain shadow copies of runtime configuration.
-
-This gives one authoritative answer to: **what are the laws of this universe right now?**
+See [Runtime Configuration](runtime-config.md) for sources, all 107 fields, scope semantics, and checkpoint interaction.
 
 ---
 
@@ -469,20 +582,27 @@ A release may ship without a new `SAVE_VERSION`. A `SAVE_VERSION` may change dur
 
 # 💾 Persistence
 
-`persistence.py` is the checkpoint boundary. It serializes the state required for exact continuation and validates it on load.
+`persistence.py` is the checkpoint boundary. Its responsibilities are:
+
+```text
+checkpoint representation
+wire coercion
+structural validation
+transactional commit
+```
+
+It is **not** a second owner of HOT ranges or choices. RuntimeRule semantic validation goes through the shared configuration contract.
 
 The important architectural pattern is:
 
 ```text
 SAVE:  runtime state → validate → serialize temp → atomic replace
-LOAD:  file → parse locally → validate everything → single commit boundary
+LOAD:  file → compatibility gates → parse locally → validate everything → single commit boundary
 ```
 
-A rejected load must not partially modify the running universe.
+Compatibility gates include save schema, architecture family, genome layout, and the schema-driven checkpoint-relevant NON_HOT payload.
 
-Persistence also does not regenerate missing world geometry.
-
-Zones and nests are restored from the checkpoint.
+A rejected load must not partially modify the running universe. Persistence also does not regenerate missing world geometry; zones, canonical centers, nests, and recent-death history are restored from checkpoint state.
 
 See [Persistence](persistence.md) for the full contract.
 
@@ -492,9 +612,10 @@ See [Persistence](persistence.md) for the full contract.
 
 `prefs.py` is deliberately separate from world persistence.
 
-There are two different forms of persistence:
+There are three distinct persistence/configuration axes:
 
 ```text
+declarative .env   → process/startup baselines
 checkpoint (.pkl)  → the universe
 prefs.json         → the operator
 ```
@@ -713,7 +834,15 @@ These are not incidental conveniences. They are architectural seams.
 
 | Module                | Primary responsibility                                           |
 | --------------------- | ---------------------------------------------------------------- |
-| `config.py`           | Structural constants, defaults and limits                        |
+| `model_contract.py`    | Fixed neural/genetic structure and canonical layout derivation   |
+| `config_contract.py`   | Immutable typed declarative configuration values                 |
+| `config_schema.py`     | Canonical configuration metadata, constraints and lifecycle      |
+| `config_validation.py` | Candidate-aware semantic configuration validation                |
+| `config_loader.py`     | Strict declarative parser to `ConfigSnapshot`                    |
+| `config_source.py`     | Packaged/user/override configuration path resolution             |
+| `config_service.py`    | Immutable edits, serialization and atomic declarative writer     |
+| `config_compatibility.py` | Checkpoint-relevant NON_HOT identity                          |
+| `config.py`           | Materialized facade, derived model dimensions and version IDs     |
 | `layout.py`           | Derived world/display geometry                                   |
 | `runtime_rules.py`    | Immutable HOT-rule contract and validation                       |
 | `state.py`            | Shared runtime state                                             |
@@ -743,6 +872,48 @@ These are not incidental conveniences. They are architectural seams.
 
 ---
 
+# 🔗 Configuration dependency boundaries
+
+The configuration refactor is protected by dependency guardrails as well as value-level tests:
+
+```text
+model_contract
+    → no package dependencies
+
+config_contract
+config_errors
+    → leaf layers
+
+config_schema
+    → does not depend on runtime/UI
+
+config_validation
+    → does not depend on config.py/state/runtime
+
+config_service
+    → does not mutate live runtime
+
+config_compatibility
+    → does not depend on persistence/global config facade
+
+config.py
+    → does not own schema constraints
+
+persistence
+    → does not validate HOT domains independently
+
+simulation core
+    → does not import config editing paths
+```
+
+The semantic invariant is:
+
+```text
+one semantic rule → one authority
+```
+
+---
+
 # 🔒 Architectural invariants
 
 The current architecture depends on these rules:
@@ -758,8 +929,16 @@ ecology is applied globally before mortality compaction
 newborns do not participate in their birth-tick ecology
 pool / agents / ids remain in lockstep
 critter identity is stable and independent of array position
+CONFIG_SCHEMA is the metadata authority
+CONFIG_SNAPSHOT is immutable
+.env contains values, not semantic constraints
+config.py is not a second schema
 RuntimeRules is immutable and validated before replacement
 state.runtime_rules is the active authority for HOT laws
+config writes do not hot-apply
+checkpoint NON-HOT compatibility is schema-driven
+persistence does not maintain shadow HOT ranges
+prefs are not checkpoint state
 nest_geometry is the single authority for nest mathematics
 failed checkpoint loads do not partially mutate runtime
 operator preferences are separate from world checkpoints

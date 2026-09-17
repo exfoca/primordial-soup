@@ -48,7 +48,7 @@ The organism knows considerably less about itself than the Inspection panel does
 
 ## 👁️ Perception
 
-Each critter observes an **11×11** square centered on its current position. The world is toroidal, so vision wraps around its edges just like movement.
+With the packaged baseline (`VISION_RADIUS=5`), each critter observes an **11×11** square centered on its current position. `VISION_RADIUS` is NON_HOT declarative configuration, so another valid process configuration may produce a different square. The world is toroidal, so vision wraps around its edges just like movement.
 
 There are three visual channels, one per lineage. Each cell contains the number of critters from that lineage occupying that position. The critter can see population density around itself, including organisms sharing the same cell.
 
@@ -71,7 +71,7 @@ Four additional values are appended to vision:
 | `action_norm` | previous action / 8                                                 |
 | `low_hp`      | `1` when HP is below the runtime threshold, otherwise `0`          |
 
-That gives **367 neural inputs** total.
+With the packaged baseline, that gives **367 neural inputs** total. The fixed model contract contributes three visual channels and four internal-state inputs; the vision radius determines the visual input count.
 
 `INITIAL_HP` is used as a normalization scale, not as a maximum. Because HP has no upper cap, `hp_norm > 1` is perfectly valid.
 
@@ -108,7 +108,7 @@ It does not provide tooltips.
 
 ## The network
 
-Every critter uses the same neural architecture:
+Every critter in one running process uses the same neural architecture derived from that process's NON_HOT configuration. With the packaged baseline:
 
 ```text
 367 inputs
@@ -123,7 +123,7 @@ Every critter uses the same neural architecture:
 9 outputs
 ```
 
-Both hidden layers use `tanh`. The output layer is `linear`.
+The packaged baseline uses `tanh` for both hidden layers and `linear` for the output layer. `VISION_RADIUS`, both hidden-layer widths, and all three activation choices are NON_HOT declarative fields.
 
 The recurrent connection exists on the first hidden layer. This gives the organism a small amount of temporal memory: the current decision can depend not only on current perception, but also on hidden activity from the previous tick.
 
@@ -310,17 +310,14 @@ See [User Interface](ui.md) for the observation and discovery model.
 
 # 🔒 Core invariants
 
-For the current critter model:
+For the current model contract:
 
 ```text
-367 neural inputs
-25 recurrent hidden neurons
-12 second-layer hidden neurons
+3 visual channels
+4 internal-state inputs
 9 movement outputs
-10,245 genes
-
-vision = 11 × 11 × 3
-internal state = 4 inputs
+first hidden layer is recurrent
+gene values use the model-contract range
 
 hidden memory starts at zero
 genome is inherited
@@ -331,7 +328,9 @@ movement is toroidal
 identity is stable across compaction
 ```
 
-These values define the current cognitive architecture.
+With the packaged baseline, those fixed elements combine with `VISION_RADIUS=5`, `HIDDEN_NEURONS=25`, and `HIDDEN_NEURONS_2=12` to produce 367 neural inputs and a derived `GENOME_SIZE` of **10,245**. `GENOME_SIZE` is derived from the active NON_HOT snapshot; it is not a universal constant for every valid `.env`.
+
+Changing a checkpoint-relevant neural NON_HOT value makes checkpoints created under different values incompatible. See [Runtime Configuration](runtime-config.md) and [Persistence](persistence.md).
 
 Changing them is not merely tuning the environment. It changes the organism itself.
 

@@ -20,8 +20,8 @@ from .runtime_rules import (
 #              "agents": ndarray [N, AGENT_COLUMNS],
 #              "ids": ndarray [N], "field": ndarray}
 #
-# As chaves internas usam os nomes em ingles; a ponte para as chaves
-# em portugues do savegame acontece so em persistence.py.
+# As chaves internas usam os nomes em ingles; a ponte para os
+# identificadores canonicos de persistencia acontece so em persistence.py.
 agents: list[dict[str, Any]] = []
 
 # Fonte unica das regras runtime ajustaveis em execucao. Substitui
@@ -58,7 +58,9 @@ nests: tuple[tuple[int, int], ...] | None = None
 # state.nests.
 zone_centers: tuple[tuple[int, int], ...] | None = None
 
-zones_active: bool = True
+zones_active: bool = (
+    cfg.CONFIG_SNAPSHOT.operator.default_zones_active
+)
 
 # O efeito de HP por tick dentro de zona vive em runtime_rules
 # (runtime_rules.zone_hp_effect). A mascara em si continua em
@@ -147,34 +149,29 @@ def update_runtime_rules(**changes) -> RuntimeRules:
 # monotonico e persistente, independente da posicao no ndarray.
 next_critter_id: int = 1
 
-# Parametro ajustavel ativo. As setas atuam sobre este; U, O, E
-# selecionam qual esta ativo.
-#
-# Valores sao os identificadores de config.py (PARAM_*). None = sem
-# selecao (setas sao no-op). O jogo comeca com PARAM_MUTATION ativo
-# (ver simulation.run).
-#
-# Preferencia de UI, como language: NAO persistida no savegame e NAO
-# resetada por reset_counters(). R mantem o parametro selecionado.
-active_param: str | None = cfg.PARAM_MUTATION
 
-# Lente de discovery: criterio e filtro de linhagem ativos para
-# selecao de candidato (ver cfg.CRITERIA_ORDER e
-# cfg.LINEAGE_FILTER_ORDER). Preferencias de UI, como active_param:
-# NAO persistidas no savegame nem resetadas por reset_counters().
-discovery_criterion: str = cfg.CRITERION_MOST_EVOLVED
-discovery_lineage_filter: str = cfg.LINEAGE_FILTER_ALL
+# Lente de discovery: criterio e filtro de linhagem atuais. Os dominios
+# canonicos pertencem ao ConfigSchema; state armazena apenas os valores
+# escolhidos pelo operador. Nao persistidos no savegame nem resetados.
+discovery_criterion: str = (
+    cfg.CONFIG_SNAPSHOT.operator.default_discovery_criterion
+)
+discovery_lineage_filter: str = (
+    cfg.CONFIG_SNAPSHOT.operator.default_discovery_lineage_filter
+)
 
 tick_count: int = 0
 last_print: int = 0
-paused: bool = True
+paused: bool = cfg.CONFIG_SNAPSHOT.operator.default_paused
 
 # Multiplicador de velocidade da simulacao. 1.0 = 1 tick por frame
 # grafico (semantica historica). Valores < 1.0 espacam ticks ao longo
 # de varios frames; valores > 1.0 executam multiplos ticks por frame.
 # Estado operacional do operador, nao pertence a RuntimeRules nem ao
 # checkpoint. A enum de valores selecionaveis vive em panels_defs.
-simulation_speed: float = 1.0
+simulation_speed: float = (
+    cfg.CONFIG_SNAPSHOT.operator.default_simulation_speed
+)
 
 births: int = 0
 deaths: int = 0
@@ -276,10 +273,10 @@ recent_deaths: deque[DeathSnapshot] = deque()
 inspected_trail: deque[tuple[int, int]] = deque(maxlen=cfg.TRAIL_MAX_LENGTH)
 
 # --- Internacionalizacao ---
-# Idioma de exibicao. Independente do savegame e do CSV, que sempre
-# usam as chaves canonicas em portugues. Nao resetado por
+# Idioma de exibicao. Independente do checkpoint e do CSV, cujos
+# identificadores canonicos nao seguem o idioma da UI. Nao resetado por
 # reset_counters(). Ver i18n.py para a tabela; T cicla em runtime.
-language: str = "en"
+language: str = cfg.CONFIG_SNAPSHOT.operator.default_language
 
 # --- Save slots ---
 # Slot ativo. persistence.save()/load() sem path resolvem para este;
@@ -370,9 +367,8 @@ def reset_counters() -> None:
       - recent_deaths,
       - inspected_trail,
       - metrics_history,
-      - zones_active (volta ao default ON, porque R regenera as
-        zonas; manter "zonas escondidas" da run antiga seria
-        inconsistente).
+      - zones_active (volta ao baseline declarativo do operador,
+        porque R cria uma nova run).
 
     Preferencias de visualizacao (discovery_criterion,
     discovery_lineage_filter) nao sao resetadas: pertencem ao
@@ -402,9 +398,11 @@ def reset_counters() -> None:
 
     # --- Toggle de zonas ---
     # A mascara em si (state.zones) e regenerada por recreate(), nao
-    # aqui. O toggle volta ao default para a run nova comecar com
-    # zonas visiveis e ativas.
-    zones_active = True
+    # aqui. O toggle volta ao baseline declarativo do operador porque
+    # R cria uma nova run.
+    zones_active = (
+        cfg.CONFIG_SNAPSHOT.operator.default_zones_active
+    )
 
     # --- Sessao de observacao ---
     # Uma run nova encerra a Observation antiga: o ID observado

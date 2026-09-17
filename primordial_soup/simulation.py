@@ -383,9 +383,10 @@ def run() -> None:
     ui_state.reset()
 
     # Prefs do operador, apos os defaults de UI. Ordem importa:
-    # ui_state.reset() restaura floating_hud_visible=True; se
-    # prefs.load() viesse antes, o reset sobrescreveria o valor
-    # carregado. Headless nao chama prefs.load() (invariante 3).
+    # ui_state.reset() restaura o baseline declarativo de UI; depois,
+    # prefs.load() permite que uma preferencia persistida valida tenha
+    # precedencia sobre o .env. Headless nao chama prefs.load()
+    # (invariante 3).
     prefs.load()
 
     register_default_panels()

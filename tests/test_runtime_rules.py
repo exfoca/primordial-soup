@@ -1,4 +1,4 @@
-"""Testes da fundacao de RuntimeRules (Patch 1).
+"""Contratos de construcao, validacao e substituicao de RuntimeRules.
 
 Cobrem o contrato do dataclass, da validacao centralizada e da API
 state.update_runtime_rules / state.set_runtime_rules.
@@ -6,10 +6,14 @@ state.update_runtime_rules / state.set_runtime_rules.
 Todos os docstrings deste arquivo sao intencionalmente ASCII puro.
 """
 
+from dataclasses import fields
+
 import numpy as np
 import pytest
 
 from primordial_soup import config as cfg
+from primordial_soup.config_schema import ConfigScope, get_field_spec_by_attr
+from primordial_soup.config_validation import resolve_constraints
 from primordial_soup import state
 from primordial_soup.runtime_rules import (
     RuntimeRules,
@@ -20,62 +24,32 @@ from primordial_soup.runtime_rules import (
 from primordial_soup.state import agents
 
 
+def _hot_constraints(attr_name: str):
+    """Resolve constraints HOT contra o snapshot canonico."""
+    spec = get_field_spec_by_attr(ConfigScope.HOT, attr_name)
+    return resolve_constraints(spec, cfg.CONFIG_SNAPSHOT)
+
+
 # ---------------------------------------------------------------------------
 # Defaults
 # ---------------------------------------------------------------------------
 
 
-def test_defaults_match_config():
+def test_defaults_match_declarative_hot_snapshot():
     rules = default_runtime_rules()
-    assert rules.crossover_mode == cfg.CROSSOVER_MODE
-    assert rules.mutation_mode == cfg.MUTATION_MODE
-    assert rules.mutation_rate == int(cfg.INITIAL_MUTATION_RATE)
-    assert rules.mutated_genes == int(cfg.INITIAL_MUTATED_GENES)
-    assert rules.local_scale_fraction == int(cfg.LOCAL_SCALE_FRACTION * 100)
-    assert rules.local_scale_sigma == float(cfg.LOCAL_SCALE_SIGMA)
-    assert rules.global_probability == int(cfg.GLOBAL_PROBABILITY * 100)
-    assert rules.global_scale_fraction == int(cfg.GLOBAL_SCALE_FRACTION * 100)
-    assert rules.global_scale_sigma == float(cfg.GLOBAL_SCALE_SIGMA)
-    assert rules.low_hp_threshold == int(cfg.LOW_HP_THRESHOLD)
-    assert rules.stay_still_impulse == float(cfg.STAY_STILL_IMPULSE)
-    assert rules.death_hp_threshold == int(cfg.DIE_WHEN_HP_LESS_OR_EQUAL)
-    assert rules.zone_hp_effect == int(cfg.HP_EFFECT_IN_ZONE)
-    assert rules.base_decay_per_tick == int(cfg.BASE_DECAY_PER_TICK)
-    assert rules.predation_transfer == int(cfg.PREDATION_TRANSFER)
-    assert (
-        rules.damage_per_own_overcrowding
-        == int(cfg.DAMAGE_PER_OWN_OVERCROWDING)
-    )
-    assert rules.reproduction_interval == int(cfg.REPRODUCTION_INTERVAL)
-    assert rules.reproduction_min_age == int(cfg.REPRODUCTION_MIN_AGE)
-    assert rules.reproduction_hp_gate == int(cfg.REPRODUCTION_HP_GATE)
-    assert (
-        rules.reproduction_min_encounters
-        == int(cfg.REPRODUCTION_MIN_ENCOUNTERS)
-    )
-    assert (
-        rules.reproduction_parent_hp_bonus
-        == int(cfg.REPRODUCTION_PARENT_HP_BONUS)
-    )
-    assert rules.reproduction_criterion == cfg.REPRODUCTION_CRITERION
-    assert rules.reproduction_pool_fraction == float(
-        cfg.REPRODUCTIVE_POOL_FRACTION
-    )
-    assert rules.reproduction_attempts_divisor == int(
-        cfg.REPRODUCTION_ATTEMPTS_DIVISOR
-    )
-    assert rules.reproduction_min_score == float(cfg.REPRODUCTION_MIN_SCORE)
-    assert rules.longevity_weight == float(cfg.LONGEVITY_WEIGHT)
-    assert rules.exploration_weight == float(cfg.EXPLORATION_WEIGHT)
-    assert rules.interaction_weight == float(cfg.INTERACTION_WEIGHT)
-    assert rules.reproduction_weight == float(cfg.REPRODUCTION_WEIGHT)
+    hot = cfg.CONFIG_SNAPSHOT.hot
+    runtime_fields = fields(RuntimeRules)
 
+    assert len(runtime_fields) == 31
+    for field in runtime_fields:
+        runtime_value = getattr(rules, field.name)
+        default_value = getattr(hot, field.name)
 
+        assert runtime_value == default_value
+        assert type(runtime_value) is type(default_value)
 
 
 def test_runtime_rules_has_expected_fields():
-    from dataclasses import fields
-
     names = {f.name for f in fields(RuntimeRules)}
     assert len(names) == 31
     assert "predation_transfer" in names
@@ -85,11 +59,11 @@ def test_runtime_rules_has_expected_fields():
 @pytest.mark.parametrize(
     "field,minimum,maximum",
     [
-        ("low_hp_threshold", cfg.MIN_LOW_HP_THRESHOLD, cfg.MAX_LOW_HP_THRESHOLD),
+        ("low_hp_threshold", _hot_constraints("low_hp_threshold").minimum, _hot_constraints("low_hp_threshold").maximum),
         (
             "death_hp_threshold",
-            cfg.MIN_DEATH_HP_THRESHOLD,
-            cfg.MAX_DEATH_HP_THRESHOLD,
+            _hot_constraints("death_hp_threshold").minimum,
+            _hot_constraints("death_hp_threshold").maximum,
         ),
     ],
 )
@@ -146,7 +120,7 @@ def test_reproduction_criterion_default_is_builtin_str():
     assert type(default_runtime_rules().reproduction_criterion) is str
 
 
-@pytest.mark.parametrize("criterion", cfg.REPRODUCTION_CRITERIA)
+@pytest.mark.parametrize("criterion", _hot_constraints("reproduction_criterion").choices)
 def test_reproduction_criterion_accepts_only_canonical_values(criterion):
     current = default_runtime_rules()
     updated = updated_runtime_rules(
@@ -223,18 +197,18 @@ def test_selection_float_fields_are_builtin_float(field):
     [
         (
             "reproduction_pool_fraction",
-            cfg.MIN_REPRODUCTION_POOL_FRACTION,
-            cfg.MAX_REPRODUCTION_POOL_FRACTION,
+            _hot_constraints("reproduction_pool_fraction").minimum,
+            _hot_constraints("reproduction_pool_fraction").maximum,
         ),
         (
             "reproduction_min_score",
-            cfg.MIN_REPRODUCTION_MIN_SCORE,
-            cfg.MAX_REPRODUCTION_MIN_SCORE,
+            _hot_constraints("reproduction_min_score").minimum,
+            _hot_constraints("reproduction_min_score").maximum,
         ),
-        ("longevity_weight", cfg.MIN_SELECTION_WEIGHT, cfg.MAX_SELECTION_WEIGHT),
-        ("exploration_weight", cfg.MIN_SELECTION_WEIGHT, cfg.MAX_SELECTION_WEIGHT),
-        ("interaction_weight", cfg.MIN_SELECTION_WEIGHT, cfg.MAX_SELECTION_WEIGHT),
-        ("reproduction_weight", cfg.MIN_SELECTION_WEIGHT, cfg.MAX_SELECTION_WEIGHT),
+        ("longevity_weight", _hot_constraints("longevity_weight").minimum, _hot_constraints("longevity_weight").maximum),
+        ("exploration_weight", _hot_constraints("longevity_weight").minimum, _hot_constraints("longevity_weight").maximum),
+        ("interaction_weight", _hot_constraints("longevity_weight").minimum, _hot_constraints("longevity_weight").maximum),
+        ("reproduction_weight", _hot_constraints("longevity_weight").minimum, _hot_constraints("longevity_weight").maximum),
     ],
 )
 @pytest.mark.parametrize("bad_kind", ["below", "above", "bool", "int", "nan", "inf", "ninf"])
@@ -270,8 +244,8 @@ def test_reproduction_pressure_runtime_types_are_strict_builtins():
 @pytest.mark.parametrize(
     "value",
     [
-        cfg.MIN_REPRODUCTION_POOL_FRACTION,
-        cfg.MAX_REPRODUCTION_POOL_FRACTION,
+        _hot_constraints("reproduction_pool_fraction").minimum,
+        _hot_constraints("reproduction_pool_fraction").maximum,
     ],
 )
 def test_reproduction_pool_fraction_accepts_closed_range(value):
@@ -309,8 +283,8 @@ def test_reproduction_pool_fraction_rejects_invalid_values(bad):
 @pytest.mark.parametrize(
     "value",
     [
-        cfg.MIN_REPRODUCTION_ATTEMPTS_DIVISOR,
-        cfg.MAX_REPRODUCTION_ATTEMPTS_DIVISOR,
+        _hot_constraints("reproduction_attempts_divisor").minimum,
+        _hot_constraints("reproduction_attempts_divisor").maximum,
     ],
 )
 def test_reproduction_attempts_divisor_accepts_closed_range(value):
@@ -326,7 +300,7 @@ def test_reproduction_attempts_divisor_accepts_closed_range(value):
     [
         0,
         -1,
-        cfg.MAX_REPRODUCTION_ATTEMPTS_DIVISOR + 1,
+        _hot_constraints("reproduction_attempts_divisor").maximum + 1,
         True,
         False,
         1.0,
@@ -386,7 +360,10 @@ def test_update_returns_new_object():
     after = updated_runtime_rules(before, mutation_rate=50)
     assert after is not before
     assert after.mutation_rate == 50
-    assert before.mutation_rate == cfg.INITIAL_MUTATION_RATE
+    assert (
+        before.mutation_rate
+        == cfg.CONFIG_SNAPSHOT.hot.mutation_rate
+    )
 
 
 def test_update_multiple_fields():
@@ -410,72 +387,72 @@ def test_update_multiple_fields():
 
 
 _INVALID_CASES = [
-    ("mutation_below", {"mutation_rate": cfg.MIN_MUTATION_RATE - 1}),
-    ("mutation_above", {"mutation_rate": cfg.MAX_MUTATION_RATE + 1}),
-    ("mutated_below", {"mutated_genes": cfg.MIN_MUTATED_GENES - 1}),
-    ("mutated_above", {"mutated_genes": cfg.MAX_MUTATED_GENES + 1}),
+    ("mutation_below", {"mutation_rate": _hot_constraints("mutation_rate").minimum - 1}),
+    ("mutation_above", {"mutation_rate": _hot_constraints("mutation_rate").maximum + 1}),
+    ("mutated_below", {"mutated_genes": _hot_constraints("mutated_genes").minimum - 1}),
+    ("mutated_above", {"mutated_genes": _hot_constraints("mutated_genes").maximum + 1}),
     (
         "local_below",
-        {"local_scale_fraction": cfg.MIN_LOCAL_SCALE_FRACTION - 1},
+        {"local_scale_fraction": _hot_constraints("local_scale_fraction").minimum - 1},
     ),
     (
         "local_above",
-        {"local_scale_fraction": cfg.MAX_LOCAL_SCALE_FRACTION + 1},
+        {"local_scale_fraction": _hot_constraints("local_scale_fraction").maximum + 1},
     ),
-    ("zone_below", {"zone_hp_effect": cfg.MIN_ZONE_HP_EFFECT - 1}),
-    ("zone_above", {"zone_hp_effect": cfg.MAX_ZONE_HP_EFFECT + 1}),
+    ("zone_below", {"zone_hp_effect": _hot_constraints("zone_hp_effect").minimum - 1}),
+    ("zone_above", {"zone_hp_effect": _hot_constraints("zone_hp_effect").maximum + 1}),
     ("base_decay_below", {"base_decay_per_tick": -1}),
     (
         "base_decay_above",
-        {"base_decay_per_tick": cfg.MAX_BASE_DECAY_PER_TICK + 1},
+        {"base_decay_per_tick": _hot_constraints("base_decay_per_tick").maximum + 1},
     ),
     (
         "predation_transfer_below",
-        {"predation_transfer": cfg.MIN_PREDATION_TRANSFER - 1},
+        {"predation_transfer": _hot_constraints("predation_transfer").minimum - 1},
     ),
     (
         "predation_transfer_above",
-        {"predation_transfer": cfg.MAX_PREDATION_TRANSFER + 1},
+        {"predation_transfer": _hot_constraints("predation_transfer").maximum + 1},
     ),
     (
         "overcrowding_below",
         {"damage_per_own_overcrowding":
-            cfg.MIN_DAMAGE_PER_OWN_OVERCROWDING - 1},
+            _hot_constraints("damage_per_own_overcrowding").minimum - 1},
     ),
     (
         "overcrowding_above",
         {"damage_per_own_overcrowding":
-            cfg.MAX_DAMAGE_PER_OWN_OVERCROWDING + 1},
+            _hot_constraints("damage_per_own_overcrowding").maximum + 1},
     ),
     (
         "repro_interval_below",
-        {"reproduction_interval": cfg.MIN_REPRODUCTION_INTERVAL - 1},
+        {"reproduction_interval": _hot_constraints("reproduction_interval").minimum - 1},
     ),
     (
         "repro_interval_above",
-        {"reproduction_interval": cfg.MAX_REPRODUCTION_INTERVAL + 1},
+        {"reproduction_interval": _hot_constraints("reproduction_interval").maximum + 1},
     ),
     ("repro_min_age_below", {"reproduction_min_age": -1}),
     (
         "repro_min_age_above",
-        {"reproduction_min_age": cfg.MAX_REPRODUCTION_MIN_AGE + 1},
+        {"reproduction_min_age": _hot_constraints("reproduction_min_age").maximum + 1},
     ),
     ("repro_hp_gate_below", {"reproduction_hp_gate": 0}),
     (
         "repro_hp_gate_above",
-        {"reproduction_hp_gate": cfg.MAX_REPRODUCTION_HP_GATE + 1},
+        {"reproduction_hp_gate": _hot_constraints("reproduction_hp_gate").maximum + 1},
     ),
     ("repro_encounters_below", {"reproduction_min_encounters": -1}),
     (
         "repro_encounters_above",
         {"reproduction_min_encounters":
-            cfg.MAX_REPRODUCTION_MIN_ENCOUNTERS + 1},
+            _hot_constraints("reproduction_min_encounters").maximum + 1},
     ),
     ("repro_parent_bonus_below", {"reproduction_parent_hp_bonus": -1}),
     (
         "repro_parent_bonus_above",
         {"reproduction_parent_hp_bonus":
-            cfg.MAX_REPRODUCTION_PARENT_HP_BONUS + 1},
+            _hot_constraints("reproduction_parent_hp_bonus").maximum + 1},
     ),
 ]
 
@@ -604,56 +581,57 @@ def test_reset_counters_preserves_runtime_rules():
 def test_validate_accepts_valid():
     rules = RuntimeRules(
         crossover_mode="two_points",
-        crossover_probability=float(cfg.MAX_CROSSOVER_PROBABILITY),
-        block_size=cfg.MAX_BLOCK_SIZE,
+        crossover_probability=float(_hot_constraints("crossover_probability").maximum),
+        block_size=_hot_constraints("block_size").maximum,
         mutation_mode="surgical",
-        mutation_rate=cfg.MAX_MUTATION_RATE,
-        mutated_genes=cfg.MIN_MUTATED_GENES,
-        local_scale_fraction=cfg.MAX_LOCAL_SCALE_FRACTION,
-        local_scale_sigma=float(cfg.MAX_MUTATION_SIGMA),
-        global_probability=cfg.MAX_GLOBAL_PROBABILITY,
-        global_scale_fraction=cfg.MAX_GLOBAL_SCALE_FRACTION,
-        global_scale_sigma=float(cfg.MAX_MUTATION_SIGMA),
-        low_hp_threshold=cfg.MAX_LOW_HP_THRESHOLD,
+        mutation_rate=_hot_constraints("mutation_rate").maximum,
+        mutated_genes=_hot_constraints("mutated_genes").minimum,
+        local_scale_fraction=_hot_constraints("local_scale_fraction").maximum,
+        local_scale_sigma=float(_hot_constraints("local_scale_sigma").maximum),
+        global_probability=_hot_constraints("global_probability").maximum,
+        global_scale_fraction=_hot_constraints("global_scale_fraction").maximum,
+        global_scale_sigma=float(_hot_constraints("local_scale_sigma").maximum),
+        low_hp_threshold=_hot_constraints("low_hp_threshold").maximum,
         stay_still_impulse=-25.0,
-        death_hp_threshold=cfg.MAX_DEATH_HP_THRESHOLD,
-        zone_hp_effect=cfg.MIN_ZONE_HP_EFFECT,
-        base_decay_per_tick=cfg.MAX_BASE_DECAY_PER_TICK,
-        predation_transfer=cfg.MAX_PREDATION_TRANSFER,
-        damage_per_own_overcrowding=cfg.MAX_DAMAGE_PER_OWN_OVERCROWDING,
-        reproduction_interval=cfg.MAX_REPRODUCTION_INTERVAL,
-        reproduction_min_age=cfg.MAX_REPRODUCTION_MIN_AGE,
-        reproduction_hp_gate=cfg.MAX_REPRODUCTION_HP_GATE,
-        reproduction_min_encounters=cfg.MAX_REPRODUCTION_MIN_ENCOUNTERS,
-        reproduction_parent_hp_bonus=cfg.MAX_REPRODUCTION_PARENT_HP_BONUS,
+        death_hp_threshold=_hot_constraints("death_hp_threshold").maximum,
+        zone_hp_effect=_hot_constraints("zone_hp_effect").minimum,
+        base_decay_per_tick=_hot_constraints("base_decay_per_tick").maximum,
+        predation_transfer=_hot_constraints("predation_transfer").maximum,
+        damage_per_own_overcrowding=_hot_constraints("damage_per_own_overcrowding").maximum,
+        reproduction_interval=_hot_constraints("reproduction_interval").maximum,
+        reproduction_min_age=_hot_constraints("reproduction_min_age").maximum,
+        reproduction_hp_gate=_hot_constraints("reproduction_hp_gate").maximum,
+        reproduction_min_encounters=_hot_constraints("reproduction_min_encounters").maximum,
+        reproduction_parent_hp_bonus=_hot_constraints("reproduction_parent_hp_bonus").maximum,
         reproduction_criterion="longevity",
-        reproduction_pool_fraction=float(cfg.MAX_REPRODUCTION_POOL_FRACTION),
-        reproduction_attempts_divisor=cfg.MAX_REPRODUCTION_ATTEMPTS_DIVISOR,
-        reproduction_min_score=float(cfg.MAX_REPRODUCTION_MIN_SCORE),
-        longevity_weight=float(cfg.MAX_SELECTION_WEIGHT),
-        exploration_weight=float(cfg.MAX_SELECTION_WEIGHT),
-        interaction_weight=float(cfg.MAX_SELECTION_WEIGHT),
-        reproduction_weight=float(cfg.MAX_SELECTION_WEIGHT),
+        reproduction_pool_fraction=float(_hot_constraints("reproduction_pool_fraction").maximum),
+        reproduction_attempts_divisor=_hot_constraints("reproduction_attempts_divisor").maximum,
+        reproduction_min_score=float(_hot_constraints("reproduction_min_score").maximum),
+        longevity_weight=float(_hot_constraints("longevity_weight").maximum),
+        exploration_weight=float(_hot_constraints("longevity_weight").maximum),
+        interaction_weight=float(_hot_constraints("longevity_weight").maximum),
+        reproduction_weight=float(_hot_constraints("longevity_weight").maximum),
     )
     validate_runtime_rules(rules)  # nao levanta
 
 
 def test_validate_rejects_type_confusion():
+    hot = cfg.CONFIG_SNAPSHOT.hot
     rules = RuntimeRules(
-        crossover_mode=cfg.CROSSOVER_MODE,
-        crossover_probability=float(cfg.CROSSOVER_PROBABILITY),
-        block_size=int(cfg.BLOCK_SIZE),
-        mutation_mode=cfg.MUTATION_MODE,
+        crossover_mode=hot.crossover_mode,
+        crossover_probability=hot.crossover_probability,
+        block_size=hot.block_size,
+        mutation_mode=hot.mutation_mode,
         mutation_rate=5.0,  # type: ignore[arg-type]
         mutated_genes=1,
         local_scale_fraction=5,
-        local_scale_sigma=float(cfg.LOCAL_SCALE_SIGMA),
-        global_probability=int(cfg.GLOBAL_PROBABILITY * 100),
-        global_scale_fraction=int(cfg.GLOBAL_SCALE_FRACTION * 100),
-        global_scale_sigma=float(cfg.GLOBAL_SCALE_SIGMA),
-        low_hp_threshold=int(cfg.LOW_HP_THRESHOLD),
-        stay_still_impulse=float(cfg.STAY_STILL_IMPULSE),
-        death_hp_threshold=int(cfg.DIE_WHEN_HP_LESS_OR_EQUAL),
+        local_scale_sigma=hot.local_scale_sigma,
+        global_probability=hot.global_probability,
+        global_scale_fraction=hot.global_scale_fraction,
+        global_scale_sigma=hot.global_scale_sigma,
+        low_hp_threshold=hot.low_hp_threshold,
+        stay_still_impulse=hot.stay_still_impulse,
+        death_hp_threshold=hot.death_hp_threshold,
         zone_hp_effect=5,
         base_decay_per_tick=1,
         predation_transfer=100,
@@ -664,8 +642,8 @@ def test_validate_rejects_type_confusion():
         reproduction_min_encounters=3,
         reproduction_parent_hp_bonus=50,
         reproduction_criterion="composite",
-        reproduction_pool_fraction=float(cfg.REPRODUCTIVE_POOL_FRACTION),
-        reproduction_attempts_divisor=int(cfg.REPRODUCTION_ATTEMPTS_DIVISOR),
+        reproduction_pool_fraction=hot.reproduction_pool_fraction,
+        reproduction_attempts_divisor=hot.reproduction_attempts_divisor,
         reproduction_min_score=0.6,
         longevity_weight=0.5,
         exploration_weight=0.3,
@@ -704,53 +682,48 @@ def test_updated_multiple_same_values_returns_same_instance():
 
 def test_state_update_noop_preserves_identity():
     """state.update_runtime_rules no-op preserva identidade."""
-    state.update_runtime_rules(
-        mutation_rate=int(cfg.INITIAL_MUTATION_RATE),
-        mutated_genes=int(cfg.INITIAL_MUTATED_GENES),
-        local_scale_fraction=int(cfg.LOCAL_SCALE_FRACTION * 100),
-        zone_hp_effect=int(cfg.HP_EFFECT_IN_ZONE),
-        base_decay_per_tick=int(cfg.BASE_DECAY_PER_TICK),
-        predation_transfer=int(cfg.PREDATION_TRANSFER),
-        damage_per_own_overcrowding=int(cfg.DAMAGE_PER_OWN_OVERCROWDING),
-        reproduction_interval=int(cfg.REPRODUCTION_INTERVAL),
-        reproduction_min_age=int(cfg.REPRODUCTION_MIN_AGE),
-        reproduction_hp_gate=int(cfg.REPRODUCTION_HP_GATE),
-        reproduction_min_encounters=int(cfg.REPRODUCTION_MIN_ENCOUNTERS),
-        reproduction_parent_hp_bonus=int(
-            cfg.REPRODUCTION_PARENT_HP_BONUS
-        ),
-    )
-    before = state.runtime_rules
-    state.update_runtime_rules(
-        predation_transfer=before.predation_transfer,
-        damage_per_own_overcrowding=before.damage_per_own_overcrowding,
-    )
-    assert state.runtime_rules is before
+    original = state.runtime_rules
+    try:
+        state.set_runtime_rules(default_runtime_rules())
+        before = state.runtime_rules
+
+        state.update_runtime_rules(
+            predation_transfer=before.predation_transfer,
+            damage_per_own_overcrowding=(
+                before.damage_per_own_overcrowding
+            ),
+        )
+
+        assert state.runtime_rules is before
+    finally:
+        state.set_runtime_rules(original)
+
 # ---------------------------------------------------------------------------
-# Patch 9: two_scales tuning runtime
+# Runtime tuning contract for two_scales
 # ---------------------------------------------------------------------------
 
 
 def test_two_scale_runtime_defaults_and_types():
     rules = default_runtime_rules()
+    hot = cfg.CONFIG_SNAPSHOT.hot
     assert type(rules.local_scale_sigma) is float
     assert type(rules.global_probability) is int
     assert type(rules.global_scale_fraction) is int
     assert type(rules.global_scale_sigma) is float
-    assert rules.local_scale_sigma == float(cfg.LOCAL_SCALE_SIGMA)
-    assert rules.global_probability == int(cfg.GLOBAL_PROBABILITY * 100)
-    assert rules.global_scale_fraction == int(cfg.GLOBAL_SCALE_FRACTION * 100)
-    assert rules.global_scale_sigma == float(cfg.GLOBAL_SCALE_SIGMA)
+    assert rules.local_scale_sigma == hot.local_scale_sigma
+    assert rules.global_probability == hot.global_probability
+    assert rules.global_scale_fraction == hot.global_scale_fraction
+    assert rules.global_scale_sigma == hot.global_scale_sigma
 
 
 @pytest.mark.parametrize(
     "field,minimum,maximum",
     [
-        ("global_probability", cfg.MIN_GLOBAL_PROBABILITY, cfg.MAX_GLOBAL_PROBABILITY),
+        ("global_probability", _hot_constraints("global_probability").minimum, _hot_constraints("global_probability").maximum),
         (
             "global_scale_fraction",
-            cfg.MIN_GLOBAL_SCALE_FRACTION,
-            cfg.MAX_GLOBAL_SCALE_FRACTION,
+            _hot_constraints("global_scale_fraction").minimum,
+            _hot_constraints("global_scale_fraction").maximum,
         ),
     ],
 )
@@ -768,14 +741,14 @@ def test_two_scale_runtime_int_bounds(field, minimum, maximum):
 @pytest.mark.parametrize("field", ["local_scale_sigma", "global_scale_sigma"])
 def test_two_scale_sigma_validation_is_strict(field):
     current = default_runtime_rules()
-    for value in (float(cfg.MIN_MUTATION_SIGMA), float(cfg.MAX_MUTATION_SIGMA)):
+    for value in (float(_hot_constraints("local_scale_sigma").minimum), float(_hot_constraints("local_scale_sigma").maximum)):
         updated = updated_runtime_rules(current, **{field: value})
         assert getattr(updated, field) == value
 
     for bad in (
         0.0,
         -0.1,
-        float(cfg.MAX_MUTATION_SIGMA + 0.01),
+        float(_hot_constraints("local_scale_sigma").maximum + 0.01),
         1,
         True,
         None,
@@ -813,17 +786,14 @@ def test_two_scale_hot_update_identity_and_atomicity():
     assert state.runtime_rules.global_probability == 74
 
 
-def test_bootstrap_fresh_restores_two_scale_defaults(monkeypatch):
-    """Bootstrap zera o tuning two_scales ao default.
+def test_bootstrap_fresh_restores_declarative_hot_defaults(monkeypatch):
+    """Bootstrap fresh restaura integralmente o baseline HOT declarativo.
 
-    As dependencias internas de bootstrap sao monkeypatchadas no
-    namespace de `bootstrap` (autoridade real). simulation.bootstrap_new_world
-    e a mesma funcao, entao chamar por simulation continua valido
-    enquanto as substituicoes pegarem.
+    As dependencias internas sao monkeypatchadas no namespace de bootstrap,
+    que e a autoridade real da construcao de um mundo fresh.
     """
     from primordial_soup import bootstrap
     from primordial_soup import layout
-    from primordial_soup import simulation
     from primordial_soup import world
 
     original = state.runtime_rules
@@ -834,11 +804,16 @@ def test_bootstrap_fresh_restores_two_scale_defaults(monkeypatch):
     try:
         agents.clear()
         state.update_runtime_rules(
-            local_scale_sigma=0.25,
-            global_probability=75,
-            global_scale_fraction=40,
-            global_scale_sigma=2.0,
+            mutation_rate=77,
+            local_scale_fraction=42,
+            zone_hp_effect=-25,
+            reproduction_interval=17,
+            longevity_weight=1.25,
         )
+        customized = state.runtime_rules
+        expected = default_runtime_rules()
+        assert customized != expected
+
         sentinel_zone_centers = tuple(
             (
                 layout.LAYOUT.world_width - cfg.ZONE_RADIUS - 1,
@@ -869,19 +844,13 @@ def test_bootstrap_fresh_restores_two_scale_defaults(monkeypatch):
             lambda n: np.zeros((0, cfg.GENOME_SIZE), dtype=np.float32),
         )
 
-        simulation.bootstrap_new_world()
+        bootstrap.bootstrap_new_world()
 
-        assert state.runtime_rules.local_scale_sigma == float(
-            cfg.LOCAL_SCALE_SIGMA
-        )
-        assert state.runtime_rules.global_probability == int(
-            cfg.GLOBAL_PROBABILITY * 100
-        )
-        assert state.runtime_rules.global_scale_fraction == int(
-            cfg.GLOBAL_SCALE_FRACTION * 100
-        )
-        assert state.runtime_rules.global_scale_sigma == float(
-            cfg.GLOBAL_SCALE_SIGMA
+        assert state.runtime_rules == expected
+        assert state.runtime_rules is not customized
+        assert (
+            state.runtime_rules.zone_hp_effect
+            == cfg.CONFIG_SNAPSHOT.hot.zone_hp_effect
         )
     finally:
         state.set_runtime_rules(original)
@@ -891,10 +860,10 @@ def test_bootstrap_fresh_restores_two_scale_defaults(monkeypatch):
         agents[:] = saved_agents
 
 
-def test_recreate_preserves_two_scale_runtime_identity(monkeypatch):
-    """controls.recreate() preserva o tuning two_scales runtime.
+def test_recreate_preserves_runtime_rules_identity(monkeypatch):
+    """controls.recreate() preserva a RuntimeRules ativa inteira por identidade.
 
-    Monkeypatch no namespace de bootstrap (autoridade real).
+    Monkeypatch no namespace de bootstrap, que e a autoridade real.
     """
     from primordial_soup import bootstrap
     from primordial_soup import controls
@@ -909,10 +878,11 @@ def test_recreate_preserves_two_scale_runtime_identity(monkeypatch):
     try:
         agents.clear()
         state.update_runtime_rules(
-            local_scale_sigma=0.25,
-            global_probability=75,
-            global_scale_fraction=40,
-            global_scale_sigma=2.0,
+            mutation_rate=77,
+            local_scale_fraction=42,
+            zone_hp_effect=-25,
+            reproduction_interval=17,
+            longevity_weight=1.25,
         )
         expected = state.runtime_rules
         sentinel_zone_centers = tuple(
@@ -948,13 +918,36 @@ def test_recreate_preserves_two_scale_runtime_identity(monkeypatch):
         controls.recreate()
 
         assert state.runtime_rules is expected
-        assert state.runtime_rules.local_scale_sigma == 0.25
-        assert state.runtime_rules.global_probability == 75
-        assert state.runtime_rules.global_scale_fraction == 40
-        assert state.runtime_rules.global_scale_sigma == 2.0
+        assert state.runtime_rules.mutation_rate == 77
+        assert state.runtime_rules.local_scale_fraction == 42
+        assert state.runtime_rules.zone_hp_effect == -25
+        assert state.runtime_rules.reproduction_interval == 17
+        assert state.runtime_rules.longevity_weight == 1.25
     finally:
         state.set_runtime_rules(original)
         state.zones = saved_zones
         state.zone_centers = saved_zone_centers
         state.nests = saved_nests
         agents[:] = saved_agents
+
+
+def test_runtime_rules_validation_uses_schema_for_canonical_domains():
+    from primordial_soup.config_schema import ConfigScope, get_field_spec_by_attr
+    from primordial_soup.config_validation import resolve_constraints
+
+    crossover = resolve_constraints(
+        get_field_spec_by_attr(ConfigScope.HOT, "crossover_mode"),
+        cfg.CONFIG_SNAPSHOT,
+    )
+    mutation = resolve_constraints(
+        get_field_spec_by_attr(ConfigScope.HOT, "mutation_rate"),
+        cfg.CONFIG_SNAPSHOT,
+    )
+    assert _hot_constraints("crossover_mode").choices == crossover.choices
+    assert _hot_constraints("mutation_rate").minimum == mutation.minimum
+    assert _hot_constraints("mutation_rate").maximum == mutation.maximum
+
+
+def test_default_runtime_rules_remains_valid_under_shared_schema_validator():
+    rules = default_runtime_rules()
+    validate_runtime_rules(rules)

@@ -42,8 +42,8 @@ def format_zones_txt() -> str:
     rendering._draw_hud e controls.print_state, que divergiriam agora
     que o efeito de HP e ajustavel em runtime.
 
-    Le state.runtime_rules.zone_hp_effect (nao cfg.HP_EFFECT_IN_ZONE)
-    para o valor exibido sempre bater com a mecanica ativa.
+    Le state.runtime_rules.zone_hp_effect, nao o baseline declarativo
+    CONFIG_SNAPSHOT.hot, para o texto refletir a lei ativa.
     """
     from . import i18n
     from . import state
@@ -178,9 +178,9 @@ def generate_zones(
     A mascara e derivada por build_zone_mask(), autoridade unica da
     conversao centros->mascara. Nao ha logica duplicada aqui.
 
-    O valor canonico da chave "modificadores_ambientais" e "zonas". O
-    literal "nenhum" foi removido como opcao de config; a funcao nao
-    checa mais por ele.
+    As zonas fazem parte diretamente do modelo atual. Nao existe um
+    seletor de modo ambiental: esta funcao gera a geometria canonica
+    das zonas configuradas para o mundo.
     """
     if cfg.NUMBER_OF_ZONES <= 0:
         return None, ()
@@ -365,8 +365,8 @@ def seed_lineages() -> None:
     """Cria as linhagens vazias.
 
     As chaves internas do dict usam nomes em ingles ("color", "pool",
-    "agents", "field"); a ponte para as chaves em portugues do
-    savegame acontece em persistence.py.
+    "agents", "field"); a ponte para os identificadores canonicos de
+    persistencia acontece em persistence.py.
     """
     agents.clear()
     for lineage in cfg.LINEAGES:
@@ -746,12 +746,6 @@ def _criterion_highest_generation(matrix: np.ndarray) -> int | None:
     return int(np.argmax(matrix[:, INDEX_GENERATION]))
 
 
-def _criterion_best_score(matrix: np.ndarray) -> int | None:
-    if matrix.shape[0] == 0:
-        return None
-    return int(np.argmax(matrix[:, INDEX_COMPOSITE_SCORE]))
-
-
 _CRITERION_FUNCS = {
     "most_evolved": _criterion_most_evolved,
     "oldest": _criterion_oldest,
@@ -762,7 +756,6 @@ _CRITERION_FUNCS = {
     "highest_hp": _criterion_highest_hp,
     "lowest_hp": _criterion_lowest_hp,
     "highest_generation": _criterion_highest_generation,
-    "best_score": _criterion_best_score,
 }
 
 
@@ -772,8 +765,8 @@ def _select_by_criterion(
     """Engine interno de discovery: melhor critter sob um criterio e
     um filtro de linhagem.
 
-    `criterion` e um de cfg.CRITERIA_ORDER.
-    `lineage_filter` e cfg.LINEAGE_FILTER_ALL ou um id de linhagem.
+    `criterion` usa um identificador canonico do ConfigSchema.
+    `lineage_filter` usa "all" ou um id de linhagem.
 
     Retorna None se nao houver candidato (linhagem extinta, populacao
     vazia, criterio desconhecido).
@@ -784,7 +777,7 @@ def _select_by_criterion(
     if func is None:
         return None
 
-    if lineage_filter == cfg.LINEAGE_FILTER_ALL:
+    if lineage_filter == "all":
         eligible = range(len(agents))
     else:
         eligible = [
@@ -852,8 +845,6 @@ def discovery_criterion_value(criterion: str, row: np.ndarray) -> float:
         return float(row[INDEX_HP])
     if criterion == "highest_generation":
         return float(row[INDEX_GENERATION])
-    if criterion == "best_score":
-        return float(row[INDEX_COMPOSITE_SCORE])
     # "most_evolved" e qualquer criterio desconhecido caem no score
     # composto.
     return float(row[INDEX_COMPOSITE_SCORE])

@@ -1,4 +1,4 @@
-"""Persistencia v23 do historico recente de mortes."""
+"""Persistencia do historico recente de mortes, introduzido em v23."""
 
 from __future__ import annotations
 
@@ -118,12 +118,13 @@ def _valid_save_with_one_death(tmp_path):
     return path, snapshot
 
 
-def test_save_empty_archive_writes_required_v23_field(tmp_path):
+def test_current_save_keeps_required_recent_deaths_field(tmp_path):
     path = tmp_path / "world.pkl"
     assert persistence.save(str(path)) is True
 
     data = _read(path)
-    assert data["versao"] == 23
+    assert data["versao"] == cfg.SAVE_VERSION
+    assert cfg.SAVE_VERSION == 25
     assert data["mortes_recentes"] == []
 
 
@@ -357,10 +358,10 @@ def test_load_rejects_missing_recent_deaths_key(tmp_path):
     assert persistence.load(str(path)) is False
 
 
-def test_v22_is_rejected_without_migration(tmp_path):
+def test_v23_is_rejected_without_migration(tmp_path):
     path, _ = _valid_save_with_one_death(tmp_path)
     data = _read(path)
-    data["versao"] = 22
+    data["versao"] = 23
     _write(path, data)
     assert persistence.load(str(path)) is False
 
